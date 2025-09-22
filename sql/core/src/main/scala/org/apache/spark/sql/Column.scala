@@ -69,16 +69,19 @@ private[sql] object Column {
  *
  * @since 1.6.0
  */
+// 用于表示具有类型安全的列，它继承自 Column 类，表示在 Spark 数据框（DataFrame）中一列带有明确输入和输出类型的列。
+// 这个类的设计目的是提供类型安全的 API，使得开发者在操作 DataFrame 时能享受到编译时的类型检查，避免运行时类型错误
 @Stable
 class TypedColumn[-T, U](
-    expr: Expression,
-    private[sql] val encoder: ExpressionEncoder[U])
+    expr: Expression, //表示当前 TypedColumn 的表达式
+    private[sql] val encoder: ExpressionEncoder[U]) //它存储了该列数据的编码器。编码器（ExpressionEncoder）是 Spark 用来将 JVM 对象与 Spark SQL 表达式之间进行转换的工具
   extends Column(expr) {
 
   /**
    * Inserts the specific input type and schema into any expressions that are expected to operate
    * on a decoded object.
    */
+    //将输入类型和 schema 信息应用到表达式中，目的是确保该列在进行解码时使用正确的输入类型和属性
   private[sql] def withInputType(
       inputEncoder: ExpressionEncoder[_],
       inputAttributes: Seq[Attribute]): TypedColumn[T, U] = {
@@ -126,12 +129,12 @@ class TypedColumn[-T, U](
  * @groupname expr_ops Expression operators
  * @groupname df_ops DataFrame functions
  * @groupname Ungrouped Support functions for DataFrames
- *
+ * Column类代表数据框（DataFrame）中的一列数据，可以用于构建复杂的查询表达式
  * @since 1.3.0
- */
+ */ //expr: Expression Column类的核心属性，存储了当前列的表达式
 @Stable
 class Column(val expr: Expression) extends Logging {
-
+  //可以根据字符串name来创建一个Column对象。如果传入的name是*，则表示选择所有列；如果是带有.的字段名，则会解析字段；如果是普通列名，直接用UnresolvedAttribute来处理
   def this(name: String) = this(name match {
     case "*" => UnresolvedStar(None)
     case _ if name.endsWith(".*") =>
@@ -139,16 +142,16 @@ class Column(val expr: Expression) extends Logging {
       UnresolvedStar(Some(parts))
     case _ => UnresolvedAttribute.quotedString(name)
   })
-
+  //将Column对象转换为SQL字符串，主要用于调试时输出表达式的可读形式
   override def toString: String = toPrettySQL(expr)
-
+  //主要通过比较它们的expr属性
   override def equals(that: Any): Boolean = that match {
     case that: Column => that.normalizedExpr() == this.normalizedExpr()
     case _ => false
   }
 
   override def hashCode: Int = this.normalizedExpr().hashCode()
-
+  //规范化expr，例如去掉列的元数据部分
   private def normalizedExpr(): Expression = expr transform {
     case a: AttributeReference => Column.stripColumnReferenceMetadata(a)
   }
@@ -156,7 +159,7 @@ class Column(val expr: Expression) extends Logging {
   /** Creates a column based on the given expression. */
   private def withExpr(newExpr: Expression): Column = new Column(newExpr)
 
-  /**
+  /** 返回一个命名的表达式。如果表达式已经命名，直接返回；否则，会根据类型生成一个别名
    * Returns the expression for this column either with an existing or auto assigned name.
    */
   private[sql] def named: NamedExpression = expr match {
@@ -187,7 +190,7 @@ class Column(val expr: Expression) extends Logging {
    */
   def as[U : Encoder]: TypedColumn[Any, U] = new TypedColumn[Any, U](expr, encoderFor[U])
 
-  /**
+  /**  通过提供的索引或字段名，从复合类型（如数组、映射或结构体）中提取出特定的值或字段
    * Extracts a value or values from a complex type.
    * The following types of extraction are supported:
    * <ul>

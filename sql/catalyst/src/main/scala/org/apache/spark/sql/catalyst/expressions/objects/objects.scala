@@ -46,11 +46,14 @@ import org.apache.spark.util.Utils
 /**
  * Common base class for [[StaticInvoke]], [[Invoke]], and [[NewInstance]].
  */
+//核心功能是管理方法调用，包括参数的类型检查、空值传播、代码生成等
+//NonSQLExpression：标志该表达式不是 SQL 解析器生成的，通常用于非 SQL 语法支持的表达式，比如一些内部实现的调用
+//ImplicitCastInputTypes：提供隐式类型转换能力，可以自动将输入转换为目标数据类型
 trait InvokeLike extends Expression with NonSQLExpression with ImplicitCastInputTypes {
 
-  def arguments: Seq[Expression]
-  protected def argumentTypes: Seq[AbstractDataType] = inputTypes
-
+  def arguments: Seq[Expression] //方法调用的参数
+  protected def argumentTypes: Seq[AbstractDataType] = inputTypes  //方法参数的类型，默认为 inputTypes（由 ImplicitCastInputTypes 提供）
+  //检查 arguments 和 argumentTypes 的数量是否匹配，避免因参数数量不一致导致的运行时错误
   override def checkInputDataTypes(): TypeCheckResult = {
     if (!argumentTypes.isEmpty && argumentTypes.length != arguments.length) {
       TypeCheckResult.DataTypeMismatch(
@@ -62,24 +65,25 @@ trait InvokeLike extends Expression with NonSQLExpression with ImplicitCastInput
       super.checkInputDataTypes()
     }
   }
-
+  //如果 propagateNull == true，那么只要任意一个参数为 null，整个表达式就应该返回 null
   def propagateNull: Boolean
 
   // InvokeLike is stateful because of the evaluatedArgs Array
+  //该表达式是有状态的
   override def stateful: Boolean = true
 
   override def foldable: Boolean =
     children.forall(_.foldable) && deterministic && trustedSerializable(dataType)
-  protected lazy val needNullCheck: Boolean = needNullCheckForIndex.contains(true)
+  protected lazy val needNullCheck: Boolean = needNullCheckForIndex.contains(true)  //是否需要对参数空值检查
   protected lazy val needNullCheckForIndex: Array[Boolean] =
     arguments.map(a => a.nullable && (propagateNull ||
-        EncoderUtils.dataTypeJavaClass(a.dataType).isPrimitive)).toArray
-  protected lazy val evaluatedArgs: Array[Object] = new Array[Object](arguments.length)
+        EncoderUtils.dataTypeJavaClass(a.dataType).isPrimitive)).toArray  //记录了每个参数是否需要检查 null
+  protected lazy val evaluatedArgs: Array[Object] = new Array[Object](arguments.length) //存储已经计算好的参数值的数组
   private lazy val boxingFn: Any => Any =
     EncoderUtils.typeBoxedJavaMapping
       .get(dataType)
       .map(cls => v => cls.cast(v))
-      .getOrElse(identity)
+      .getOrElse(identity)  //返回spark sql内部类型对应的java类型
 
   // Returns true if we can trust all values of the given DataType can be serialized.
   private def trustedSerializable(dt: DataType): Boolean = {
@@ -103,19 +107,21 @@ trait InvokeLike extends Expression with NonSQLExpression with ImplicitCastInput
    * @param ctx a [[CodegenContext]]
    * @return (code to prepare arguments, argument string, result of argument null check)
    */
+  //用于生成代码来准备参数值，并进行空值检查
   def prepareArguments(ctx: CodegenContext): (String, String, ExprValue) = {
-
+    //创建一个 boolean 变量 resultIsNull，用于标记是否遇到了 null 值
     val resultIsNull = if (needNullCheck) {
       val resultIsNull = ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "resultIsNull")
       JavaCode.isNullGlobal(resultIsNull)
     } else {
       FalseLiteral
     }
+    //为每个参数创建一个变量，存储其计算后的值
     val argValues = arguments.map { e =>
       val argValue = ctx.addMutableState(CodeGenerator.javaType(e.dataType), "argValue")
       argValue
     }
-
+    //生成参数赋值代码
     val argCodes = if (needNullCheck) {
       val reset = s"$resultIsNull = false;"
       val argCodes = arguments.zipWithIndex.map { case (e, i) =>
@@ -162,26 +168,28 @@ trait InvokeLike extends Expression with NonSQLExpression with ImplicitCastInput
     val len = arguments.length
     var resultNull = false
     while (i < len) {
-      val result = arguments(i).eval(input).asInstanceOf[Object]
+      val result = arguments(i).eval(input).asInstanceOf[Object] //计算每个参数的值
       evaluatedArgs(i) = result
       resultNull = resultNull || (result == null && needNullCheckForIndex(i))
       i += 1
     }
+    //如果参数存在空值，则直接返回空
     if (needNullCheck && resultNull) {
       // return null if one of arguments is null
       null
     } else {
       val ret = try {
+        //根据参数结果，调用方法
         method.invoke(obj, evaluatedArgs: _*)
       } catch {
         // Re-throw the original exception.
         case e: java.lang.reflect.InvocationTargetException if e.getCause != null =>
           throw e.getCause
       }
-      boxingFn(ret)
+      boxingFn(ret)  //把结果转为对应的java类型
     }
   }
-
+  //根据方法名称，查找对应的方法
   final def findMethod(cls: Class[_], functionName: String, argClasses: Seq[Class[_]]): Method = {
     val method = MethodUtils.getMatchingAccessibleMethod(cls, functionName, argClasses: _*)
     if (method == null) {
@@ -271,17 +279,18 @@ object SerializerSupport {
  * @param isDeterministic Whether the method invocation is deterministic or not. If false, Spark
  *                        will not apply certain optimizations such as constant folding.
  */
+//用于调用静态方法的表达式（Expression）
 case class StaticInvoke(
-    staticObject: Class[_],
-    dataType: DataType,
-    functionName: String,
-    arguments: Seq[Expression] = Nil,
-    inputTypes: Seq[AbstractDataType] = Nil,
-    propagateNull: Boolean = true,
-    returnNullable: Boolean = true,
-    isDeterministic: Boolean = true) extends InvokeLike {
+    staticObject: Class[_],  // 目标类（Java 类或 Scala 伴生对象）
+    dataType: DataType,      // 期望的返回类型
+    functionName: String,    // 方法名
+    arguments: Seq[Expression] = Nil,     // 传递给方法的参数表达式
+    inputTypes: Seq[AbstractDataType] = Nil,    // 输入参数类型
+    propagateNull: Boolean = true,        // 传播 null：如果参数为 null，则返回 null
+    returnNullable: Boolean = true,      // 方法是否可能返回 null
+    isDeterministic: Boolean = true) extends InvokeLike {      // 方法是否确定性（影响 Catalyst 优化）
 
-  val objectName = staticObject.getName.stripSuffix("$")
+  val objectName = staticObject.getName.stripSuffix("$")  //处理 Scala 伴生对象（Scala 伴生对象类名通常带 $
   val cls = if (staticObject.getName == objectName) {
     staticObject
   } else {
@@ -296,7 +305,7 @@ case class StaticInvoke(
   @transient lazy val method = findMethod(cls, functionName, argClasses)
 
   override def eval(input: InternalRow): Any = {
-    invoke(null, method, input)
+    invoke(null, method, input)  //调用 Java 反射 执行静态方法，null 表示调用的是静态方法，而不是实例方法
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
@@ -375,22 +384,23 @@ case class StaticInvoke(
  * @param isDeterministic Whether the method invocation is deterministic or not. If false, Spark
  *                        will not apply certain optimizations such as constant folding.
  */
+//用于在对象上调用指定的方法，并可选地传递参数
 case class Invoke(
-    targetObject: Expression,
-    functionName: String,
-    dataType: DataType,
-    arguments: Seq[Expression] = Nil,
-    methodInputTypes: Seq[AbstractDataType] = Nil,
-    propagateNull: Boolean = true,
-    returnNullable : Boolean = true,
-    isDeterministic: Boolean = true) extends InvokeLike {
+    targetObject: Expression, // 目标对象，该对象上调用方法
+    functionName: String,    // 要调用的方法的名称
+    dataType: DataType,      // 方法返回的预期数据类型
+    arguments: Seq[Expression] = Nil,     // 传递给方法的参数列表
+    methodInputTypes: Seq[AbstractDataType] = Nil,   // 方法的参数类型
+    propagateNull: Boolean = true,  //有一个参数为空，则直接返回空值
+    returnNullable : Boolean = true,  // 方法是否可能返回 NULL
+    isDeterministic: Boolean = true) extends InvokeLike {  //// 方法是否是确定性（相同输入总返回相同结果）
 
-  lazy val argClasses = EncoderUtils.expressionJavaClasses(arguments)
+  lazy val argClasses = EncoderUtils.expressionJavaClasses(arguments)  //获取 arguments 对应的 Java 类，用于方法匹配
 
   final override val nodePatterns: Seq[TreePattern] = Seq(INVOKE)
 
   override def nullable: Boolean = targetObject.nullable || needNullCheck || returnNullable
-  override def children: Seq[Expression] = targetObject +: arguments
+  override def children: Seq[Expression] = targetObject +: arguments  //返回所有的子表达式
   override lazy val deterministic: Boolean = isDeterministic && arguments.forall(_.deterministic)
   override def inputTypes: Seq[AbstractDataType] =
     if (methodInputTypes.nonEmpty) {
@@ -1610,16 +1620,16 @@ case class ExternalMapToCatalyst private(
 /**
  * Constructs a new external row, using the result of evaluating the specified expressions
  * as content.
- *
+ *  表达式类，它用于创建一个新的“外部行”（External Row）。该类会通过对给定的表达式列表进行求值，将结果作为内容构造一个外部行，并且该外部行使用给定的模式（schema）来定义它的结构
  * @param children A list of expression to use as content of the external row.
- */
+ */ //children: Seq[Expression]：该参数包含一组表达式，这些表达式会被求值并用于构造外部行的各个字段的值 schema: StructType：这是该外部行的结构（StructType），用于定义该行中字段的名称、类型和其他元数据
 case class CreateExternalRow(children: Seq[Expression], schema: StructType)
   extends Expression with NonSQLExpression {
 
   override def dataType: DataType = ObjectType(classOf[Row])
 
   override def nullable: Boolean = false
-
+  //计算该表达式的结果
   override def eval(input: InternalRow): Any = {
     val values = children.map(_.eval(input)).toArray
     new GenericRowWithSchema(values, schema)
@@ -1872,17 +1882,18 @@ case class AssertNotNull(child: Expression, walkedTypePath: Seq[String] = Nil)
  * Note that the input row and the field we try to get are both guaranteed to be not null, if they
  * are null, a runtime exception will be thrown.
  */
+//用于从外部行（Row）中获取特定字段值的表达式。它通常与查询优化器和代码生成器一起使用，执行字段提取操作
 case class GetExternalRowField(
-    child: Expression,
-    index: Int,
-    fieldName: String) extends UnaryExpression with NonSQLExpression {
+    child: Expression, //该表达式的子表达式，它应该返回一个 Row 类型的结果
+    index: Int, //表示要从 Row 中提取的字段的索引。index 是基于零的，即第一个字段的索引为 0
+    fieldName: String) extends UnaryExpression with NonSQLExpression { //用于表示字段的名称。它在错误消息中使用，以便在异常情况下能够提供具体的字段名，帮助定位问题
 
-  override def nullable: Boolean = false
+  override def nullable: Boolean = false  //表示表达式是否可为 null
 
-  override def dataType: DataType = ObjectType(classOf[Object])
+  override def dataType: DataType = ObjectType(classOf[Object])  //返回该表达式的返回类型
 
   private val errMsg = QueryExecutionErrors.fieldCannotBeNullMsg(index, fieldName)
-
+  //用于在运行时从输入的 InternalRow（即 Spark 内部表示的行数据）中提取字段值
   override def eval(input: InternalRow): Any = {
     val inputRow = child.eval(input).asInstanceOf[Row]
     if (inputRow == null) {
@@ -1893,7 +1904,7 @@ case class GetExternalRowField(
     }
     inputRow.get(index)
   }
-
+  //代码生成方法，它生成用于执行该表达式的 Java 代码
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     // Use unnamed reference that doesn't create a local field here to reduce the number of fields
     // because errMsgField is used only when the field is null.
@@ -1914,7 +1925,7 @@ case class GetExternalRowField(
      """
     ev.copy(code = code, isNull = FalseLiteral)
   }
-
+  //于在表达式树中替换子表达式
   override protected def withNewChildInternal(newChild: Expression): GetExternalRowField =
     copy(child = newChild)
 }
@@ -1922,18 +1933,19 @@ case class GetExternalRowField(
 /**
  * Validates the actual data type of input expression at runtime.  If it doesn't match the
  * expectation, throw an exception.
- */
+ *///child 该表达式的子表达式  expected 预期的数据类型，表示 child 表达式的值应该符合这个类型  externalDataType 外部数据的类型，通常是数据从外部源（例如文件、数据库等）加载时的原始类型
+//用于在运行时验证输入表达式的数据类型是否符合预期的表达式。它通过检查实际数据类型与预期数据类型的匹配情况，如果不匹配，则抛出异常
 case class ValidateExternalType(child: Expression, expected: DataType, externalDataType: DataType)
   extends UnaryExpression with NonSQLExpression with ExpectsInputTypes {
-
+  //返回 ObjectType(classOf[Object])，表示 child 表达式的输入类型可以是任何类型。这是为了支持验证所有类型的数据
   override def inputTypes: Seq[AbstractDataType] = Seq(ObjectType(classOf[Object]))
-
+  //返回 child 表达式是否可以为 null
   override def nullable: Boolean = child.nullable
-
+  //返回当前表达式的输出数据类型
   override val dataType: DataType = externalDataType
 
   private lazy val errMsg = s" is not a valid external type for schema of ${expected.simpleString}"
-
+  //用于检查实际数据是否与预期的数据类型匹配
   private lazy val checkType: (Any) => Boolean = expected match {
     case _: DecimalType =>
       (value: Any) => {
@@ -1961,7 +1973,7 @@ case class ValidateExternalType(child: Expression, expected: DataType, externalD
         dataTypeClazz.isInstance(value)
       }
   }
-
+  //这是 ValidateExternalType 的核心方法，它负责在运行时验证 child 表达式的实际值类型是否符合预期
   override def nullSafeEval(input: Any): Any = {
     if (checkType(input)) {
       input

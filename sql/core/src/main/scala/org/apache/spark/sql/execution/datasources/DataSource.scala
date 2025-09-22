@@ -84,18 +84,21 @@ import org.apache.spark.util.{HadoopFSUtils, ThreadUtils, Utils}
  * @param catalogTable Optional catalog table reference that can be used to push down operations
  *                     over the datasource to the catalog service.
  */
+//解析并存储数据源的描述信息（如路径、格式、schema、选项等
+//创建数据源实例（如 RelationProvider、FileFormat 等）并用于查询执行
+//提供流式数据源的管理能力（如 createSource、createSink）
 case class DataSource(
     sparkSession: SparkSession,
-    className: String,
-    paths: Seq[String] = Nil,
-    userSpecifiedSchema: Option[StructType] = None,
-    partitionColumns: Seq[String] = Seq.empty,
-    bucketSpec: Option[BucketSpec] = None,
-    options: Map[String, String] = Map.empty,
-    catalogTable: Option[CatalogTable] = None) extends Logging {
+    className: String, //指定数据源的名称，如 "csv", "json", "parquet" 或 自定义数据源（即实现 TableProvider 接口的类名）
+    paths: Seq[String] = Nil, //数据源的数据所在的路径，通常是 HDFS 或本地文件系统的路径
+    userSpecifiedSchema: Option[StructType] = None, //用户指定的 schema，如果没有提供，则尝试从数据中推断
+    partitionColumns: Seq[String] = Seq.empty, //指定数据源的分区列，适用于分区存储的文件格式（如 Parquet、ORC）
+    bucketSpec: Option[BucketSpec] = None, //用于指定数据的 bucket（分桶），适用于 bucketed tables（如 Hive 分桶表）
+    options: Map[String, String] = Map.empty, //额外的选项，如 delimiter, header（对 CSV 文件）
+    catalogTable: Option[CatalogTable] = None) extends Logging { //可选的 CatalogTable，用于与 Spark SQL Catalog 进行集成（例如 Hive Metastore）
 
   case class SourceInfo(name: String, schema: StructType, partitionColumns: Seq[String])
-
+  //解析 className 并获取其对应的 Class 对象
   lazy val providingClass: Class[_] = {
     val cls = DataSource.lookupDataSource(className, sparkSession.sessionState.conf)
     // `providingClass` is used for resolving data source relation for catalog tables.
@@ -105,23 +108,24 @@ case class DataSource(
     // [[DataFrameReader]]/[[DataFrameWriter]], since they use method `lookupDataSource`
     // instead of `providingClass`.
     cls.newInstance() match {
-      case f: FileDataSourceV2 => f.fallbackFileFormat
+      case f: FileDataSourceV2 => f.fallbackFileFormat    //这个lookupDataSource是V1版本的数据源，所以如果找到了V2版本的数据源，就回退到V1版本
       case _ => cls
     }
   }
-
+   //创建 providingClass 的实例
   private[sql] def providingInstance(): Any = providingClass.getConstructor().newInstance()
 
   private def newHadoopConfiguration(): Configuration =
     sparkSession.sessionState.newHadoopConfWithOptions(options)
 
   lazy val sourceInfo: SourceInfo = sourceSchema()
-  private val caseInsensitiveOptions = CaseInsensitiveMap(options)
+  private val caseInsensitiveOptions = CaseInsensitiveMap(options) //对 options 进行不区分大小写的处理，确保 options 解析时大小写一致
   private val equality = sparkSession.sessionState.conf.resolver
 
   /**
    * Whether or not paths should be globbed before being used to access files.
    */
+    //判断是否要对路径执行 glob 操作（即路径模式匹配，如 /data/*.csv）
   def globPaths: Boolean = {
     options.get(DataSource.GLOB_PATHS_KEY)
       .map(_ == "true")
@@ -156,11 +160,14 @@ case class DataSource(
    * @return A pair of the data schema (excluding partition columns) and the schema of the partition
    *         columns.
    */
+  //确定基于文件的数据源的模式（Schema），可以使用用户指定的模式 (userSpecifiedSchema)，或者从文件中推断模式
   private def getOrInferFileFormatSchema(
-      format: FileFormat,
+      format: FileFormat, //表示数据源的文件格式（如 Parquet、CSV）
       getFileIndex: () => InMemoryFileIndex): (StructType, StructType) = {
+    //返回数据 Schema（data schema），表示数据字段（不包括分区列）
+    //分区 Schema（partition schema），表示用于分区的数据列
     lazy val tempFileIndex = getFileIndex()
-
+    //解析分区模式（Partition Schema）
     val partitionSchema = if (partitionColumns.isEmpty) {
       // Try to infer partitioning, because no DataSource in the read path provides the partitioning
       // columns properly unless it is a Hive DataSource
@@ -172,6 +179,7 @@ case class DataSource(
         val inferredPartitions = tempFileIndex.partitionSchema
         inferredPartitions
       } else {
+        //处理 userSpecifiedSchema 与 partitionColumns 的匹配
         val partitionFields = partitionColumns.map { partitionColumn =>
           userSpecifiedSchema.flatMap(_.find(c => equality(c.name, partitionColumn))).orElse {
             val inferredPartitions = tempFileIndex.partitionSchema
@@ -196,7 +204,7 @@ case class DataSource(
         StructType(partitionFields)
       }
     }
-
+    //确定数据 Schema
     val dataSchema = userSpecifiedSchema.map { schema =>
       StructType(schema.filterNot(f => partitionSchema.exists(p => equality(p.name, f.name))))
     }.orElse {
@@ -226,14 +234,15 @@ case class DataSource(
   }
 
   /** Returns the name and schema of the source that can be used to continually read data. */
+  //用于获取流式数据源的名称和 Schema，返回一个 SourceInfo 对象
   private def sourceSchema(): SourceInfo = {
     providingInstance() match {
-      case s: StreamSourceProvider =>
+      case s: StreamSourceProvider =>  //并尝试匹配 StreamSourceProvider（流式数据源）
         val (name, schema) = s.sourceSchema(
           sparkSession.sqlContext, userSpecifiedSchema, className, caseInsensitiveOptions)
         SourceInfo(name, schema, Nil)
 
-      case format: FileFormat =>
+      case format: FileFormat =>  //匹配 FileFormat（文件数据源，如 Parquet、CSV）
         val path = caseInsensitiveOptions.getOrElse("path", {
           throw QueryExecutionErrors.dataPathNotSpecifiedError()
         })
@@ -241,6 +250,7 @@ case class DataSource(
         // Check whether the path exists if it is not a glob pattern.
         // For glob pattern, we do not check it because the glob pattern might only make sense
         // once the streaming job starts and some upstream source starts dropping data.
+        //检查 path 是否为通配符（glob pattern）
         val hdfsPath = new Path(path)
         if (!globPaths || !SparkHadoopUtil.get.isGlobPath(hdfsPath)) {
           val fs = hdfsPath.getFileSystem(newHadoopConfiguration())
@@ -248,14 +258,14 @@ case class DataSource(
             throw QueryCompilationErrors.dataPathNotExistError(path)
           }
         }
-
+        //检查 Schema 推断是否启用
         val isSchemaInferenceEnabled = sparkSession.sessionState.conf.streamingSchemaInference
         val isTextSource = providingClass == classOf[text.TextFileFormat]
         // If the schema inference is disabled, only text sources require schema to be specified
         if (!isSchemaInferenceEnabled && !isTextSource && userSpecifiedSchema.isEmpty) {
           throw QueryExecutionErrors.createStreamingSourceNotSpecifySchemaError()
         }
-
+        //获取或推断 Schema
         val (dataSchema, partitionSchema) = getOrInferFileFormatSchema(format, () => {
           // The operations below are expensive therefore try not to do them if we don't need to,
           // e.g., in streaming mode, we have already inferred and registered partition columns,
@@ -278,6 +288,7 @@ case class DataSource(
   }
 
   /** Returns a source that can be used to continually read data. */
+    //创建一个 流式数据源（Source）
   def createSource(metadataPath: String): Source = {
     providingInstance() match {
       case s: StreamSourceProvider =>
@@ -307,6 +318,7 @@ case class DataSource(
   }
 
   /** Returns a sink that can be used to continually write data. */
+    //创建一个 流式数据写入端（Sink）
   def createSink(outputMode: OutputMode): Sink = {
     providingInstance() match {
       case s: StreamSinkProvider =>
@@ -337,15 +349,21 @@ case class DataSource(
    *                        is considered as a non-streaming file based data source. Since we know
    *                        that files already exist, we don't need to check them again.
    */
+  //创建一个已解析的 BaseRelation，该对象用于读取或写入指定的 DataSource 数据源。
+  // BaseRelation 是 Spark 中数据源 API 的核心接口，它定义了如何从数据源读取数据或将数据写入数据源
   def resolveRelation(checkFilesExist: Boolean = true): BaseRelation = {
     val relation = (providingInstance(), userSpecifiedSchema) match {
       // TODO: Throw when too much is given.
+      //如果数据源是 SchemaRelationProvider，且用户指定了 schema，创建一个 BaseRelation，并将用户提供的 schema 传递进去
       case (dataSource: SchemaRelationProvider, Some(schema)) =>
         dataSource.createRelation(sparkSession.sqlContext, caseInsensitiveOptions, schema)
+      //如果数据源是 RelationProvider，且用户未指定 schema，默认情况下会根据数据源推断出 Schema
       case (dataSource: RelationProvider, None) =>
         dataSource.createRelation(sparkSession.sqlContext, caseInsensitiveOptions)
+      //如果数据源是 SchemaRelationProvider，但用户未提供 schema，则抛出异常，表示必须提供 schema
       case (_: SchemaRelationProvider, None) =>
         throw QueryCompilationErrors.schemaNotSpecifiedForSchemaRelationProviderError(className)
+      //如果数据源是 RelationProvider 且用户指定了 schema，如果推断出的 Schema 与用户指定的 Schema 不匹配，则抛出异常，表示 Schema 不匹配
       case (dataSource: RelationProvider, Some(schema)) =>
         val baseRelation =
           dataSource.createRelation(sparkSession.sqlContext, caseInsensitiveOptions)
@@ -359,6 +377,7 @@ case class DataSource(
       // instead of listing them using HDFS APIs. Note that the config
       // `spark.sql.streaming.fileStreamSink.metadata.ignored` can be enabled to ignore the
       // metadata log.
+      //处理流式数据源（如文件流）
       case (format: FileFormat, _)
           if FileStreamSink.hasMetadata(
             caseInsensitiveOptions.get("path").toSeq ++ paths,
@@ -388,6 +407,7 @@ case class DataSource(
           caseInsensitiveOptions)(sparkSession)
 
       // This is a non-streaming file based datasource.
+      // 处理非流式文件数据源
       case (format: FileFormat, _) =>
         val useCatalogFileIndex = sparkSession.sqlContext.conf.manageFilesourcePartitions &&
           catalogTable.isDefined && catalogTable.get.tracksPartitionsInCatalog &&
@@ -401,7 +421,7 @@ case class DataSource(
           (index, catalogTable.get.dataSchema, catalogTable.get.partitionSchema)
         } else {
           val globbedPaths = checkAndGlobPathIfNecessary(
-            checkEmptyGlobPath = true, checkFilesExist = checkFilesExist)
+            checkEmptyGlobPath = true, checkFilesExist = checkFilesExist)   //检查并返回文件路径
           val index = createInMemoryFileIndex(globbedPaths)
           val (resultDataSchema, resultPartitionSchema) =
             getOrInferFileFormatSchema(format, () => index)
@@ -419,7 +439,7 @@ case class DataSource(
       case _ =>
         throw QueryCompilationErrors.invalidDataSourceError(className)
     }
-
+    //校验 Schema 和返回关系
     relation match {
       case hs: HadoopFsRelation =>
         SchemaUtils.checkSchemaColumnNameDuplication(
@@ -442,24 +462,29 @@ case class DataSource(
    * Creates a command node to write the given [[LogicalPlan]] out to the given [[FileFormat]].
    * The returned command is unresolved and need to be analyzed.
    */
+  // 创建一个 命令节点，该节点负责将给定的 LogicalPlan 输出到指定的 FileFormat 格式文件中。
+  // 返回的命令是 未解析的，需要后续分析（resolve）
   private def planForWritingFileFormat(
       format: FileFormat, mode: SaveMode, data: LogicalPlan): InsertIntoHadoopFsRelationCommand = {
+    //format：指定输出文件格式（如 Parquet、CSV 等）
+    //mode：保存模式，定义如何处理现有的数据（例如：SaveMode.Overwrite、SaveMode.Append 等）
+    //data：要写入文件的数据，类型为 LogicalPlan，表示待写入的数据的逻辑计划
     // Don't glob path for the write path.  The contracts here are:
     //  1. Only one output path can be specified on the write path;
     //  2. Output path must be a legal HDFS style file system path;
     //  3. It's OK that the output path doesn't exist yet;
-    val allPaths = paths ++ caseInsensitiveOptions.get("path")
-    val outputPath = if (allPaths.length == 1) {
+    val allPaths = paths ++ caseInsensitiveOptions.get("path") //得到所有指定的路径
+    val outputPath = if (allPaths.length == 1) { //确保只指定了一个输出路径
       val path = new Path(allPaths.head)
       val fs = path.getFileSystem(newHadoopConfiguration())
       path.makeQualified(fs.getUri, fs.getWorkingDirectory)
     } else {
       throw QueryExecutionErrors.multiplePathsSpecifiedError(allPaths)
     }
-
+    //分区列验证
     val caseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
     PartitioningUtils.validatePartitionColumn(data.schema, partitionColumns, caseSensitive)
-
+    //通过 sparkSession.table 获取表，并从其查询执行的分析结果中查找 HadoopFsRelation 关系，进而获取其文件位置
     val fileIndex = catalogTable.map(_.identifier).map { tableIdent =>
       sparkSession.table(tableIdent).queryExecution.analyzed.collect {
         case LogicalRelation(t: HadoopFsRelation, _, _, _) => t.location
@@ -469,12 +494,12 @@ case class DataSource(
     // ordering of data.logicalPlan (partition columns are all moved after data column).  This
     // will be adjusted within InsertIntoHadoopFsRelation.
     InsertIntoHadoopFsRelationCommand(
-      outputPath = outputPath,
-      staticPartitions = Map.empty,
-      ifPartitionNotExists = false,
-      partitionColumns = partitionColumns.map(UnresolvedAttribute.quoted),
-      bucketSpec = bucketSpec,
-      fileFormat = format,
+      outputPath = outputPath,  //写入的输出路径
+      staticPartitions = Map.empty,  //静态分区信息，这里设置为空
+      ifPartitionNotExists = false,  //如果分区不存在时是否进行创建
+      partitionColumns = partitionColumns.map(UnresolvedAttribute.quoted), //分区列
+      bucketSpec = bucketSpec, //桶化规格，通常用于对数据进行桶分区
+      fileFormat = format, //输出的文件格式
       options = options,
       query = data,
       mode = mode,
@@ -494,6 +519,7 @@ case class DataSource(
    *                          optimizer may not preserve the output column's names' case, so we need
    *                          this parameter instead of `data.output`.
    */
+  //负责将给定的 LogicalPlan 数据写入指定的数据源，并返回一个用于后续读取的 BaseRelation 对象
   def writeAndRead(
       mode: SaveMode,
       data: LogicalPlan,
@@ -540,7 +566,7 @@ case class DataSource(
       sparkSession, globbedPaths, options, userSpecifiedSchema, fileStatusCache)
   }
 
-  /**
+  /** 检查并返回文件路径
    * Checks and returns files in all the paths.
    */
   private def checkAndGlobPathIfNecessary(
@@ -564,6 +590,8 @@ case class DataSource(
 object DataSource extends Logging {
 
   /** A map to maintain backward compatibility in case we move data sources around. */
+  //护了某些数据源的兼容性映射。如果数据源类型发生了变化，它可以确保老的别名能够找到对应的类，
+  // 确保 Spark 在版本更新时仍能支持旧版的数据源接口
   private val backwardCompatibilityMap: Map[String, String] = {
     val jdbc = classOf[JdbcRelationProvider].getCanonicalName
     val json = classOf[JsonFileFormat].getCanonicalName
@@ -609,6 +637,7 @@ object DataSource extends Logging {
     "org.apache.spark.Logging")
 
   /** Given a provider name, look up the data source class definition. */
+    //根据给定的数据源提供者名称（provider）查找对应的类定义，并返回该类的 Class 对象，provider: String：传入的数据源名称（如 orc、avro、kafka 等）
   def lookupDataSource(provider: String, conf: SQLConf): Class[_] = {
     val provider1 = backwardCompatibilityMap.getOrElse(provider, provider) match {
       case name if name.equalsIgnoreCase("orc") &&
@@ -623,13 +652,13 @@ object DataSource extends Logging {
     }
     val provider2 = s"$provider1.DefaultSource"
     val loader = Utils.getContextOrSparkClassLoader
-    val serviceLoader = ServiceLoader.load(classOf[DataSourceRegister], loader)
+    val serviceLoader = ServiceLoader.load(classOf[DataSourceRegister], loader) //查找实现DataSourceRegister接口的类
 
-    try {
+    try {  //过滤出shortname = provider1的类
       serviceLoader.asScala.filter(_.shortName().equalsIgnoreCase(provider1)).toList match {
         // the provider format did not match any given registered aliases
         case Nil =>
-          try {
+          try {   //如何没有找到，则尝试直接按照类名来加载，成功就直接返回
             Try(loader.loadClass(provider1)).orElse(Try(loader.loadClass(provider2))) match {
               case Success(dataSource) =>
                 // Found the data source using fully qualified path
@@ -660,7 +689,7 @@ object DataSource extends Logging {
         case head :: Nil =>
           // there is exactly one registered alias
           head.getClass
-        case sources =>
+        case sources =>  // 处理多个匹配数据源的情况
           // There are multiple registered aliases for the input. If there is single datasource
           // that has "org.apache.spark" package in the prefix, we use it considering it is an
           // internal datasource within Spark.
@@ -690,13 +719,14 @@ object DataSource extends Logging {
    * Returns an optional [[TableProvider]] instance for the given provider. It returns None if
    * there is no corresponding Data Source V2 implementation, or the provider is configured to
    * fallback to Data Source V1 code path.
-   */
+   *///provider: String：指定的数据源名称（例如，"parquet"、"csv"）
+    //查找数据源 V2 实现，并根据配置决定是否使用数据源 V2 或回退到数据源 V1
   def lookupDataSourceV2(provider: String, conf: SQLConf): Option[TableProvider] = {
     val useV1Sources = conf.getConf(SQLConf.USE_V1_SOURCE_LIST).toLowerCase(Locale.ROOT)
-      .split(",").map(_.trim)
+      .split(",").map(_.trim) //获取 V1 数据源的列表，得到数据源shortname的列表，["avro", "csv", "json", "kafka", "orc",]
     val cls = lookupDataSource(provider, conf)
     cls.newInstance() match {
-      case d: DataSourceRegister if useV1Sources.contains(d.shortName()) => None
+      case d: DataSourceRegister if useV1Sources.contains(d.shortName()) => None   //如果V1版本的配置包含了，则直接使用v1版本的数据源
       case t: TableProvider
           if !useV1Sources.contains(cls.getCanonicalName.toLowerCase(Locale.ROOT)) =>
         Some(t)

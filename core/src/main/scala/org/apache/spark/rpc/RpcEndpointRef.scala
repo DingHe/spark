@@ -24,31 +24,31 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.RpcUtils
 
-/**
+/** 用于表示远程 RpcEndpoint 的引用，它支持通过 RPC 进行消息发送和接收
  * A reference for a remote [[RpcEndpoint]]. [[RpcEndpointRef]] is thread-safe.
  */
 private[spark] abstract class RpcEndpointRef(conf: SparkConf)
   extends Serializable with Logging {
 
-  private[this] val defaultAskTimeout = RpcUtils.askRpcTimeout(conf)
+  private[this] val defaultAskTimeout = RpcUtils.askRpcTimeout(conf) //默认的请求超时时间
 
   /**
    * return the address for the [[RpcEndpointRef]]
    */
-  def address: RpcAddress
+  def address: RpcAddress //远程端点的地址
 
-  def name: String
+  def name: String //表示 RpcEndpointRef 的名称
 
   /**
    * Sends a one-way asynchronous message. Fire-and-forget semantics.
    */
-  def send(message: Any): Unit
+  def send(message: Any): Unit  //异步方法，即发送消息后不等待响应，消息会被立即发送但没有任何回复处理
 
   /**
    * Send a message to the corresponding [[RpcEndpoint.receiveAndReply)]] and return a
    * [[AbortableRpcFuture]] to receive the reply within the specified timeout.
    * The [[AbortableRpcFuture]] instance wraps [[Future]] with additional `abort` method.
-   *
+   *  发送消息并返回一个可以中止的 Future 对象，允许用户在某些情况下中止该 RPC 调用
    * This method only sends the message once and never retries.
    */
   def askAbortable[T: ClassTag](message: Any, timeout: RpcTimeout): AbortableRpcFuture[T] = {
@@ -61,7 +61,7 @@ private[spark] abstract class RpcEndpointRef(conf: SparkConf)
    *
    * This method only sends the message once and never retries.
    */
-  def ask[T: ClassTag](message: Any, timeout: RpcTimeout): Future[T]
+  def ask[T: ClassTag](message: Any, timeout: RpcTimeout): Future[T]  //发送消息到目标 RpcEndpoint，并返回一个 Future，该 Future 会在超时或接收到响应时完成
 
   /**
    * Send a message to the corresponding [[RpcEndpoint.receiveAndReply)]] and return a [[Future]] to
@@ -82,7 +82,7 @@ private[spark] abstract class RpcEndpointRef(conf: SparkConf)
    * @tparam T type of the reply message
    * @return the reply message from the corresponding [[RpcEndpoint]]
    */
-  def askSync[T: ClassTag](message: Any): T = askSync(message, defaultAskTimeout)
+  def askSync[T: ClassTag](message: Any): T = askSync(message, defaultAskTimeout) //通过调用 askSync（带超时的版本）来同步获取消息的返回值
 
   /**
    * Send a message to the corresponding [[RpcEndpoint.receiveAndReply]] and get its result within a

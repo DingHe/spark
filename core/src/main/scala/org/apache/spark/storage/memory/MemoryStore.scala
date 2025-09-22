@@ -42,25 +42,25 @@ import org.apache.spark.util.collection.SizeTrackingVector
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 private sealed trait MemoryEntry[T] {
-  def size: Long
-  def memoryMode: MemoryMode
-  def classTag: ClassTag[T]
+  def size: Long //表示存储条目所占的内存大小
+  def memoryMode: MemoryMode //ON_HEAP（堆内存）或 OFF_HEAP（堆外内存）
+  def classTag: ClassTag[T] //用于运行时的类型标记（即 Scala 的类型擦除机制下获取泛型类型信息）
 }
 private case class DeserializedMemoryEntry[T](
-    value: Array[T],
+    value: Array[T], //表示以数组形式存储的反序列化数据
     size: Long,
     memoryMode: MemoryMode,
     classTag: ClassTag[T]) extends MemoryEntry[T] {
 }
 private case class SerializedMemoryEntry[T](
-    buffer: ChunkedByteBuffer,
+    buffer: ChunkedByteBuffer, //存储数据的序列化字节缓冲区
     memoryMode: MemoryMode,
     classTag: ClassTag[T]) extends MemoryEntry[T] {
   def size: Long = buffer.size
 }
 
 private[storage] trait BlockEvictionHandler {
-  /**
+  /** 用于处理 Spark 内存存储中的块移除。当内存存储达到上限时，负责将块从内存中移除（或将其放到磁盘）
    * Drop a block from memory, possibly putting it on disk if applicable. Called when the memory
    * store reaches its limit and needs to free up space.
    *
@@ -73,10 +73,10 @@ private[storage] trait BlockEvictionHandler {
    */
   private[storage] def dropFromMemory[T: ClassTag](
       blockId: BlockId,
-      data: () => Either[Array[T], ChunkedByteBuffer]): StorageLevel
+      data: () => Either[Array[T], ChunkedByteBuffer]): StorageLevel //表示该块的数据，可能是左值：反序列化的 Array[T]，右值：序列化的 ChunkedByteBuffer
 }
 
-/**
+/** 用于内存存储和管理数据块（blocks）的一部分，主要用于缓存RDD或广播变量等数据
  * Stores blocks in memory, either as Arrays of deserialized Java objects or as
  * serialized ByteBuffers.
  */
@@ -90,9 +90,9 @@ private[spark] class MemoryStore(
 
   // Note: all changes to memory allocations, notably putting blocks, evicting blocks, and
   // acquiring or releasing unroll memory, must be synchronized on `memoryManager`!
-
+  //存储数据块的容器，使用 BlockId 作为键，MemoryEntry 作为值。它保存了内存中所有的块信息，LinkedHashMap 的访问顺序是按访问顺序排列的，这有助于缓存替换策略
   private val entries = new LinkedHashMap[BlockId, MemoryEntry[_]](32, 0.75f, true)
-
+  //分别存储了当前任务在堆内存（on-heap）和非堆内存（off-heap）中为解包（unroll）数据所保留的内存量。Long 是任务的 ID，第二个 Long 是对应的内存大小
   // A mapping from taskAttemptId to amount of memory used for unrolling a block (in bytes)
   // All accesses of this map are assumed to have manually synchronized on `memoryManager`
   private val onHeapUnrollMemoryMap = mutable.HashMap[Long, Long]()
@@ -102,10 +102,10 @@ private[spark] class MemoryStore(
 
   // Initial memory to request before unrolling any block
   private val unrollMemoryThreshold: Long =
-    conf.get(STORAGE_UNROLL_MEMORY_THRESHOLD)
+    conf.get(STORAGE_UNROLL_MEMORY_THRESHOLD)  //初始的内存阈值，用于在解包数据之前申请内存。如果内存不足，将无法进行解包操作
 
   /** Total amount of memory available for storage, in bytes. */
-  private def maxMemory: Long = {
+  private def maxMemory: Long = {  //系统可用于存储数据块的最大内存，包括堆内存和非堆内存
     memoryManager.maxOnHeapStorageMemory + memoryManager.maxOffHeapStorageMemory
   }
 
@@ -118,17 +118,17 @@ private[spark] class MemoryStore(
   logInfo("MemoryStore started with capacity %s".format(Utils.bytesToString(maxMemory)))
 
   /** Total storage memory used including unroll memory, in bytes. */
-  private def memoryUsed: Long = memoryManager.storageMemoryUsed
+  private def memoryUsed: Long = memoryManager.storageMemoryUsed //返回当前使用的存储内存（包括解包内存）
 
   /**
    * Amount of storage memory, in bytes, used for caching blocks.
    * This does not include memory used for unrolling.
    */
-  private def blocksMemoryUsed: Long = memoryManager.synchronized {
+  private def blocksMemoryUsed: Long = memoryManager.synchronized { //仅返回缓存数据块所使用的存储内存，不包括解包内存
     memoryUsed - currentUnrollMemory
   }
 
-  def getSize(blockId: BlockId): Long = {
+  def getSize(blockId: BlockId): Long = { //获取特定数据块的内存大小
     entries.synchronized {
       entries.get(blockId).size
     }
@@ -139,7 +139,7 @@ private[spark] class MemoryStore(
    * put it into MemoryStore. Otherwise, the ByteBuffer won't be created.
    *
    * The caller should guarantee that `size` is correct.
-   *
+   * 将数据块作为字节数组存储在内存中
    * @return true if the put() succeeded, false otherwise.
    */
   def putBytes[T: ClassTag](
@@ -152,7 +152,7 @@ private[spark] class MemoryStore(
       // We acquired enough memory for the block, so go ahead and put it
       val bytes = _bytes()
       assert(bytes.size == size)
-      val entry = new SerializedMemoryEntry[T](bytes, memoryMode, implicitly[ClassTag[T]])
+      val entry = new SerializedMemoryEntry[T](bytes, memoryMode, implicitly[ClassTag[T]]) //如果有足够的内存，则将字节数组存储到内存中，并更新 entries
       entries.synchronized {
         entries.put(blockId, entry)
       }
@@ -172,7 +172,7 @@ private[spark] class MemoryStore(
    * whether there is enough free memory. If the block is successfully materialized, then the
    * temporary unroll memory used during the materialization is "transferred" to storage memory,
    * so we won't acquire more memory than is actually needed to store the block.
-   *
+   * 尝试将迭代器中的数据以块的形式存储在内存中
    * @param blockId The block id.
    * @param values The values which need be stored.
    * @param classTag the [[ClassTag]] for the block.
@@ -218,7 +218,7 @@ private[spark] class MemoryStore(
     } else {
       unrollMemoryUsedByThisBlock += initialMemoryThreshold
     }
-
+    //把迭代器的内容展开
     // Unroll this block safely, checking whether we have exceeded our threshold periodically
     while (values.hasNext && keepUnrolling) {
       valuesHolder.storeValue(values.next())
@@ -238,7 +238,7 @@ private[spark] class MemoryStore(
       }
       elementsUnrolled += 1
     }
-
+    //如果成功，将解包后的数据块存储在内存中
     // Make sure that we have enough memory to store the block. By this point, it is possible that
     // the block's actual memory usage has exceeded the unroll memory by a small amount, so we
     // perform one final call to attempt to allocate additional memory if necessary.
@@ -283,7 +283,7 @@ private[spark] class MemoryStore(
 
   /**
    * Attempt to put the given block in memory store as values.
-   *
+   * 将数据块作为值存储在内存中（不经过序列化）
    * @return in case of success, the estimated size of the stored data. In case of failure, return
    *         an iterator containing the values of the block. The returned iterator will be backed
    *         by the combination of the partially-unrolled block and the remaining elements of the
@@ -319,7 +319,7 @@ private[spark] class MemoryStore(
 
   /**
    * Attempt to put the given block in memory store as bytes.
-   *
+   * 将数据块作为字节存储在内存中（经过序列化）
    * @return in case of success, the estimated size of the stored data. In case of failure,
    *         return a handle which allows the caller to either finish the serialization by
    *         spilling to disk or to deserialize the partially-serialized block and reconstruct
@@ -365,7 +365,7 @@ private[spark] class MemoryStore(
           classTag))
     }
   }
-
+  //返回存储在内存中的数据块字节数组（仅适用于序列化的块）
   def getBytes(blockId: BlockId): Option[ChunkedByteBuffer] = {
     val entry = entries.synchronized { entries.get(blockId) }
     entry match {
@@ -376,7 +376,7 @@ private[spark] class MemoryStore(
       case SerializedMemoryEntry(bytes, _, _) => Some(bytes)
     }
   }
-
+  //返回存储的值（仅适用于反序列化的块）
   def getValues(blockId: BlockId): Option[Iterator[_]] = {
     val entry = entries.synchronized { entries.get(blockId) }
     entry match {
@@ -389,7 +389,7 @@ private[spark] class MemoryStore(
         x.map(_.iterator)
     }
   }
-
+  //释放内存条目，根据数据块类型释放内存（字节缓冲区或反序列化的值）
   def freeMemoryEntry[T <: MemoryEntry[_]](entry: T): Unit = {
     entry match {
       case SerializedMemoryEntry(buffer, _, _) => buffer.dispose()
@@ -405,7 +405,7 @@ private[spark] class MemoryStore(
       }
     }
   }
-
+  //移除内存中的数据块。如果成功，会释放相应的存储内存
   def remove(blockId: BlockId): Boolean = memoryManager.synchronized {
     val entry = entries.synchronized {
       entries.remove(blockId)
@@ -420,7 +420,7 @@ private[spark] class MemoryStore(
       false
     }
   }
-
+  //清除 MemoryStore 中的所有数据块并释放相应内存
   def clear(): Unit = memoryManager.synchronized {
     entries.synchronized {
       entries.values.asScala.foreach(freeMemoryEntry)
@@ -444,7 +444,7 @@ private[spark] class MemoryStore(
    * Can fail if either the block is bigger than our memory or it would require replacing
    * another block from the same RDD (which leads to a wasteful cyclic replacement pattern for
    * RDDs that don't fit into memory that we want to avoid).
-   *
+   * 尝试通过逐出块来释放指定空间，以便为新块腾出内存
    * @param blockId the ID of the block we are freeing space for, if any
    * @param space the size of this block
    * @param memoryMode the type of memory to free (on- or off-heap)
@@ -560,7 +560,7 @@ private[spark] class MemoryStore(
 
   /**
    * Reserve memory for unrolling the given block for this task.
-   *
+   * 为当前任务的解包操作预留内存
    * @return whether the request is granted.
    */
   def reserveUnrollMemoryForThisTask(
@@ -568,20 +568,20 @@ private[spark] class MemoryStore(
       memory: Long,
       memoryMode: MemoryMode): Boolean = {
     memoryManager.synchronized {
-      val success = memoryManager.acquireUnrollMemory(blockId, memory, memoryMode)
+      val success = memoryManager.acquireUnrollMemory(blockId, memory, memoryMode)  //为展开操作申请内存
       if (success) {
         val taskAttemptId = currentTaskAttemptId()
         val unrollMemoryMap = memoryMode match {
           case MemoryMode.ON_HEAP => onHeapUnrollMemoryMap
           case MemoryMode.OFF_HEAP => offHeapUnrollMemoryMap
         }
-        unrollMemoryMap(taskAttemptId) = unrollMemoryMap.getOrElse(taskAttemptId, 0L) + memory
+        unrollMemoryMap(taskAttemptId) = unrollMemoryMap.getOrElse(taskAttemptId, 0L) + memory  //申请到则加入到map里面
       }
       success
     }
   }
 
-  /**
+  /** 释放解包操作使用的内存
    * Release memory used by this task for unrolling blocks.
    * If the amount is not specified, remove the current task's allocation altogether.
    */
@@ -655,13 +655,13 @@ private[spark] class MemoryStore(
 }
 
 private trait MemoryEntryBuilder[T] {
-  def preciseSize: Long
-  def build(): MemoryEntry[T]
+  def preciseSize: Long //返回内存条目的精确大小
+  def build(): MemoryEntry[T]  //构建一个 MemoryEntry
 }
 
 private trait ValuesHolder[T] {
-  def storeValue(value: T): Unit
-  def estimatedSize(): Long
+  def storeValue(value: T): Unit  //存储单个值
+  def estimatedSize(): Long  //返回估算的大小
 
   /**
    * Note: After this method is called, the ValuesHolder is invalid, we can't store data and
@@ -669,10 +669,10 @@ private trait ValuesHolder[T] {
    * @return a MemoryEntryBuilder which is used to build a memory entry and get the stored data
    *         size.
    */
-  def getBuilder(): MemoryEntryBuilder[T]
+  def getBuilder(): MemoryEntryBuilder[T]  //返回一个 MemoryEntryBuilder，用于创建存储条目并获取精确大小
 }
 
-/**
+/** 是 ValuesHolder 的实现类，负责存储反序列化数据
  * A holder for storing the deserialized values.
  */
 private class DeserializedValuesHolder[T](
@@ -702,7 +702,7 @@ private class DeserializedValuesHolder[T](
   }
 }
 
-/**
+/**  负责存储序列化数据
  * A holder for storing the serialized values.
  */
 private class SerializedValuesHolder[T](
@@ -744,7 +744,7 @@ private class SerializedValuesHolder[T](
   }
 }
 
-/**
+/** 用于处理部分反序列化的数据
  * The result of a failed [[MemoryStore.putIteratorAsValues()]] call.
  *
  * @param memoryStore  the memoryStore, used for freeing memory.
@@ -758,8 +758,8 @@ private[storage] class PartiallyUnrolledIterator[T](
     memoryStore: MemoryStore,
     memoryMode: MemoryMode,
     unrollMemory: Long,
-    private[this] var unrolled: Iterator[T],
-    rest: Iterator[T])
+    private[this] var unrolled: Iterator[T], //部分反序列化的数据
+    rest: Iterator[T]) //剩余未处理的数据
   extends Iterator[T] {
 
   private def releaseUnrollMemory(): Unit = {
@@ -798,7 +798,7 @@ private[storage] class PartiallyUnrolledIterator[T](
   }
 }
 
-/**
+/** 通过设置OutputStream，可以重定向到不同的sink
  * A wrapper which allows an open [[OutputStream]] to be redirected to a different sink.
  */
 private[storage] class RedirectableOutputStream extends OutputStream {
@@ -813,7 +813,7 @@ private[storage] class RedirectableOutputStream extends OutputStream {
 
 /**
  * The result of a failed [[MemoryStore.putIteratorAsBytes()]] call.
- *
+ * 用于处理部分序列化的数据块
  * @param memoryStore the MemoryStore, used for freeing memory.
  * @param serializerManager the SerializerManager, used for deserializing values.
  * @param blockId the block id.

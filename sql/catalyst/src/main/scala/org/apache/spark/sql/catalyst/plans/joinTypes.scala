@@ -57,37 +57,37 @@ sealed abstract class InnerLike extends JoinType {
   def explicitCartesian: Boolean
 }
 
-case object Inner extends InnerLike {
+case object Inner extends InnerLike {  //内连接
   override def explicitCartesian: Boolean = false
   override def sql: String = "INNER"
 }
 
-case object Cross extends InnerLike {
+case object Cross extends InnerLike {  //笛卡尔积
   override def explicitCartesian: Boolean = true
   override def sql: String = "CROSS"
 }
 
-case object LeftOuter extends JoinType {
+case object LeftOuter extends JoinType {  //左外连接
   override def sql: String = "LEFT OUTER"
 }
 
-case object RightOuter extends JoinType {
+case object RightOuter extends JoinType {  //右外连接
   override def sql: String = "RIGHT OUTER"
 }
 
-case object FullOuter extends JoinType {
+case object FullOuter extends JoinType { //全连接
   override def sql: String = "FULL OUTER"
 }
 
-case object LeftSemi extends JoinType {
+case object LeftSemi extends JoinType {  //左半连接
   override def sql: String = "LEFT SEMI"
 }
 
-case object LeftAnti extends JoinType {
+case object LeftAnti extends JoinType {  //左反连接
   override def sql: String = "LEFT ANTI"
 }
 
-case class ExistenceJoin(exists: Attribute) extends JoinType {
+case class ExistenceJoin(exists: Attribute) extends JoinType {  //存在连接
   override def sql: String = {
     // This join type is only used in the end of optimizer and physical plans, we will not
     // generate SQL for this join type

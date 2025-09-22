@@ -42,6 +42,7 @@ object BucketingUtils {
   }
 
   // Given bucketColumn, numBuckets and value, returns the corresponding bucketId
+  //给定桶列、桶数量和值，返回对应的桶ID
   def getBucketIdFromValue(bucketColumn: Attribute, numBuckets: Int, value: Any): Int = {
     val mutableInternalRow = new SpecificInternalRow(Seq(bucketColumn.dataType))
     mutableInternalRow.update(0, value)

@@ -22,7 +22,7 @@ import io.netty.channel.Channel;
 import org.apache.spark.network.buffer.ManagedBuffer;
 import org.apache.spark.network.client.TransportClient;
 
-/**
+/** 主要职责是管理流的数据块（chunk），处理传输请求，并确保客户端在请求数据块时得到适当的响应。
  * The StreamManager is used to fetch individual chunks from a stream. This is used in
  * {@link TransportRequestHandler} in order to respond to fetchChunk() requests. Creation of the
  * stream is outside the scope of the transport layer, but a given stream is guaranteed to be read
@@ -38,7 +38,7 @@ public abstract class StreamManager {
    *
    * Chunks may be requested in any order, and requests may be repeated, but it is not required
    * that implementations support this behavior.
-   *
+   * 根据给定的 streamId 和 chunkIndex 返回相应的数据块。每个流只能由一个客户端连接进行读取，因此该方法在特定流上不会并行调用
    * The returned ManagedBuffer will be release()'d after being written to the network.
    *
    * @param streamId id of a stream that has been previously registered with the StreamManager.
@@ -52,7 +52,7 @@ public abstract class StreamManager {
    *
    * Note the <code>streamId</code> argument is not related to the similarly named argument in the
    * {@link #getChunk(long, int)} method.
-   *
+   * 该方法在响应 stream() 请求时被调用。返回一个用于流式传输数据的 ManagedBuffer
    * @param streamId id of a stream that has been previously registered with the StreamManager.
    * @return A managed buffer for the stream, or null if the stream was not found.
    */
@@ -60,7 +60,7 @@ public abstract class StreamManager {
     throw new UnsupportedOperationException();
   }
 
-  /**
+  /** 该方法在 TCP 连接终止时被调用。它通知 StreamManager 不再从该连接的流中读取数据，因此可以进行清理工作
    * Indicates that the given channel has been terminated. After this occurs, we are guaranteed not
    * to read from the associated streams again, so any state can be cleaned up.
    */
@@ -68,19 +68,19 @@ public abstract class StreamManager {
 
   /**
    * Verify that the client is authorized to read from the given stream.
-   *
+   * 该方法用于检查给定的客户端是否有权读取指定的流数据。如果客户端未获得授权，抛出 SecurityException
    * @throws SecurityException If client is not authorized.
    */
-  public void checkAuthorization(TransportClient client, long streamId) { }
+  public void checkAuthorization(TransportClient client, long streamId) { } //client：表示请求流数据的客户端
 
-  /**
+  /** 该方法返回当前正在传输且尚未完成的数据块数
    * Return the number of chunks being transferred and not finished yet in this StreamManager.
    */
   public long chunksBeingTransferred() {
     return 0;
   }
 
-  /**
+  /** 该方法在开始发送某个数据块时被调用，提供流的 streamId。它表示当前开始向客户端发送该流的一个块
    * Called when start sending a chunk.
    */
   public void chunkBeingSent(long streamId) { }
@@ -90,7 +90,7 @@ public abstract class StreamManager {
    */
   public void streamBeingSent(String streamId) { }
 
-  /**
+  /** 它表示当前开始向客户端发送整个流
    * Called when a chunk is successfully sent.
    */
   public void chunkSent(long streamId) { }

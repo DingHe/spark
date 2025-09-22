@@ -404,7 +404,7 @@ private[spark] object ResourceUtils extends Logging {
     throw new SparkException(s"None of the discovery plugins returned ResourceInformation for " +
       s"${resourceRequest.id.resourceName}")
   }
-
+  //主要是确定执行器的cpu数量要比任务需要的cpu大
   def validateTaskCpusLargeEnough(sparkConf: SparkConf, execCores: Int, taskCpus: Int): Boolean = {
     // Number of cores per executor must meet at least one task requirement.
     if (execCores < taskCpus) {

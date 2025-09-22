@@ -34,6 +34,7 @@ import org.apache.spark.annotation.Evolving;
  *
  * @since 3.0.0
  */
+//表示 Spark 任务中可序列化的输入分区，并用于在 Executor 端创建 PartitionReader 以实际读取数据
 @Evolving
 public interface InputPartition extends Serializable {
 
@@ -50,6 +51,8 @@ public interface InputPartition extends Serializable {
    * If this method fails (by throwing an exception), the action will fail and no Spark job will be
    * submitted.
    */
+  //返回一个首选执行节点（hostname）的列表，Spark 可能会优先在这些节点上运行任务，但不会强制执行
+  //默认实现返回 new String[0]，表示 该分区可以在任意计算节点上执行，没有特定的执行偏好
   default String[] preferredLocations() {
     return new String[0];
   }

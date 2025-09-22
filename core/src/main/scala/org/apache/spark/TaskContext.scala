@@ -49,7 +49,7 @@ object TaskContext {
       tc.partitionId()
     }
   }
-
+  //任务执行的上下文
   private[this] val taskContext: ThreadLocal[TaskContext] = new ThreadLocal[TaskContext]
 
   // Note: protected[spark] instead of private[spark] to prevent the following two from

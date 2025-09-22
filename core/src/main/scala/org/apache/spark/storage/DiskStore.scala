@@ -39,7 +39,7 @@ import org.apache.spark.unsafe.array.ByteArrayMethods
 import org.apache.spark.util.Utils
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-/**
+/** 用于将 Spark 的数据块存储在磁盘上。具体来说，它用于将 BlockManager 管理的块写入磁盘并提供读取、删除和其他相关操作
  * Stores BlockManager blocks on disk.
  */
 private[spark] class DiskStore(
@@ -47,18 +47,18 @@ private[spark] class DiskStore(
     diskManager: DiskBlockManager,
     securityManager: SecurityManager) extends Logging {
 
-  private val minMemoryMapBytes = conf.get(config.STORAGE_MEMORY_MAP_THRESHOLD)
-  private val maxMemoryMapBytes = conf.get(config.MEMORY_MAP_LIMIT_FOR_TESTS)
-  private val blockSizes = new ConcurrentHashMap[BlockId, Long]()
+  private val minMemoryMapBytes = conf.get(config.STORAGE_MEMORY_MAP_THRESHOLD)  //最小内存映射大小，控制内存映射文件时的内存大小阈值
+  private val maxMemoryMapBytes = conf.get(config.MEMORY_MAP_LIMIT_FOR_TESTS) //获取的最大内存映射大小，控制内存映射文件时的最大内存大小
+  private val blockSizes = new ConcurrentHashMap[BlockId, Long]()  //存储每个块的大小
 
   private val shuffleServiceFetchRddEnabled = conf.get(config.SHUFFLE_SERVICE_ENABLED) &&
-    conf.get(config.SHUFFLE_SERVICE_FETCH_RDD_ENABLED)
+    conf.get(config.SHUFFLE_SERVICE_FETCH_RDD_ENABLED)  //是否启用了 shuffle 服务并允许从 shuffle 服务中获取 RDD 数据。如果启用，则会在存储文件时将文件权限设置为“世界可读”
 
   def getSize(blockId: BlockId): Long = blockSizes.get(blockId)
 
   /**
    * Invokes the provided callback function to write the specific block.
-   *
+   * 将数据块写入磁盘。首先检查该块是否已经存在，如果存在则尝试删除旧的文件，再写入新文件。writeFunc 是一个函数，接受 WritableByteChannel 作为参数，用于执行具体的写入操作
    * @throws IllegalStateException if the block already exists in the disk store.
    */
   def put(blockId: BlockId)(writeFunc: WritableByteChannel => Unit): Unit = {
@@ -117,7 +117,7 @@ private[spark] class DiskStore(
   def getBytes(blockId: BlockId): BlockData = {
     getBytes(diskManager.getFile(blockId.name), getSize(blockId))
   }
-
+  //根据 BlockId 获取块的数据。返回值是一个 BlockData 类型的对象，该对象包含了块数据的具体读取方式
   def getBytes(f: File, blockSize: Long): BlockData = securityManager.getIOEncryptionKey() match {
     case Some(key) =>
       // Encrypted blocks cannot be memory mapped; return a special object that does decryption
@@ -151,7 +151,7 @@ private[spark] class DiskStore(
     val targetFile = diskManager.getFile(targetBlockId.name)
     FileUtils.moveFile(sourceFile, targetFile)
   }
-
+  //磁盘管理器是否存在该块
   def contains(blockId: BlockId): Boolean = diskManager.containsBlock(blockId)
 
   private def openForWrite(file: File): WritableByteChannel = {

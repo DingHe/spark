@@ -37,6 +37,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap;
  *
  * @since 3.0.0
  */
+//属于 v2 版本数据源接口（Spark SQL 数据源 v2 API）。该接口设计用于支持无实际目录（Catalog）的数据源
 @Evolving
 public interface TableProvider {
 
@@ -46,6 +47,8 @@ public interface TableProvider {
    * @param options an immutable case-insensitive string-to-string map that can identify a table,
    *                e.g. file path, Kafka topic name, etc.
    */
+  //用于推断表的模式（Schema）
+  //大小写不敏感的字符串到字符串的映射，包含标识表的选项，比如文件路径、Kafka 主题名称等。通过这些选项，Spark 确定要操作的表
   StructType inferSchema(CaseInsensitiveStringMap options);
 
   /**
@@ -57,6 +60,8 @@ public interface TableProvider {
    * @param options an immutable case-insensitive string-to-string map that can identify a table,
    *                e.g. file path, Kafka topic name, etc.
    */
+  //用于推断表的分区信息
+  //默认实现返回一个空的 Transform 数组，表示不支持分区
   default Transform[] inferPartitioning(CaseInsensitiveStringMap options) {
     return new Transform[0];
   }
@@ -90,6 +95,8 @@ public interface TableProvider {
    * if this source has expensive schema/partitioning inference and wants external table metadata
    * to avoid inference.
    */
+  //返回 true 表示该数据源支持外部表元数据的传入
+  //当数据源能够接受外部表元数据时，Spark 可以避免推断表的模式和分区信息，直接使用外部传入的元数据
   default boolean supportsExternalMetadata() {
     return false;
   }

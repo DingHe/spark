@@ -90,7 +90,7 @@ object Encoders {
    *
    * @since 1.6.0
    */
-  def STRING: Encoder[java.lang.String] = ExpressionEncoder()
+  def STRING: Encoder[java.lang.String] = ExpressionEncoder()  //通过反射的方式获取
 
   /**
    * An encoder for nullable decimal type.

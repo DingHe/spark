@@ -26,7 +26,7 @@ import org.apache.spark.sql.execution.datasources.{DataSourceStrategy, DataSourc
 import org.apache.spark.sql.internal.connector.SupportsPushDownCatalystFilters
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
-
+//处理文件格式的数据源时用于构建 Scan 的抽象类
 abstract class FileScanBuilder(
     sparkSession: SparkSession,
     fileIndex: PartitioningAwareFileIndex,
@@ -34,14 +34,14 @@ abstract class FileScanBuilder(
   extends ScanBuilder
     with SupportsPushDownRequiredColumns
     with SupportsPushDownCatalystFilters {
-  private val partitionSchema = fileIndex.partitionSchema
-  private val isCaseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
-  protected val supportsNestedSchemaPruning = false
-  protected var requiredSchema = StructType(dataSchema.fields ++ partitionSchema.fields)
-  protected var partitionFilters = Seq.empty[Expression]
-  protected var dataFilters = Seq.empty[Expression]
-  protected var pushedDataFilters = Array.empty[Filter]
-
+  private val partitionSchema = fileIndex.partitionSchema  //存储文件索引 (fileIndex) 中的分区模式（Schema
+  private val isCaseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis  //指示 Spark 是否区分大小写
+  protected val supportsNestedSchemaPruning = false  //表示该 FileScanBuilder 是否支持嵌套字段的裁剪（默认不支持）
+  protected var requiredSchema = StructType(dataSchema.fields ++ partitionSchema.fields)  //存储查询所需的字段，包括数据字段 (dataSchema.fields) 和分区字段
+  protected var partitionFilters = Seq.empty[Expression]  //存储针对分区列的过滤条件（由 Catalyst 表达式表示）
+  protected var dataFilters = Seq.empty[Expression]  //存储针对数据列的过滤条件（Catalyst 表达式）
+  protected var pushedDataFilters = Array.empty[Filter] //存储成功下推到文件数据源的过滤条件（转换为 V1 Filter）
+  //裁剪查询所需的列，以减少数据扫描量
   override def pruneColumns(requiredSchema: StructType): Unit = {
     // [SPARK-30107] While `requiredSchema` might have pruned nested columns,
     // the actual data schema of this scan is determined in `readDataSchema`.
@@ -49,26 +49,30 @@ abstract class FileScanBuilder(
     // use `requiredSchema` as a reference and prune only top-level columns.
     this.requiredSchema = requiredSchema
   }
-
+  //确定 Scan 需要读取的实际数据列
   protected def readDataSchema(): StructType = {
     val requiredNameSet = createRequiredNameSet()
     val schema = if (supportsNestedSchemaPruning) requiredSchema else dataSchema
     val fields = schema.fields.filter { field =>
+      //仅保留 requiredNameSet 里存在的字段，且不能是 partitionNameSet 里的字段（因为分区字段存储在路径中，不需要读取数据）
       val colName = PartitioningUtils.getColName(field, isCaseSensitive)
       requiredNameSet.contains(colName) && !partitionNameSet.contains(colName)
     }
     StructType(fields)
   }
-
+  //确定 Scan 需要的分区字段
   def readPartitionSchema(): StructType = {
     val requiredNameSet = createRequiredNameSet()
     val fields = partitionSchema.fields.filter { field =>
+      //过滤 partitionSchema 中的字段，仅保留 requiredSchema 里需要的字段
       val colName = PartitioningUtils.getColName(field, isCaseSensitive)
       requiredNameSet.contains(colName)
     }
     StructType(fields)
   }
-
+  //解析 Catalyst 过滤条件，将其拆分为
+  //分区过滤器 (partitionFilters)：直接用于查询优化，不需要下推到数据源
+  //数据过滤器 (dataFilters)：可能会被下推到数据源以减少数据读取量
   override def pushFilters(filters: Seq[Expression]): Seq[Expression] = {
     val (deterministicFilters, nonDeterminsticFilters) = filters.partition(_.deterministic)
     val (partitionFilters, dataFilters) =
@@ -97,7 +101,7 @@ abstract class FileScanBuilder(
    * File source needs to implement this method to push down data filters.
    */
   protected def pushDataFilters(dataFilters: Array[Filter]): Array[Filter] = Array.empty[Filter]
-
+  //返回需要的列，并根据是否区分大小写做转换
   private def createRequiredNameSet(): Set[String] =
     requiredSchema.fields.map(PartitioningUtils.getColName(_, isCaseSensitive)).toSet
 

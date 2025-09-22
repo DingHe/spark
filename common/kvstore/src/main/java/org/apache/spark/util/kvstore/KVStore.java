@@ -62,6 +62,9 @@ import org.apache.spark.annotation.Private;
  * KVStore instances are thread-safe for both reads and writes.
  * </p>
  */
+// 用于本地键/值存储的抽象接口
+// 主要目的是为 Spark 提供一个高效且可靠的方式来持久化应用程序数据
+//Spark 内部被广泛用于历史服务器（History Server）和事件日志（Event Log）功能，将事件日志中的事件数据（如作业、阶段、任务信息等）高效地存储在本地文件系统中，以便后续查询和分析
 @Private
 public interface KVStore extends Closeable {
 
@@ -73,11 +76,13 @@ public interface KVStore extends Closeable {
    * don't need to define their own keys for this information.
    * </p>
    */
+  //从存储中读取应用程序特定的元数据
   <T> T getMetadata(Class<T> klass) throws Exception;
 
   /**
    * Writes the given value in the store metadata key.
    */
+  //将一个对象写入存储的元数据键中。这是设置应用程序元数据的便捷方法，避免了应用自己管理元数据键
   void setMetadata(Object value) throws Exception;
 
   /**
@@ -87,6 +92,8 @@ public interface KVStore extends Closeable {
    *                   are not allowed.
    * @throws java.util.NoSuchElementException If an element with the given key does not exist.
    */
+
+  // 根据对象的自然键（naturalKey）读取一个特定的对象实例
   <T> T read(Class<T> klass, Object naturalKey) throws Exception;
 
   /**
@@ -100,6 +107,7 @@ public interface KVStore extends Closeable {
    *
    * @param value The object to write.
    */
+  // 将给定的对象写入存储，并自动处理其索引。如果对象已存在，会更新现有索引。
   void write(Object value) throws Exception;
 
   /**
@@ -110,21 +118,26 @@ public interface KVStore extends Closeable {
    *                   are not allowed.
    * @throws java.util.NoSuchElementException If an element with the given key does not exist.
    */
+  // 从存储中移除一个对象及其所有相关数据（包括索引）
   void delete(Class<?> type, Object naturalKey) throws Exception;
 
   /**
    * Returns a configurable view for iterating over entities of the given type.
    */
+  //返回一个可配置的视图对象（KVStoreView），用于迭代给定类型的所有实体
   <T> KVStoreView<T> view(Class<T> type) throws Exception;
 
   /**
    * Returns the number of items of the given type currently in the store.
    */
+  //返回存储中给定类型的所有项目的数量
   long count(Class<?> type) throws Exception;
 
   /**
    * Returns the number of items of the given type which match the given indexed value.
    */
+  // 返回存储中，其特定索引（index）的值（indexedValue）匹配给定值的项目数量。
+  // 这使得可以快速查询满足特定索引条件的对象数量
   long count(Class<?> type, String index, Object indexedValue) throws Exception;
 
   /**

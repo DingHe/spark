@@ -26,6 +26,9 @@ import org.apache.spark.sql.catalyst.trees.TreeNode
  * be used for execution. If this strategy does not apply to the given logical operation then an
  * empty list should be returned.
  */
+// 用于策略模式的一个抽象类，用于将逻辑计划转换为物理计划。
+// 物理计划是 Spark 查询优化过程中重要的一步，它指定了实际执行查询所需的操作和步骤。
+// 这个类是所有物理执行策略的基类
 abstract class GenericStrategy[PhysicalPlan <: TreeNode[PhysicalPlan]] extends Logging {
 
   /**
@@ -33,8 +36,9 @@ abstract class GenericStrategy[PhysicalPlan <: TreeNode[PhysicalPlan]] extends L
    * filled in automatically by the QueryPlanner using the other execution strategies that are
    * available.
    */
+  //用于为给定的逻辑计划返回一个占位符物理计划。占位符通常表示一个尚未完全展开的执行计划，在后续的优化过程中会被其他策略填充成具体的物理执行计划
   protected def planLater(plan: LogicalPlan): PhysicalPlan
-
+  //用于应用当前的策略，将一个逻辑计划转换为一个或多个物理计划。如果该策略不适用于给定的逻辑计划，它应该返回一个空的物理计划列表
   def apply(plan: LogicalPlan): Seq[PhysicalPlan]
 }
 
@@ -52,13 +56,16 @@ abstract class GenericStrategy[PhysicalPlan <: TreeNode[PhysicalPlan]] extends L
  *
  * @tparam PhysicalPlan The type of physical plan produced by this [[QueryPlanner]]
  */
+//查询规划器类 QueryPlanner 的定义，主要用于将逻辑计划（LogicalPlan）转换为物理计划（PhysicalPlan）。
+// 物理计划是执行查询的实际步骤和顺序
 abstract class QueryPlanner[PhysicalPlan <: TreeNode[PhysicalPlan]] {
   /** A list of execution strategies that can be used by the planner */
-  def strategies: Seq[GenericStrategy[PhysicalPlan]]
+  def strategies: Seq[GenericStrategy[PhysicalPlan]]  //表示所有的执行策略
 
   def plan(plan: LogicalPlan): Iterator[PhysicalPlan] = {
     // Obviously a lot to do here still...
 
+    //遍历所有策略，调用每个策略来生成物理计划的候选方案
     // Collect physical plan candidates.
     val candidates = strategies.iterator.flatMap(_(plan))
 
@@ -69,18 +76,20 @@ abstract class QueryPlanner[PhysicalPlan <: TreeNode[PhysicalPlan]] {
 
       if (placeholders.isEmpty) {
         // Take the candidate as is because it does not contain placeholders.
+        //如果当前候选计划没有占位符，则直接返回该计划作为有效计划
         Iterator(candidate)
       } else {
         // Plan the logical plan marked as [[planLater]] and replace the placeholders.
         placeholders.iterator.foldLeft(Iterator(candidate)) {
           case (candidatesWithPlaceholders, (placeholder, logicalPlan)) =>
             // Plan the logical plan for the placeholder.
+            //递归地为占位符的逻辑计划生成物理计划
             val childPlans = this.plan(logicalPlan)
 
             candidatesWithPlaceholders.flatMap { candidateWithPlaceholders =>
               childPlans.map { childPlan =>
                 // Replace the placeholder by the child plan
-                candidateWithPlaceholders.transformUp {
+                candidateWithPlaceholders.transformUp {  //将递归生成的物理计划替换到原计划中的占位符位置
                   case p if p.eq(placeholder) => childPlan
                 }
               }
@@ -98,8 +107,11 @@ abstract class QueryPlanner[PhysicalPlan <: TreeNode[PhysicalPlan]] {
    * Collects placeholders marked using [[GenericStrategy#planLater planLater]]
    * by [[strategies]].
    */
+  //收集物理计划中的占位符，标记了哪些部分的计划需要后续进一步的规划（即那些标记为 planLater 的部分）
+  //返回一个包含占位符和其对应逻辑计划（LogicalPlan）的元组列表
   protected def collectPlaceholders(plan: PhysicalPlan): Seq[(PhysicalPlan, LogicalPlan)]
 
   /** Prunes bad plans to prevent combinatorial explosion. */
+  //修剪无效的物理计划
   protected def prunePlans(plans: Iterator[PhysicalPlan]): Iterator[PhysicalPlan]
 }

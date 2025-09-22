@@ -59,22 +59,23 @@ import org.apache.spark.util.collection.BitSet
 object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
 
   // should prune buckets iff num buckets is greater than 1 and there is only one bucket column
+  //用于判断是否可以修剪桶（Bucket）,满足条件 桶只有一个列   桶的数量大于1
   private def shouldPruneBuckets(bucketSpec: Option[BucketSpec]): Boolean = {
     bucketSpec match {
       case Some(spec) => spec.bucketColumnNames.length == 1 && spec.numBuckets > 1
       case None => false
     }
   }
-
+  //用于根据给定的表达式 expr 和桶列（bucketColumnName）以及桶的数量（numBuckets），计算出需要扫描的桶的集合
   private def getExpressionBuckets(
-      expr: Expression,
-      bucketColumnName: String,
-      numBuckets: Int): BitSet = {
-
+      expr: Expression, //表示用于过滤或匹配桶的表达式
+      bucketColumnName: String, //表示桶的列名。这个列用于根据表达式来分配数据到特定的桶中
+      numBuckets: Int): BitSet = { //表示数据表中的桶数
+    //受属性 attr 和某个值 v，通过调用 BucketingUtils.getBucketIdFromValue 计算并返回该值应该落入的桶编号
     def getBucketNumber(attr: Attribute, v: Any): Int = {
       BucketingUtils.getBucketIdFromValue(attr, numBuckets, v)
     }
-
+    //使用 getBucketNumber 计算每个值的桶编号，并返回所有桶编号的集合
     def getBucketSetFromIterable(attr: Attribute, iter: Iterable[Any]): BitSet = {
       val matchedBuckets = new BitSet(numBuckets)
       iter
@@ -82,7 +83,7 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
         .foreach(bucketNum => matchedBuckets.set(bucketNum))
       matchedBuckets
     }
-
+    //计算出该值对应的桶编号，并将该桶编号放入 BitSet 集合中
     def getBucketSetFromValue(attr: Attribute, v: Any): BitSet = {
       val matchedBuckets = new BitSet(numBuckets)
       matchedBuckets.set(getBucketNumber(attr, v))
@@ -90,46 +91,54 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
     }
 
     expr match {
+      //如果表达式是一个等式，且列名与桶列名匹配，则返回该值对应的桶编号
       case expressions.Equality(a: Attribute, Literal(v, _)) if a.name == bucketColumnName =>
         getBucketSetFromValue(a, v)
+      //如果表达式是 IN 操作符，且列名与桶列名匹配，则将列表中的每个值对应的桶编号放入集合中
       case expressions.In(a: Attribute, list)
         if list.forall(_.isInstanceOf[Literal]) && a.name == bucketColumnName =>
         getBucketSetFromIterable(a, list.map(e => e.eval(EmptyRow)))
+      //如果表达式是 InSet 操作符，且列名与桶列名匹配，则将集合中的每个值对应的桶编号放入集合中
       case expressions.InSet(a: Attribute, hset) if a.name == bucketColumnName =>
         getBucketSetFromIterable(a, hset)
+      //果表达式是 IS NULL 操作符，且列名与桶列名匹配，则返回 null 对应的桶编号
       case expressions.IsNull(a: Attribute) if a.name == bucketColumnName =>
         getBucketSetFromValue(a, null)
+      // 如果表达式是 IS NaN 操作符，且列名与桶列名匹配，且数据类型是 FloatType 或 DoubleType，则返回 NaN 对应的桶编号
       case expressions.IsNaN(a: Attribute)
         if a.name == bucketColumnName && a.dataType == FloatType =>
         getBucketSetFromValue(a, Float.NaN)
       case expressions.IsNaN(a: Attribute)
         if a.name == bucketColumnName && a.dataType == DoubleType =>
         getBucketSetFromValue(a, Double.NaN)
+      //如果表达式是 AND 或 OR 操作符，则递归地调用 getExpressionBuckets 对左右子表达式进行处理，合并它们的桶编号
       case expressions.And(left, right) =>
         getExpressionBuckets(left, bucketColumnName, numBuckets) &
           getExpressionBuckets(right, bucketColumnName, numBuckets)
       case expressions.Or(left, right) =>
         getExpressionBuckets(left, bucketColumnName, numBuckets) |
         getExpressionBuckets(right, bucketColumnName, numBuckets)
+      //如果表达式不匹配任何已知类型，默认返回所有桶编号
       case _ =>
         val matchedBuckets = new BitSet(numBuckets)
         matchedBuckets.setUntil(numBuckets)
         matchedBuckets
     }
   }
-
+  //根据提供的归一化过滤条件（normalizedFilters）和分桶规范（bucketSpec），生成一个应扫描的桶集合。它根据过滤条件判断哪些桶需要处理
   private def genBucketSet(
-      normalizedFilters: Seq[Expression],
-      bucketSpec: BucketSpec): Option[BitSet] = {
-    if (normalizedFilters.isEmpty) {
+      normalizedFilters: Seq[Expression], //表示归一化后的过滤条件
+      bucketSpec: BucketSpec): Option[BitSet] = {//，包含分桶配置
+    if (normalizedFilters.isEmpty) { //味着没有应用任何过滤，所有的桶都需要扫描
       return None
     }
 
-    val bucketColumnName = bucketSpec.bucketColumnNames.head
-    val numBuckets = bucketSpec.numBuckets
+    val bucketColumnName = bucketSpec.bucketColumnNames.head  //取分桶列名（bucketColumnName），通常是分桶的第一个列
+    val numBuckets = bucketSpec.numBuckets  //总的桶数
 
     val normalizedFiltersAndExpr = normalizedFilters
-      .reduce(expressions.And)
+      .reduce(expressions.And) //使用reduce方法将normalizedFilters中的过滤条件合并为一个AND表达式
+    //传入合并后的过滤条件（normalizedFiltersAndExpr）、分桶列名（bucketColumnName）和桶的总数（numBuckets），来获取一个BitSet，表示哪些桶需要被扫描
     val matchedBuckets = getExpressionBuckets(normalizedFiltersAndExpr, bucketColumnName,
       numBuckets)
 
@@ -143,10 +152,11 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
     if (numBucketsSelected == numBuckets) {
       None
     } else {
+      //如果只有部分桶被选择，返回Some(BitSet)，其中BitSet包含了需要扫描的桶的索引
       Some(matchedBuckets)
     }
   }
-
+  //主要目的是根据各种过滤条件和分桶信息，优化文件扫描的执行方式
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
     case ScanOperation(projects, stayUpFilters, filters,
       l @ LogicalRelation(fsRelation: HadoopFsRelation, _, table, _)) =>
@@ -156,11 +166,11 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
       //  - bucket keys only - optionally used to prune files to read
       //  - keys stored in the data only - optionally used to skip groups of data in files
       //  - filters that need to be evaluated again after the scan
-      val filterSet = ExpressionSet(filters)
+      val filterSet = ExpressionSet(filters) //将原始的过滤条件转换成 ExpressionSet，便于后续操作
 
       val normalizedFilters = DataSourceStrategy.normalizeExprs(
-        filters.filter(_.deterministic), l.output)
-
+        filters.filter(_.deterministic), l.output) //通过 normalizeExprs 函数对过滤条件进行归一化（过滤掉不确定的表达式，确保只有确定性表达式用于优化）
+      //获取当前表的分区列，用于分区过滤
       val partitionColumns =
         l.resolve(
           fsRelation.partitionSchema, fsRelation.sparkSession.sessionState.analyzer.resolver)
@@ -168,15 +178,18 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
 
       // this partitionKeyFilters should be the same with the ones being executed in
       // PruneFileSourcePartitions
+      //从归一化后的过滤条件中提取出可以用于分区剪裁的过滤器
       val partitionKeyFilters = DataSourceStrategy.getPushedDownFilters(partitionColumns,
         normalizedFilters)
 
       // subquery expressions are filtered out because they can't be used to prune buckets or pushed
       // down as data filters, yet they would be executed
+      //过滤掉包含子查询的过滤条件，子查询不能被用于分桶或数据过滤
       val normalizedFiltersWithoutSubqueries =
         normalizedFilters.filterNot(SubqueryExpression.hasSubquery)
 
       val bucketSpec: Option[BucketSpec] = fsRelation.bucketSpec
+      //如果存在分桶信息且需要进行分桶剪裁，则生成相应的分桶集合。这是通过调用 genBucketSet 函数来实现的，它返回一个 BitSet，表示哪些桶需要被扫描
       val bucketSet = if (shouldPruneBuckets(bucketSpec)) {
         genBucketSet(normalizedFiltersWithoutSubqueries, bucketSpec.get)
       } else {
@@ -188,7 +201,9 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
 
       // Partition keys are not available in the statistics of the files.
       // `dataColumns` might have partition columns, we need to filter them out.
+      //从数据列中去除分区列，因为分区列在扫描阶段不可见
       val dataColumnsWithoutPartitionCols = dataColumns.filterNot(partitionSet.contains)
+      //对过滤条件进行进一步处理，确保不会在不应该的地方引用分区列
       val dataFilters = normalizedFiltersWithoutSubqueries.flatMap { f =>
         if (f.references.intersect(partitionSet).nonEmpty) {
           extractPredicatesWithinOutputSet(f, AttributeSet(dataColumnsWithoutPartitionCols))
@@ -198,6 +213,7 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
       }
       val supportNestedPredicatePushdown =
         DataSourceUtils.supportNestedPredicatePushdown(fsRelation)
+      //将支持的过滤条件传递给数据源格式（例如支持嵌套谓词下推），最终推送给数据源来减少扫描的数据量
       val pushedFilters = dataFilters
         .flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
       logInfo(s"Pushed Filters: ${pushedFilters.mkString(",")}")

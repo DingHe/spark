@@ -79,7 +79,7 @@ package object analysis {
         messageParameters = invalidFormat.messageParameters,
         origin = t.origin)
     }
-
+    //未找到表抛出异常
     def tableNotFound(name: Seq[String]): Nothing = {
       throw new AnalysisException(
         errorClass = "TABLE_OR_VIEW_NOT_FOUND",

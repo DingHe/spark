@@ -37,6 +37,8 @@ sealed trait AggregateMode
  * This function updates the given aggregation buffer with the original input of this
  * function. When it has processed all input rows, the aggregation buffer is returned.
  */
+//适用于分布式计算中，将数据分发到不同节点进行并行处理时，每个节点进行局部聚合
+//此模式下，聚合函数会处理每个输入数据，并将其部分聚合结果（聚合缓冲区）返回。最终的结果会通过多个部分结果合并得到
 case object Partial extends AggregateMode
 
 /**
@@ -45,6 +47,9 @@ case object Partial extends AggregateMode
  * This function updates the given aggregation buffer by merging multiple aggregation buffers.
  * When it has processed all input rows, the aggregation buffer is returned.
  */
+ //用于 合并部分聚合 结果
+ //当多个部分聚合的缓冲区已经生成时，使用此模式将它们合并成一个更大的聚合缓冲区。它不会处理原始数据，只是合并已有的聚合结果
+ //适用于中间结果的合并阶段，通常出现在聚合的中间阶段或分布式环境中
 case object PartialMerge extends AggregateMode
 
 /**
@@ -53,6 +58,9 @@ case object PartialMerge extends AggregateMode
  * This function updates the given aggregation buffer by merging multiple aggregation buffers.
  * When it has processed all input rows, the final result of this function is returned.
  */
+ //用于 生成最终结果 的阶段
+ //在此模式下，聚合函数会合并多个聚合缓冲区并生成最终的结果。它是聚合的最后一步，处理并返回最终的聚合结果
+ //通常在聚合的最后阶段使用，处理所有中间结果并返回最终的聚合结果
 case object Final extends AggregateMode
 
 /**
@@ -61,6 +69,9 @@ case object Final extends AggregateMode
  * This function updates the given aggregation buffer with the original input of this
  * function. When it has processed all input rows, the final result of this function is returned.
  */
+ //用于 从原始数据直接计算结果，而不进行部分聚合
+ //聚合函数直接处理原始输入数据，进行完整的聚合计算，而不依赖于任何中间的部分聚合结果。处理所有数据并返回最终的结果
+ //适用于不需要分布式聚合，只需要基于所有原始数据一次性计算最终结果的场景
 case object Complete extends AggregateMode
 
 /**
@@ -96,11 +107,12 @@ object AggregateExpression {
  * (`isDistinct`) indicating if DISTINCT keyword is specified for this function and
  * a field (`filter`) indicating if filter clause is specified for this function.
  */
+//一个包装器，用于保存一个聚合函数及其相关信息
 case class AggregateExpression(
-    aggregateFunction: AggregateFunction,
-    mode: AggregateMode,
-    isDistinct: Boolean,
-    filter: Option[Expression],
+    aggregateFunction: AggregateFunction, //实际的聚合函数逻辑，例如 Sum、Avg 等
+    mode: AggregateMode,  //聚合模式，控制计算流程（Partial、Complete、PartialMerge、Final）
+    isDistinct: Boolean,  //指明是否为 DISTINCT 聚合
+    filter: Option[Expression],  //一个可选的过滤条件，用于在聚合前过滤数据
     resultId: ExprId)
   extends Expression
   with Unevaluable {
@@ -123,6 +135,7 @@ case class AggregateExpression(
   def filterAttributes: AttributeSet = filter.map(_.references).getOrElse(AttributeSet.empty)
 
   // We compute the same thing regardless of our final result.
+  //生成当前 AggregateExpression 的规范化形式，用于表达式等价性比较（去除一些非本质差异）
   override lazy val canonicalized: Expression = {
     val normalizedAggFunc = mode match {
       // For PartialMerge or Final mode, the input to the `aggregateFunction` is aggregate buffers,
@@ -140,7 +153,7 @@ case class AggregateExpression(
       filter.map(_.canonicalized),
       ExprId(0))
   }
-
+  //定义当前表达式的子节点集合
   override def children: Seq[Expression] = aggregateFunction +: filter.toSeq
 
   override def dataType: DataType = aggregateFunction.dataType
@@ -204,15 +217,19 @@ case class AggregateExpression(
  * Code which accepts [[AggregateFunction]] instances should be prepared to handle both types of
  * aggregate functions.
  */
+//聚合函数的基类，定义了聚合计算的基本结构
 abstract class AggregateFunction extends Expression {
 
   /** An aggregate function is not foldable. */
+  // 指定聚合函数是否可折叠（foldable）
   final override def foldable: Boolean = false
 
   /** The schema of the aggregation buffer. */
+  // 定义聚合缓冲区（Aggregation Buffer）的 Schema
   def aggBufferSchema: StructType
 
   /** Attributes of fields in aggBufferSchema. */
+  //表示 aggBufferSchema 中的每个字段对应的 Catalyst 属性（Attribute）
   def aggBufferAttributes: Seq[AttributeReference]
 
   /**
@@ -220,11 +237,13 @@ abstract class AggregateFunction extends Expression {
    * merged with mutable aggregation buffers in the merge() function or merge expressions).
    * These attributes are created automatically by cloning the [[aggBufferAttributes]].
    */
+  //表示输入缓冲区（inputAggBuffer）的属性
   def inputAggBufferAttributes: Seq[AttributeReference]
 
   /**
    * Result of the aggregate function when the input is empty.
    */
+  //当输入数据为空时，聚合函数的默认返回值
   def defaultResult: Option[Literal] = None
 
   /**
@@ -232,6 +251,7 @@ abstract class AggregateFunction extends Expression {
    *
    * @see `toAggregateExpression(isDistinct: Boolean)` for detailed description
    */
+  //将 AggregateFunction 包装成 AggregateExpression
   def toAggregateExpression(): AggregateExpression = toAggregateExpression(isDistinct = false)
 
   /**
@@ -282,6 +302,11 @@ abstract class AggregateFunction extends Expression {
  * `inputAggBufferOffset`, but not on the correctness of the attribute ids in `aggBufferAttributes`
  * and `inputAggBufferAttributes`.
  */
+//用于 基于命令式方法 (initialize()、update()、merge()) 进行聚合计算
+//主要用于基于 Row 缓冲区 (InternalRow) 进行聚合计算
+//需要手动管理缓冲区偏移量 (mutableAggBufferOffset, inputAggBufferOffset)
+//适用于无法用 Catalyst 表达式描述的聚合逻辑，复杂的数据结构存储（如集合、列表）
+//混入 CodegenFallback → 不支持代码生成（Codegen）
 abstract class ImperativeAggregate extends AggregateFunction with CodegenFallback {
 
   /**
@@ -303,12 +328,13 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
    *                     avg(y) mutableAggBufferOffset = 2
    * }}}
    */
-  protected val mutableAggBufferOffset: Int
+  protected val mutableAggBufferOffset: Int  //记录当前聚合函数在共享聚合缓冲区中的起始位置
 
   /**
    * Returns a copy of this ImperativeAggregate with an updated mutableAggBufferOffset.
    * This new copy's attributes may have different ids than the original.
    */
+  //返回当前聚合函数的 新副本，并更新 mutableAggBufferOffset 位置
   def withNewMutableAggBufferOffset(newMutableAggBufferOffset: Int): ImperativeAggregate
 
   /**
@@ -336,12 +362,13 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
    *                       avg(y) inputAggBufferOffset = 3
    * }}}
    */
-  protected val inputAggBufferOffset: Int
+  protected val inputAggBufferOffset: Int  //记录输入缓冲区（inputAggBuffer）的偏移量
 
   /**
    * Returns a copy of this ImperativeAggregate with an updated mutableAggBufferOffset.
    * This new copy's attributes may have different ids than the original.
    */
+  //返回当前聚合函数的 新副本，并更新 inputAggBufferOffset
   def withNewInputAggBufferOffset(newInputAggBufferOffset: Int): ImperativeAggregate
 
   // Note: although all subclasses implement inputAggBufferAttributes by simply cloning
@@ -353,6 +380,7 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
    *
    * Use `fieldNumber + mutableAggBufferOffset` to access fields of `mutableAggBuffer`.
    */
+  //初始化可变聚合缓冲区 (mutableAggBuffer)
   def initialize(mutableAggBuffer: InternalRow): Unit
 
   /**
@@ -363,6 +391,7 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
    * Note that, the input row may be produced by unsafe projection and it may not be safe to cache
    * some fields of the input row, as the values can be changed unexpectedly.
    */
+  //基于 inputRow 更新 mutableAggBuffer（单条输入数据）
   def update(mutableAggBuffer: InternalRow, inputRow: InternalRow): Unit
 
   /**
@@ -375,6 +404,7 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
    * Note that, the input row may be produced by unsafe projection and it may not be safe to cache
    * some fields of the input row, as the values can be changed unexpectedly.
    */
+  //合并多个 inputAggBuffer 到 mutableAggBuffer（多个分区数据合并）
   def merge(mutableAggBuffer: InternalRow, inputAggBuffer: InternalRow): Unit
 }
 
@@ -391,6 +421,7 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
  * the implemented class that need to access fields of its children, please make
  * those fields `lazy val`s.
  */
+//主要用于通过 Catalyst 表达式实现聚合，而不像 ImperativeAggregate 那样使用初始化、更新和合并方法
 abstract class DeclarativeAggregate
   extends AggregateFunction
   with Serializable {
@@ -398,12 +429,12 @@ abstract class DeclarativeAggregate
   /**
    * Expressions for initializing empty aggregation buffers.
    */
-  val initialValues: Seq[Expression]
+  val initialValues: Seq[Expression]  //用于初始化空的聚合缓冲区的表达式
 
   /**
    * Expressions for updating the mutable aggregation buffer based on an input row.
    */
-  val updateExpressions: Seq[Expression]
+  val updateExpressions: Seq[Expression]  //根据输入行更新聚合缓冲区。每个表达式对应于一个输入字段，并决定如何将输入行的数据合并到聚合缓冲区
 
   /**
    * A sequence of expressions for merging two aggregation buffers together. When defining these
@@ -411,17 +442,17 @@ abstract class DeclarativeAggregate
    * to the attributes corresponding to each of the buffers being merged (this magic is enabled
    * by the [[RichAttribute]] implicit class).
    */
-  val mergeExpressions: Seq[Expression]
+  val mergeExpressions: Seq[Expression] //将两个聚合缓冲区合并。在实现时，可以使用 attributeName.left 和 attributeName.right 来引用分别属于两个缓冲区的字段
 
   /**
    * An expression which returns the final value for this aggregate function. Its data type should
    * match this expression's [[dataType]].
    */
-  val evaluateExpression: Expression
+  val evaluateExpression: Expression //计算最终的聚合结果，它的返回类型应该与聚合函数的 dataType 类型匹配
 
   /** An expression-based aggregate's bufferSchema is derived from bufferAttributes. */
   final override def aggBufferSchema: StructType = DataTypeUtils.fromAttributes(aggBufferAttributes)
-
+  //aggBufferAttributes 和 inputAggBufferAttributes 通常具有相同的字段，但它们用于不同的聚合缓冲区，一个是可变的，一个是不可变的
   lazy val inputAggBufferAttributes: Seq[AttributeReference] =
     aggBufferAttributes.map(_.newInstance())
 
@@ -434,15 +465,17 @@ abstract class DeclarativeAggregate
    */
   implicit class RichAttribute(a: AttributeReference) {
     /** Represents this attribute at the mutable buffer side. */
-    def left: AttributeReference = a
+    def left: AttributeReference = a  //表示该属性在可变缓冲区中的位置
 
     /** Represents this attribute at the input buffer side (the data value is read-only). */
     def right: AttributeReference = inputAggBufferAttributes(aggBufferAttributes.indexOf(a))
   }
-
+  //这是 DeclarativeAggregate 的抽象方法，调用时会抛出错误，
+  // 因为 DeclarativeAggregate 并不直接进行求值，而是依赖于 evaluateExpression 来计算最终的聚合结果
   final override def eval(input: InternalRow = null): Any =
     throw QueryExecutionErrors.cannotEvaluateExpressionError(this)
-
+  //该方法会抛出一个错误，表示不能为 DeclarativeAggregate 生成代码。
+  // 因为 DeclarativeAggregate 依赖于表达式，而生成代码通常是在更低层次的实现中进行的
   final override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
     throw QueryExecutionErrors.cannotGenerateCodeForExpressionError(this)
 }

@@ -807,7 +807,7 @@ private[spark] object Utils
       localRootDirs(scala.util.Random.nextInt(localRootDirs.length))
     }
   }
-
+  //yarn会设置
   private[spark] def isRunningInYarnContainer(conf: SparkConf): Boolean = {
     // These environment variables are set by YARN.
     conf.getenv("CONTAINER_ID") != null
@@ -839,22 +839,22 @@ private[spark] object Utils
     localRootDirs
   }
 
-  /**
+  /** 获取本地目录
    * Return the configured local directories where Spark can write files. This
    * method does not create any directories on its own, it only encapsulates the
    * logic of locating the local directories according to deployment mode.
    */
   def getConfiguredLocalDirs(conf: SparkConf): Array[String] = {
     val shuffleServiceEnabled = conf.get(config.SHUFFLE_SERVICE_ENABLED)
-    if (isRunningInYarnContainer(conf)) {
+    if (isRunningInYarnContainer(conf)) {  //yarn运行模式
       // If we are in yarn mode, systems can have different disk layouts so we must set it
       // to what Yarn on this system said was available. Note this assumes that Yarn has
       // created the directories already, and that they are secured so that only the
       // user has access to them.
       randomizeInPlace(getYarnLocalDirs(conf).split(","))
-    } else if (conf.getenv("SPARK_EXECUTOR_DIRS") != null) {
+    } else if (conf.getenv("SPARK_EXECUTOR_DIRS") != null) {   //standalone模式
       conf.getenv("SPARK_EXECUTOR_DIRS").split(File.pathSeparator)
-    } else if (conf.getenv("SPARK_LOCAL_DIRS") != null) {
+    } else if (conf.getenv("SPARK_LOCAL_DIRS") != null) {      //本地模式
       conf.getenv("SPARK_LOCAL_DIRS").split(",")
     } else if (conf.getenv("MESOS_SANDBOX") != null && !shuffleServiceEnabled) {
       // Mesos already creates a directory per Mesos task. Spark should use that directory
@@ -904,7 +904,7 @@ private[spark] object Utils
       }
     }
   }
-
+  //获取Yarn批准的本地目录。
   /** Get the Yarn approved local directories. */
   private def getYarnLocalDirs(conf: SparkConf): String = {
     val localDirs = Option(conf.getenv("LOCAL_DIRS")).getOrElse("")
@@ -1454,10 +1454,10 @@ private[spark] object Utils
     // package. We track the last (shallowest) contiguous Spark method. This might be an RDD
     // transformation, a SparkContext function (such as parallelize), or anything else that leads
     // to instantiation of an RDD. We also track the first (deepest) user method, file, and line.
-    var lastSparkMethod = "<unknown>"
-    var firstUserFile = "<unknown>"
+    var lastSparkMethod = "<unknown>" //记录最后一个 Spark 方法的名称
+    var firstUserFile = "<unknown>" //记录用户代码的文件名和行号
     var firstUserLine = 0
-    var insideSpark = true
+    var insideSpark = true  //标记当前是否在 Spark 内部代码中，初始值为 true，表示当前在 Spark 内部代码中
     val callStack = new ArrayBuffer[String]() :+ "<unknown>"
 
     Thread.currentThread.getStackTrace().foreach { ste: StackTraceElement =>
@@ -1466,8 +1466,8 @@ private[spark] object Utils
       // ignoring any frames that we can't examine.
       if (ste != null && ste.getMethodName != null
         && !ste.getMethodName.contains("getStackTrace")) {
-        if (insideSpark) {
-          if (skipClass(ste.getClassName)) {
+        if (insideSpark) { //是否进入 Spark 内部代码部分
+          if (skipClass(ste.getClassName)) { // Spark 内部代码且不符合 skipClass 的过滤规则
             lastSparkMethod = if (ste.getMethodName == "<init>") {
               // Spark method is a constructor; get its class name
               ste.getClassName.substring(ste.getClassName.lastIndexOf('.') + 1)
@@ -2572,7 +2572,7 @@ private[spark] object Utils
       conf.get(propertyName), conf, isDriver)
   }
 
-  /**
+  /** 是否启动动态分配资源
    * Return whether dynamic allocation is enabled in the given conf.
    */
   def isDynamicAllocationEnabled(conf: SparkConf): Boolean = {
@@ -3133,11 +3133,13 @@ private[util] object CallerContext extends Logging {
  * @param taskId task id
  * @param taskAttemptNumber task attempt id
  */
+// 主要作用是为 Spark 应用程序与 Hadoop 生态系统（特别是 HDFS 和 YARN）之间的交互设置调用者上下文
+// CallerContext 就像一个标签或签名，贴在每个 Spark 操作上，让 Hadoop 能够识别“谁在调用我”
 private[spark] class CallerContext(
-  from: String,
-  upstreamCallerContext: Option[String] = None,
-  appId: Option[String] = None,
-  appAttemptId: Option[String] = None,
+  from: String, // 表示设置此上下文的调用者类型 "TASK"：表示上下文由一个任务（Task）设置 "CLIENT"：表示上下文由 Spark 客户端设置
+  upstreamCallerContext: Option[String] = None, // 用于传递上游应用程序或系统的调用者上下文信息。这对于构建复杂的依赖链和血缘关系非常有用
+  appId: Option[String] = None, // 表示此上下文所属的 Spark 应用程序 ID
+  appAttemptId: Option[String] = None, // 表示此上下文所属的应用程序尝试 ID
   jobId: Option[Int] = None,
   stageId: Option[Int] = None,
   stageAttemptId: Option[Int] = None,

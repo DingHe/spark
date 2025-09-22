@@ -81,11 +81,12 @@ import org.apache.spark.util.{CallSite, Utils}
  * @param parentSessionState If supplied, inherit all session state (i.e. temporary
  *                            views, SQL config, UDFs etc) from parent.
  */
+//数据操作的入口类，它整合了 Spark SQL、Spark Streaming、DataFrame 和 Dataset API，并提供了一个统一的接口来与 Spark 集群交互
 @Stable
 class SparkSession private(
-    @transient val sparkContext: SparkContext,
-    @transient private val existingSharedState: Option[SharedState],
-    @transient private val parentSessionState: Option[SessionState],
+    @transient val sparkContext: SparkContext,  //集群的上下文
+    @transient private val existingSharedState: Option[SharedState],  //共享状态，包括缓存的数据、监听器、外部系统交互的目录等
+    @transient private val parentSessionState: Option[SessionState],  //管理与 Spark SQL 相关的会话状态，如 SQL 配置、临时视图、注册的 UDF 等
     @transient private[sql] val extensions: SparkSessionExtensions,
     @transient private[sql] val initialSessionOptions: Map[String, String])
   extends Serializable with Closeable with Logging { self =>
@@ -113,6 +114,7 @@ class SparkSession private(
   sparkContext.assertNotStopped()
 
   // If there is no active SparkSession, uses the default SQL conf. Otherwise, use the session's.
+  //如果没有活跃的sparkSession,则使用默认的sql配置
   SQLConf.setSQLConfGetter(() => {
     SparkSession.getActiveSession.filterNot(_.sparkContext.isStopped).map(_.sessionState.conf)
       .getOrElse(SQLConf.getFallbackConf)
@@ -137,6 +139,7 @@ class SparkSession private(
    *
    * @since 2.2.0
    */
+    //初始化共享状态
   @Unstable
   @transient
   lazy val sharedState: SharedState = {
@@ -152,6 +155,7 @@ class SparkSession private(
    *
    * @since 2.2.0
    */
+   //根据类名，初始化 SessionState
   @Unstable
   @transient
   lazy val sessionState: SessionState = {
@@ -248,6 +252,7 @@ class SparkSession private(
    *
    * @since 2.0.0
    */
+    //创建新的会话
   def newSession(): SparkSession = {
     new SparkSession(
       sparkContext,
@@ -439,7 +444,7 @@ class SparkSession private(
 
   /**
    * Convert a `BaseRelation` created for external data sources into a `DataFrame`.
-   *
+   *  负责把外部的BaseRelation转为DataFrame，使用Dataset.ofRows方法
    * @since 2.0.0
    */
   def baseRelationToDataFrame(baseRelation: BaseRelation): DataFrame = {
@@ -891,6 +896,7 @@ class SparkSession private(
    * Execute a block of code with the this session set as the active session, and restore the
    * previous session on completion.
    */
+  //使用当前session作为活动sesssion执行代码块block，执行完成后回复之前的session
   private[sql] def withActive[T](block: => T): T = {
     // Use the active session thread local directly to make sure we get the session that is actually
     // set and not the default session. This to prevent that we promote the default session to the
@@ -931,7 +937,7 @@ object SparkSession extends Logging {
     /**
      * Sets a name for the application, which will be shown in the Spark web UI.
      * If no application name is set, a randomly generated name will be used.
-     *
+     * 设置spark应用的名称
      * @since 2.0.0
      */
     def appName(name: String): Builder = config("spark.app.name", name)
@@ -1066,7 +1072,7 @@ object SparkSession extends Logging {
      * @since 2.0.0
      */
     def getOrCreate(): SparkSession = synchronized {
-      val sparkConf = new SparkConf()
+      val sparkConf = new SparkConf()  //根据用户的输入配置应用
       options.foreach { case (k, v) => sparkConf.set(k, v) }
 
       if (!sparkConf.get(EXECUTOR_ALLOW_SPARK_CONTEXT)) {
@@ -1088,7 +1094,7 @@ object SparkSession extends Logging {
           applyModifiableSettings(session, new java.util.HashMap[String, String](options.asJava))
           return session
         }
-
+        //在这里真正创建了SparkContext
         // No active nor global default session. Create a new one.
         val sparkContext = userSuppliedContext.getOrElse {
           // set a random app name if not given.
@@ -1102,7 +1108,7 @@ object SparkSession extends Logging {
 
         loadExtensions(extensions)
         applyExtensions(sparkContext, extensions)
-
+        //这里真正创建了SparkSession
         session = new SparkSession(sparkContext, None, None, extensions, options.toMap)
         setDefaultSession(session)
         setActiveSession(session)
@@ -1166,8 +1172,9 @@ object SparkSession extends Logging {
    *
    * @since 2.2.0
    */
+    //获取当前活跃的SparkSession
   def getActiveSession: Option[SparkSession] = {
-    if (Utils.isInRunningSparkTask) {
+    if (Utils.isInRunningSparkTask) { //这个函数返回说明能获取到TaskContext
       // Return None when running on executors.
       None
     } else {
@@ -1279,7 +1286,7 @@ object SparkSession extends Logging {
     }
   }
 
-  /** The active SparkSession for the current thread. */
+  /** The active SparkSession for the current thread. 线程本地变量，它允许子线程继承父线程中的数据，这里当前会话中的session*/
   private val activeThreadSession = new InheritableThreadLocal[SparkSession]
 
   /** Reference to the root SparkSession. */
@@ -1287,7 +1294,7 @@ object SparkSession extends Logging {
 
   private val HIVE_SESSION_STATE_BUILDER_CLASS_NAME =
     "org.apache.spark.sql.hive.HiveSessionStateBuilder"
-
+  //catalog的实现类
   private def sessionStateClassName(conf: SparkConf): String = {
     conf.get(CATALOG_IMPLEMENTATION) match {
       case "hive" => HIVE_SESSION_STATE_BUILDER_CLASS_NAME
@@ -1307,6 +1314,7 @@ object SparkSession extends Logging {
    * Helper method to create an instance of `SessionState` based on `className` from conf.
    * The result is either `SessionState` or a Hive based `SessionState`.
    */
+  //根据类名，反射SessionState
   private def instantiateSessionState(
       className: String,
       sparkSession: SparkSession): SessionState = {
@@ -1379,7 +1387,7 @@ object SparkSession extends Logging {
     extensions
   }
 
-  /**
+  /** 通过ServiceLoader加载拓展服务
    * Load extensions from [[ServiceLoader]] and use them
    */
   private def loadExtensions(extensions: SparkSessionExtensions): Unit = {

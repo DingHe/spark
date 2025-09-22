@@ -75,6 +75,8 @@ object SparkStringUtils extends Logging {
    *
    * @return the trimmed and formatted string.
    */
+   //格式化一个序列（Seq[T]），并提供类似于 mkString() 的功能，但具有长度限制。
+  // 当序列的长度超过指定的最大字段数 (maxFields) 时，序列会被截断，超过的部分会被替换为一个占位符，显示出剩余字段数
   def truncatedString[T](
       seq: Seq[T],
       start: String,

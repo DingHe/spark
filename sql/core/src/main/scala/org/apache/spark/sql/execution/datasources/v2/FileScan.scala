@@ -36,12 +36,15 @@ import org.apache.spark.sql.internal.connector.SupportsMetadata
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
+//Batch：表示批量读取数据的能力
 
 trait FileScan extends Scan
   with Batch with SupportsReportStatistics with SupportsMetadata with Logging {
   /**
    * Returns whether a file with `path` could be split or not.
    */
+    //判断文件是否可被拆分（默认不可拆分）
+    //一些格式（如 Parquet）支持拆分，而一些（如 gzip 压缩的文本文件）不支持拆分
   def isSplitable(path: Path): Boolean = {
     false
   }
@@ -76,6 +79,7 @@ trait FileScan extends Scan
    * If a file with `path` is unsplittable, return the unsplittable reason,
    * otherwise return `None`.
    */
+    //如果文件不可拆分，则返回原因（默认值 "undefined"）
   def getFileUnSplittableReason(path: Path): String = {
     assert(!isSplitable(path))
     "undefined"
@@ -105,9 +109,9 @@ trait FileScan extends Scan
   }
 
   override def hashCode(): Int = getClass.hashCode()
-
+  //获取元数据字符串的最大长度，用于日志输出时避免过长的字符串影响可读性
   val maxMetadataValueLength = sparkSession.sessionState.conf.maxMetadataStringLength
-
+  //生成当前 FileScan 的描述信息
   override def description(): String = {
     val metadataStr = getMetaData().toSeq.sorted.map {
       case (key, value) =>
@@ -117,7 +121,7 @@ trait FileScan extends Scan
     }.mkString(", ")
     s"${this.getClass.getSimpleName} $metadataStr"
   }
-
+  //返回 FileScan 相关的元数据信息
   override def getMetaData(): Map[String, String] = {
     val locationDesc =
       fileIndex.getClass.getSimpleName +
@@ -129,20 +133,25 @@ trait FileScan extends Scan
       "DataFilters" -> seqToString(dataFilters),
       "Location" -> locationDesc)
   }
-
+  //生成文件的 分区信息
   protected def partitions: Seq[FilePartition] = {
+    //获取选择的分区
     val selectedPartitions = fileIndex.listFiles(partitionFilters, dataFilters)
+    //计算出每个文件分区允许的最大字节数（即最大拆分大小）
     val maxSplitBytes = FilePartition.maxSplitBytes(sparkSession, selectedPartitions)
     val partitionAttributes = toAttributes(fileIndex.partitionSchema)
     val attributeMap = partitionAttributes.map(a => normalizeName(a.name) -> a).toMap
+    //获取需要读取的分区字段，并且确保每个字段在 attributeMap 中存在。如果某个字段没有找到，则抛出异常
     val readPartitionAttributes = readPartitionSchema.map { readField =>
       attributeMap.getOrElse(normalizeName(readField.name),
         throw QueryCompilationErrors.cannotFindPartitionColumnInPartitionSchemaError(
           readField, fileIndex.partitionSchema)
       )
     }
+    //生成投影函数
     lazy val partitionValueProject =
       GenerateUnsafeProjection.generate(readPartitionAttributes, partitionAttributes)
+    //拆分文件
     val splitFiles = selectedPartitions.flatMap { partition =>
       // Prune partition values if part of the partition columns are not required.
       val partitionValues = if (readPartitionAttributes != partitionAttributes) {
@@ -160,7 +169,8 @@ trait FileScan extends Scan
         )
       }.toArray.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
     }
-
+    //如果拆分后的文件块数量只有一个，并且该文件是不可拆分的（即 isSplitable 为 false），
+    // 并且文件大小超过了配置阈值（IO_WARNING_LARGEFILETHRESHOLD），则会发出警告，表示这是一个大文件，且无法拆分
     if (splitFiles.length == 1) {
       val path = splitFiles(0).toPath
       if (!isSplitable(path) && splitFiles(0).length >
@@ -172,7 +182,7 @@ trait FileScan extends Scan
 
     FilePartition.getFilePartitions(sparkSession, splitFiles, maxSplitBytes)
   }
-
+  //算输入的分区信息，并返回 InputPartition 数组
   override def planInputPartitions(): Array[InputPartition] = {
     partitions.toArray
   }
@@ -193,7 +203,7 @@ trait FileScan extends Scan
   }
 
   override def toBatch: Batch = this
-
+  //读取扫描数据的 Schema，由数据字段 (readDataSchema) 和分区字段 (readPartitionSchema) 组成
   override def readSchema(): StructType =
     StructType(readDataSchema.fields ++ readPartitionSchema.fields)
 
@@ -201,7 +211,7 @@ trait FileScan extends Scan
   protected def equivalentFilters(a: Array[Filter], b: Array[Filter]): Boolean = {
     a.sortBy(_.hashCode()).sameElements(b.sortBy(_.hashCode()))
   }
-
+  //指定当前 Spark 任务是否区分大小写，影响字段匹配的行为
   private val isCaseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
 
   private def normalizeName(name: String): String = {

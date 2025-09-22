@@ -31,10 +31,15 @@ import org.apache.spark.shuffle.IndexShuffleBlockResolver;
 import org.apache.spark.shuffle.api.SingleSpillShuffleMapOutputWriter;
 import org.apache.spark.storage.BlockManager;
 
+// 用于本地磁盘 Shuffle 的执行器端组件。
+// 它的主要作用是提供并管理与 Shuffle 写入相关的核心对象，特别是创建用于写入 Shuffle Map 输出文件的写入器（Writer）
+// 扮演了一个工厂的角色。它根据不同的 Shuffle 类型（如本地磁盘、外部服务等）提供不同的实现
 public class LocalDiskShuffleExecutorComponents implements ShuffleExecutorComponents {
 
   private final SparkConf sparkConf;
+  // 块管理器实例。它负责管理执行器上的本地存储，包括内存和磁盘，Shuffle 写入器会使用它来获取本地磁盘路径
   private BlockManager blockManager;
+  // 块解析器。它负责处理 Shuffle 文件，特别是管理数据文件 (.data) 和索引文件 (.index) 的创建、查找和清理
   private IndexShuffleBlockResolver blockResolver;
 
   public LocalDiskShuffleExecutorComponents(SparkConf sparkConf) {
@@ -50,19 +55,20 @@ public class LocalDiskShuffleExecutorComponents implements ShuffleExecutorCompon
     this.blockManager = blockManager;
     this.blockResolver = blockResolver;
   }
-
+  // 这个方法在执行器启动时被 SortShuffleManager 调用一次，用于准备环境
   @Override
   public void initializeExecutor(String appId, String execId, Map<String, String> extraConfigs) {
     blockManager = SparkEnv.get().blockManager();
     if (blockManager == null) {
       throw new IllegalStateException("No blockManager available from the SparkEnv.");
     }
+    // 这个解析器是本地磁盘 Shuffle 的核心组件
     blockResolver =
       new IndexShuffleBlockResolver(
         sparkConf, blockManager, Collections.emptyMap() /* Shouldn't be accessed */
       );
   }
-
+  // 创建并返回一个用于多文件 Shuffle 写入的写入器。这个方法在每个 ShuffleMapTask 启动时被 SortShuffleWriter 调用
   @Override
   public ShuffleMapOutputWriter createMapOutputWriter(
       int shuffleId,
@@ -75,7 +81,8 @@ public class LocalDiskShuffleExecutorComponents implements ShuffleExecutorCompon
     return new LocalDiskShuffleMapOutputWriter(
         shuffleId, mapTaskId, numPartitions, blockResolver, sparkConf);
   }
-
+  // 创建并返回一个用于单文件 Shuffle 写入的写入器。
+  // 这个方法用于旁路归并排序（Bypass Merge Sort Shuffle）等特殊场景。在这种场景下，所有分区数据都写入到一个文件中
   @Override
   public Optional<SingleSpillShuffleMapOutputWriter> createSingleFileMapOutputWriter(
       int shuffleId,

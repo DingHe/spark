@@ -57,11 +57,12 @@ object LocalRelation {
  * @param data The local collection holding the data. It doesn't need to be sent to executors
  *             and then doesn't need to be serializable.
  */
+//表示一个从本地集合扫描数据的逻辑计划节点。这个类主要用于 Spark SQL 中的数据源（在本地内存中加载的数据）
 case class LocalRelation(
-    output: Seq[Attribute],
-    data: Seq[InternalRow] = Nil,
+    output: Seq[Attribute], //输出的列
+    data: Seq[InternalRow] = Nil, //包含所有行的序列
     // Indicates whether this relation has data from a streaming source.
-    override val isStreaming: Boolean = false)
+    override val isStreaming: Boolean = false) //表示该数据源是否来自流数据源
   extends LeafNode with analysis.MultiInstanceRelation {
 
   // A local relation must have resolved output.

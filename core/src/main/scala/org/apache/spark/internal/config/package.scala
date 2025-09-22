@@ -1426,7 +1426,11 @@ package object config {
     .stringConf
     .toSequence
     .createOptional
-
+  //Spark Shuffle 阶段 用来控制 强制内存溢写（spill） 的阈值参数
+  //如果数据太多，内存放不下，就会触发 spill，即把中间结果写到磁盘，减少内存占用
+  //spill 的触发条件有两类：
+  //内存使用量超过阈值（比如 spark.shuffle.spill.initialMemoryThreshold 里的内存大小控制）
+  //数据条数（元素个数）超过阈值（也就是这个参数控制的情况）
   private[spark] val SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD =
     ConfigBuilder("spark.shuffle.spill.numElementsForceSpillThreshold")
       .internal()
@@ -1525,7 +1529,10 @@ package object config {
       .version("3.0.0")
       .stringConf
       .createWithDefault("zstd")
-
+  //默认值：5 MB
+  //说明这是一个 内部参数，普通用户不推荐直接配置，主要给 Spark 内部调优用
+  //但如果一开始就对所有小集合做精细内存跟踪，会增加开销
+  //所以 Spark 的做法是： 集合小于 5MB 时，不精细监控内存使用；一旦超过 5MB，开始追踪它的内存，并可能触发 spill
   private[spark] val SHUFFLE_SPILL_INITIAL_MEM_THRESHOLD =
     ConfigBuilder("spark.shuffle.spill.initialMemoryThreshold")
       .internal()

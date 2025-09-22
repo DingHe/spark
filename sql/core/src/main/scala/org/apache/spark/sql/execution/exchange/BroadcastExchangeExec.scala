@@ -42,6 +42,8 @@ import org.apache.spark.util.{SparkFatalException, ThreadUtils}
 /**
  * Common trait for all broadcast exchange implementations to facilitate pattern matching.
  */
+//用于广播交换（Broadcast Exchange）实现的公共特质（trait），目的是为各种广播实现提供统一的结构，方便进行模式匹配（pattern matching）。
+// 广播交换通常用于小表的广播式分发，以加速 Broadcast Join 操作。
 trait BroadcastExchangeLike extends Exchange {
 
   /**
@@ -52,11 +54,13 @@ trait BroadcastExchangeLike extends Exchange {
   /**
    * The broadcast job tag
    */
+    //用于标识广播作业的标签
   def jobTag: String = s"broadcast exchange (runId ${runId.toString})"
 
   /**
    * The asynchronous job that prepares the broadcast relation.
    */
+  //该方法返回一个异步任务（Future），用于准备广播数据（Broadcast[Any]）
   def relationFuture: Future[broadcast.Broadcast[Any]]
 
   /**
@@ -64,10 +68,11 @@ trait BroadcastExchangeLike extends Exchange {
    * `relationFuture`. Note that calling this method may not start the execution of broadcast job.
    * It also does the preparations work, such as waiting for the subqueries.
    */
+    //提交广播任务，返回一个 Future 对象，代表广播数据的计算结果
   final def submitBroadcastJob: scala.concurrent.Future[broadcast.Broadcast[Any]] = executeQuery {
     completionFuture
   }
-
+  //具体的广播执行逻辑由子类提供，BroadcastExchangeLike 只定义了通用接口
   protected def completionFuture: scala.concurrent.Future[broadcast.Broadcast[Any]]
 
   /**
@@ -80,9 +85,10 @@ trait BroadcastExchangeLike extends Exchange {
  * A [[BroadcastExchangeExec]] collects, transforms and finally broadcasts the result of
  * a transformed SparkPlan.
  */
+//将转换后的数据以广播变量的形式发送给每个执行器，从而提高小型表与大型表进行 Join 操作的效率
 case class BroadcastExchangeExec(
-    mode: BroadcastMode,
-    child: SparkPlan) extends BroadcastExchangeLike {
+    mode: BroadcastMode, //决定广播数据的格式，支持 IdentityBroadcastMode 和 HashedRelationBroadcastMode
+    child: SparkPlan) extends BroadcastExchangeLike { //子计划，表示需要广播的数据的计算逻辑
   import BroadcastExchangeExec._
 
   override lazy val metrics = Map(
@@ -92,8 +98,8 @@ case class BroadcastExchangeExec(
     "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
     "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
 
-  override def outputPartitioning: Partitioning = BroadcastPartitioning(mode)
-
+  override def outputPartitioning: Partitioning = BroadcastPartitioning(mode) //广播分区策略，确保广播数据的分区与 BroadcastMode 匹配
+  //用于 Spark 计划的规范化，移除不影响语义的属性，确保计划可以被正确比较或缓存
   override def doCanonicalize(): SparkPlan = {
     BroadcastExchangeExec(mode.canonicalized, child.canonicalized)
   }
@@ -103,7 +109,7 @@ case class BroadcastExchangeExec(
     val rowCount = metrics("numOutputRows").value
     Statistics(dataSize, Some(rowCount))
   }
-
+  //保存异步广播结果，确保广播数据完成后可供其他操作使用。
   @transient
   private lazy val promise = Promise[broadcast.Broadcast[Any]]()
 
@@ -113,7 +119,7 @@ case class BroadcastExchangeExec(
 
   @transient
   private val timeout: Long = conf.broadcastTimeout
-
+  //广播表的最大行数，超过此值将抛出异常，防止广播过大的数据
   @transient
   private lazy val maxBroadcastRows = mode match {
     case HashedRelationBroadcastMode(key, _)
@@ -126,7 +132,7 @@ case class BroadcastExchangeExec(
       (BytesToBytesMap.MAX_CAPACITY / 1.5).toLong
     case _ => 512000000
   }
-
+  //执行广播的核心逻辑
   @transient
   override lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
     SQLExecution.withThreadLocalCaptured[broadcast.Broadcast[Any]](
@@ -137,7 +143,7 @@ case class BroadcastExchangeExec(
             sparkContext.setInterruptOnCancel(true)
             val beforeCollect = System.nanoTime()
             // Use executeCollect/executeCollectIterator to avoid conversion to Scala types
-            val (numRows, input) = child.executeCollectIterator()
+            val (numRows, input) = child.executeCollectIterator() //从 child 计划中执行计算，获取数据
             longMetric("numOutputRows") += numRows
             if (numRows >= maxBroadcastRows) {
               throw QueryExecutionErrors.cannotBroadcastTableOverMaxTableRowsError(
@@ -148,7 +154,7 @@ case class BroadcastExchangeExec(
             longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
             // Construct the relation.
-            val relation = mode.transform(input, Some(numRows))
+            val relation = mode.transform(input, Some(numRows))  //根据 BroadcastMode 转换数据（如 HashedRelation 或原始数据）
 
             val dataSize = relation match {
               case map: HashedRelation =>
@@ -170,6 +176,7 @@ case class BroadcastExchangeExec(
             longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
 
             // SPARK-39983 - Broadcast the relation without caching the unserialized object.
+            //使用 sparkContext.broadcastInternal 进行广播，避免序列化对象被缓存
             val broadcasted = sparkContext.broadcastInternal(relation, serializedOnly = true)
             longMetric("broadcastTime") += NANOSECONDS.toMillis(
               System.nanoTime() - beforeBroadcast)
@@ -197,16 +204,16 @@ case class BroadcastExchangeExec(
           }
     }
   }
-
+  //提前触发广播任务，确保在执行阶段数据已准备就绪
   override protected def doPrepare(): Unit = {
     // Materialize the future.
     relationFuture
   }
-
+ //BroadcastExchangeExec 仅支持广播，不支持直接输出 RDD，因此直接抛出异常。
   override protected def doExecute(): RDD[InternalRow] = {
     throw QueryExecutionErrors.executeCodePathUnsupportedError("BroadcastExchange")
   }
-
+  //获取广播结果，若未完成等待指定超时时间
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
     try {
       relationFuture.get(timeout, TimeUnit.SECONDS).asInstanceOf[broadcast.Broadcast[T]]

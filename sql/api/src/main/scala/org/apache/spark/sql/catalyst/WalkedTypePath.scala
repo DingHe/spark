@@ -22,7 +22,10 @@ package org.apache.spark.sql.catalyst
  * Note that this class adds new path in prior to recorded paths so it maintains
  * the paths as reverse order.
  */
+//主要用于记录**序列化（serializer）和反序列化（deserializer）**过程中遍历的数据路径
+//提供了多个方法，用于记录不同类型的路径信息，每个方法都会创建一个新的 WalkedTypePath 实例，并在 walkedPaths 头部添加新的路径
 case class WalkedTypePath(private val walkedPaths: Seq[String] = Nil) {
+  //记录序列化/反序列化的根类路径
   def recordRoot(className: String): WalkedTypePath =
     newInstance(s"""- root class: "$className"""")
 

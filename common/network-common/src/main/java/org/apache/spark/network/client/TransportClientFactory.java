@@ -52,7 +52,7 @@ import org.apache.spark.network.util.*;
  * The factory maintains a connection pool to other hosts and should return the same
  * TransportClient for the same remote host. It also shares a single worker thread pool for
  * all TransportClients.
- *
+ * 创建和管理与远程主机的连接
  * TransportClients will be reused whenever possible. Prior to completing the creation of a new
  * TransportClient, all given {@link TransportClientBootstrap}s will be run.
  */
@@ -60,9 +60,9 @@ public class TransportClientFactory implements Closeable {
 
   /** A simple data structure to track the pool of clients between two peer nodes. */
   private static class ClientPool {
-    TransportClient[] clients;
-    Object[] locks;
-    volatile long lastConnectionFailed;
+    TransportClient[] clients; //存储与同一主机建立的多个 TransportClient 实例
+    Object[] locks; //为每个 TransportClient 提供一个锁，确保多线程访问时的线程安全
+    volatile long lastConnectionFailed; //记录上次连接失败的时间戳
 
     ClientPool(int size) {
       clients = new TransportClient[size];
@@ -76,18 +76,18 @@ public class TransportClientFactory implements Closeable {
 
   private static final Logger logger = LoggerFactory.getLogger(TransportClientFactory.class);
 
-  private final TransportContext context;
-  private final TransportConf conf;
-  private final List<TransportClientBootstrap> clientBootstraps;
-  private final ConcurrentHashMap<SocketAddress, ClientPool> connectionPool;
+  private final TransportContext context; //提供与 Spark 网络相关的上下文信息
+  private final TransportConf conf; //存储各种网络配置项
+  private final List<TransportClientBootstrap> clientBootstraps; //TransportClient客户端的初始化操作
+  private final ConcurrentHashMap<SocketAddress, ClientPool> connectionPool; //存储连接池的哈希映射，以主机的 SocketAddress 为键
 
   /** Random number generator for picking connections between peers. */
-  private final Random rand;
-  private final int numConnectionsPerPeer;
+  private final Random rand; //用于从连接池中随机选择连接
+  private final int numConnectionsPerPeer; //每个远程主机的最大连接数
 
-  private final Class<? extends Channel> socketChannelClass;
-  private EventLoopGroup workerGroup;
-  private final PooledByteBufAllocator pooledAllocator;
+  private final Class<? extends Channel> socketChannelClass; //用于指定 Netty 的通道实现
+  private EventLoopGroup workerGroup; //Netty 的工作线程组，用于处理异步 I/O 操作
+  private final PooledByteBufAllocator pooledAllocator; //内存池分配器，负责管理 Netty 的字节缓冲区
   private final NettyMemoryMetrics metrics;
   private final int fastFailTimeWindow;
 
@@ -101,7 +101,7 @@ public class TransportClientFactory implements Closeable {
     this.numConnectionsPerPeer = conf.numConnectionsPerPeer();
     this.rand = new Random();
 
-    IOMode ioMode = IOMode.valueOf(conf.ioMode());
+    IOMode ioMode = IOMode.valueOf(conf.ioMode()); //NIO EPOLL
     this.socketChannelClass = NettyUtils.getClientChannelClass(ioMode);
     this.workerGroup = NettyUtils.createEventLoop(
         ioMode,
@@ -140,7 +140,7 @@ public class TransportClientFactory implements Closeable {
    * This blocks until a connection is successfully established and fully bootstrapped.
    *
    * Concurrency: This method is safe to call from multiple threads.
-   *
+   * 用于创建一个连接到远程主机的 TransportClient 实例。首先会尝试从连接池中获取现有的连接，如果没有可用连接或现有连接不可用，则创建一个新的连接
    * @param remoteHost remote address host
    * @param remotePort remote address port
    * @param fastFail whether this call should fail immediately when the last attempt to the same
@@ -229,7 +229,7 @@ public class TransportClientFactory implements Closeable {
   /**
    * Create a completely new {@link TransportClient} to the given remote host / port.
    * This connection is not pooled.
-   *
+   * 与 createClient 类似，不过不会使用连接池。每次调用都会创建一个新的 TransportClient 实例
    * As with {@link #createClient(String, int)}, this method is blocking.
    */
   public TransportClient createUnmanagedClient(String remoteHost, int remotePort)

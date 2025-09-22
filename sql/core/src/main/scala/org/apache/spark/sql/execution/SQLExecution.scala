@@ -61,18 +61,20 @@ object SQLExecution {
    * Wrap an action that will execute "queryExecution" to track all Spark jobs in the body so that
    * we can connect them with an execution.
    */
+  //包装一个执行动作body并跟踪 Spark 作业。这个方法的主要目的是生成并管理执行 ID（executionId），记录执行上下文，
+  // 发布执行开始和结束的事件，以及处理 Spark 作业的生命周期
   def withNewExecutionId[T](
       queryExecution: QueryExecution,
       name: Option[String] = None)(body: => T): T = queryExecution.sparkSession.withActive {
     val sparkSession = queryExecution.sparkSession
     val sc = sparkSession.sparkContext
-    val oldExecutionId = sc.getLocalProperty(EXECUTION_ID_KEY)
+    val oldExecutionId = sc.getLocalProperty(EXECUTION_ID_KEY) //保存当前的执行 ID，稍后恢复
     val executionId = SQLExecution.nextExecutionId
-    sc.setLocalProperty(EXECUTION_ID_KEY, executionId.toString)
+    sc.setLocalProperty(EXECUTION_ID_KEY, executionId.toString)  //设置当前执行的 executionId
     // Track the "root" SQL Execution Id for nested/sub queries. The current execution is the
     // root execution if the root execution ID is null.
     // And for the root execution, rootExecutionId == executionId.
-    if (sc.getLocalProperty(EXECUTION_ROOT_ID_KEY) == null) {
+    if (sc.getLocalProperty(EXECUTION_ROOT_ID_KEY) == null) { //在嵌套查询中，根执行 ID 是整个执行链的起点
       sc.setLocalProperty(EXECUTION_ROOT_ID_KEY, executionId.toString)
     }
     val rootExecutionId = sc.getLocalProperty(EXECUTION_ROOT_ID_KEY).toLong
@@ -95,7 +97,7 @@ object SQLExecution {
 
       val planDescriptionMode =
         ExplainMode.fromString(sparkSession.sessionState.conf.uiExplainMode)
-
+      //处理配置项和敏感信息
       val globalConfigs = sparkSession.sharedState.conf.getAll.toMap
       val modifiedConfigs = sparkSession.sessionState.conf.getAllConfs
         .filterNot { case (key, value) =>
@@ -122,7 +124,7 @@ object SQLExecution {
             modifiedConfigs = redactedConfigs,
             jobTags = sc.getJobTags()
           ))
-          body
+          body    //真正执行的代码逻辑在这里执行
         } catch {
           case e: Throwable =>
             ex = Some(e)
@@ -210,18 +212,19 @@ object SQLExecution {
    * Wrap passed function to ensure necessary thread-local variables like
    * SparkContext local properties are forwarded to execution thread
    */
+    //主要作用是确保 Spark 上下文和本地属性能够在执行任务的线程中被正确传递和恢复
   def withThreadLocalCaptured[T](
       sparkSession: SparkSession, exec: ExecutorService) (body: => T): JFuture[T] = {
     val activeSession = sparkSession
     val sc = sparkSession.sparkContext
     val localProps = Utils.cloneProperties(sc.getLocalProperties)
-    val artifactState = JobArtifactSet.getCurrentJobArtifactState.orNull
+    val artifactState = JobArtifactSet.getCurrentJobArtifactState.orNull  //获取当前作业的工件状态
     exec.submit(() => JobArtifactSet.withActiveJobArtifactState(artifactState) {
       val originalSession = SparkSession.getActiveSession
       val originalLocalProps = sc.getLocalProperties
       SparkSession.setActiveSession(activeSession)
       sc.setLocalProperties(localProps)
-      val res = body
+      val res = body   //执行传入的body代码
       // reset active session and local props.
       sc.setLocalProperties(originalLocalProps)
       if (originalSession.nonEmpty) {

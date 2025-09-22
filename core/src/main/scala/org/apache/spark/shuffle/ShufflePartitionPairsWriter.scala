@@ -32,6 +32,9 @@ import org.apache.spark.util.collection.PairsWriter
  * A key-value writer inspired by {@link DiskBlockObjectWriter} that pushes the bytes to an
  * arbitrary partition writer instead of writing to local disk through the block manager.
  */
+// Spark 中一个用于 Shuffle 阶段的键值对写入器
+// 作用是将 键值对数据序列化并写入到特定的分区输出流 中
+//
 private[spark] class ShufflePartitionPairsWriter(
     partitionWriter: ShufflePartitionWriter,
     serializerManager: SerializerManager,
@@ -40,16 +43,23 @@ private[spark] class ShufflePartitionPairsWriter(
     writeMetrics: ShuffleWriteMetricsReporter,
     checksum: Checksum)
   extends PairsWriter with Closeable {
-
+  // 用于跟踪写入器是否已被关闭
   private var isClosed = false
+  // 提供的原始分区输出流
   private var partitionStream: OutputStream = _
+  // 用于追踪写入数据所花费的时间
   private var timeTrackingStream: OutputStream = _
+  // 一个被 SerializerManager 包装过的流，通常用于压缩（compression）或加密（encryption）
   private var wrappedStream: OutputStream = _
+  // 序列化流。这是实际写入键值对的对象。它负责将键值对对象转换成字节流
   private var objOut: SerializationStream = _
+  // 记录已写入的键值对总数
   private var numRecordsWritten = 0
+  //记录当前已写入的字节数，用于增量更新写入指标
   private var curNumBytesWritten = 0L
   // this would be only initialized when checksum != null,
   // which indicates shuffle checksum is enabled.
+  //一个可选的校验和流
   private var checksumOutputStream: MutableCheckedOutputStream = _
 
   override def write(key: Any, value: Any): Unit = {
@@ -63,15 +73,19 @@ private[spark] class ShufflePartitionPairsWriter(
     objOut.writeValue(value)
     recordWritten()
   }
-
+  // 初始化所有内部的输出流链
   private def open(): Unit = {
     try {
+      // 获取原始输出流
       partitionStream = partitionWriter.openStream
+      // 包装它，以记录写入时间
       timeTrackingStream = new TimeTrackingOutputStream(writeMetrics, partitionStream)
+      // 如果启用了校验和，则用 MutableCheckedOutputStream 再次包装
       if (checksum != null) {
         checksumOutputStream = new MutableCheckedOutputStream(timeTrackingStream)
         checksumOutputStream.setChecksum(checksum)
       }
+      // 进行最终包装（例如压缩）
       wrappedStream = serializerManager.wrapStream(blockId,
         if (checksumOutputStream != null) checksumOutputStream else timeTrackingStream)
       objOut = serializerInstance.serializeStream(wrappedStream)
@@ -83,7 +97,7 @@ private[spark] class ShufflePartitionPairsWriter(
         throw e
     }
   }
-
+  // 关闭所有内部的流，释放资源，并最终更新写入指标
   override def close(): Unit = {
     if (!isClosed) {
       Utils.tryWithSafeFinally {

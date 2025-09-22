@@ -50,9 +50,9 @@ import org.apache.spark.unsafe.types.UTF8String
  * requested.  The attributes produced by this function will be automatically copied anytime rules
  * result in changes to the Generator or its children.
  */
-trait Generator extends Expression {
+trait Generator extends Expression { //作用是基于单个输入行生成零个或多个输出行。生成器与其他表达式不同，因为它可以生成多行输出数据，而其他表达式通常只会生成一个结果
 
-  override def dataType: DataType = ArrayType(elementSchema)
+  override def dataType: DataType = ArrayType(elementSchema)  //返回生成器的输出类型
 
   override def foldable: Boolean = false
 
@@ -63,49 +63,49 @@ trait Generator extends Expression {
   /**
    * The output element schema.
    */
-  def elementSchema: StructType
-
+  def elementSchema: StructType  //定义了生成器输出行的元素的结构。它指定了每个生成的行的列类型和名称
+  //用于生成器根据输入行生成输出行。它会返回一个 TraversableOnce[InternalRow]，这表示可能生成零个或多个输出行
   /** Should be implemented by child classes to perform specific Generators. */
   override def eval(input: InternalRow): TraversableOnce[InternalRow]
 
-  /**
+  /** 用于通知生成器没有更多的行需要处理，通常用于生成器的清理工作
    * Notifies that there are no more rows to process, clean up code, and additional
    * rows can be made here.
    */
   def terminate(): TraversableOnce[InternalRow] = Nil
 
-  /**
+  /**  表示生成器支持代码生成（code generation）
    * Check if this generator supports code generation.
    */
   def supportCodegen: Boolean = !isInstanceOf[CodegenFallback]
 }
 
-/**
+/**  与普通的 Generator 不同，CollectionGenerator 允许生成的代码返回 ArrayData 或 MapData 对象，这为处理集合类型的数据（如数组或映射）提供了支持
  * A collection producing [[Generator]]. This trait provides a different path for code generation,
  * by allowing code generation to return either an [[ArrayData]] or a [[MapData]] object.
  */
 trait CollectionGenerator extends Generator {
   /** The position of an element within the collection should also be returned. */
-  def position: Boolean
+  def position: Boolean  //表示在代码生成时是否需要返回集合元素在集合中的位置（索引）
 
   /** Rows will be inlined during generation. */
-  def inline: Boolean
+  def inline: Boolean  //表示生成的行是否应内联。内联（inlining）通常指的是将生成的集合内容直接展开到每一行中，而不是通过引用一个外部集合数据结构
 
   /** The type of the returned collection object. */
-  def collectionType: DataType = dataType
+  def collectionType: DataType = dataType  //返回生成器生成的集合的类型，通常是 ArrayData 或 MapData 类型
 }
 
-/**
+/** 自定义的生成器，用于通过提供的 lambda 函数生成输出。它继承自 Generator 并实现了 CodegenFallback，意味着它在需要代码生成时会回退到解释执行模式
  * A generator that produces its output using the provided lambda function.
  */
 case class UserDefinedGenerator(
-    elementSchema: StructType,
-    function: Row => TraversableOnce[InternalRow],
-    children: Seq[Expression])
+    elementSchema: StructType, //输出元素的结构类型（StructType），定义了生成器输出的每一行的结构
+    function: Row => TraversableOnce[InternalRow], //一个 lambda 函数，接受一个 Row 类型的输入，并返回一个可遍历的 InternalRow 集合（即多行数据）
+    children: Seq[Expression]) //一个 Expression 类型的集合，表示生成器的输入表达式列表
   extends Generator with CodegenFallback {
 
-  @transient private[this] var inputRow: InterpretedProjection = _
-  @transient private[this] var convertToScala: (InternalRow) => Row = _
+  @transient private[this] var inputRow: InterpretedProjection = _  //用于从输入行中提取字段值
+  @transient private[this] var convertToScala: (InternalRow) => Row = _ //将 InternalRow 类型的输入行转换为 Scala 类型的 Row
 
   private def initializeConverters(): Unit = {
     inputRow = new InterpretedProjection(children)

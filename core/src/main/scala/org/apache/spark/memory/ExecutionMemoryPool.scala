@@ -41,7 +41,7 @@ import org.apache.spark.internal.Logging
  */
 private[memory] class ExecutionMemoryPool(
     lock: Object,
-    memoryMode: MemoryMode
+    memoryMode: MemoryMode //主要堆内和堆外内存
   ) extends MemoryPool(lock) with Logging {
 
   private[this] val poolName: String = memoryMode match {
@@ -49,7 +49,7 @@ private[memory] class ExecutionMemoryPool(
     case MemoryMode.OFF_HEAP => "off-heap execution"
   }
 
-  /**
+  /** 记录每个任务消耗的内存
    * Map from taskAttemptId -> memory consumption in bytes
    */
   @GuardedBy("lock")
@@ -59,7 +59,7 @@ private[memory] class ExecutionMemoryPool(
     memoryForTask.values.sum
   }
 
-  /**
+  /** 获取某个任务的内存
    * Returns the memory consumption, in bytes, for the given task.
    */
   def getMemoryUsageForTask(taskAttemptId: Long): Long = lock.synchronized {
@@ -88,6 +88,11 @@ private[memory] class ExecutionMemoryPool(
    *
    * @return the number of bytes granted to the task.
    */
+
+  // 为给定的 taskAttemptId 所表示的任务尝试申请最大 numBytes 的内存，如果申请成功，则返回实际申请到的内存大小，否则返回 0。
+  // 在某些情况下，此调用可能会阻塞，直到有足够的可用内存以确保每个 task 在强制执行之前有机会至少达到总内存池的 1 / 2N（其中 N 是 active task 的数量）。
+  // 如果 task 数量增加但较旧的 task 已经拥有大量内存，则可能会发生阻塞。
+
   private[memory] def acquireMemory(
       numBytes: Long,
       taskAttemptId: Long,
@@ -96,7 +101,7 @@ private[memory] class ExecutionMemoryPool(
     assert(numBytes > 0, s"invalid number of bytes requested: $numBytes")
 
     // TODO: clean up this clunky method signature
-
+    //// 将此任务添加到任务内存映射中，以便可以准确计数
     // Add this task to the taskMemory map just so we can keep an accurate count of the number
     // of active tasks, to let other tasks ramp down their memory in calls to `acquireMemory`
     if (!memoryForTask.contains(taskAttemptId)) {
@@ -108,6 +113,8 @@ private[memory] class ExecutionMemoryPool(
     // Keep looping until we're either sure that we don't want to grant this request (because this
     // task would have more than 1 / numActiveTasks of the memory) or we have enough free
     // memory to give it (we always let each task get at least 1 / (2 * numActiveTasks)).
+    // 对于当前 N 个 active task，必须保证在每个 task 溢出之前至少获得 1 / 2N，最多 1 / N 的内存。
+    // 由于 N 是动态变化的，所以要持续跟踪 active task 的状态，随时重新分配内存，所以使用 while 循环。
     // TODO: simplify this to limit each task to its own slot
     while (true) {
       val numActiveTasks = memoryForTask.keys.size

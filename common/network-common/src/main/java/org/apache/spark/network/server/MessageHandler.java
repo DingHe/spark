@@ -19,7 +19,7 @@ package org.apache.spark.network.server;
 
 import org.apache.spark.network.protocol.Message;
 
-/**
+/** 处理从 Netty 传输通道 (Channel) 接收到的消息。该类为处理请求或响应消息提供了基础结构
  * Handles either request or response messages coming off of Netty. A MessageHandler instance
  * is associated with a single Netty Channel (though it may have multiple clients on the same
  * Channel.)

@@ -209,7 +209,7 @@ object StaticSQLConf {
       .version("3.0.0")
       .booleanConf
       .createWithDefault(false)
-
+  //FsUrlStreamHandlerFactory 是 Hadoop 中的一个类，用于为文件系统（如 HDFS、S3、文件系统等）提供 URL 流处理的支持,使得 Hadoop 的文件系统（例如 HDFS）可以作为一种协议来处理，这样你就能够使用 hdfs://、file:// 等 URL 协议来引用和访问 Hadoop 文件系统中的文件。
   val DEFAULT_URL_STREAM_HANDLER_FACTORY_ENABLED =
     buildStaticConf("spark.sql.defaultUrlStreamHandlerFactory.enabled")
       .internal()

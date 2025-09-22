@@ -32,16 +32,17 @@ import org.apache.spark.sql.execution.streaming.{FileStreamSink, MetadataLogFile
 import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.util.SchemaUtils
-
+//Spark 3.x 数据源 V2 API 中的一个抽象类，用于定义基于文件的数据源（如 Parquet、ORC、CSV 等）。
+// 它同时支持读（SupportsRead）和写（SupportsWrite），并封装了文件索引、Schema 处理等逻辑
 abstract class FileTable(
     sparkSession: SparkSession,
-    options: CaseInsensitiveStringMap,
-    paths: Seq[String],
-    userSpecifiedSchema: Option[StructType])
+    options: CaseInsensitiveStringMap,  //参数
+    paths: Seq[String],  //文件路径
+    userSpecifiedSchema: Option[StructType])  //用户定义的schema
   extends Table with SupportsRead with SupportsWrite {
 
   import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
-
+  //文件索引用于读取文件元数据，如路径、分区信息、文件大小等
   lazy val fileIndex: PartitioningAwareFileIndex = {
     val caseSensitiveMap = options.asCaseSensitiveMap.asScala.toMap
     // Hadoop Configurations are case sensitive.
@@ -52,6 +53,7 @@ abstract class FileTable(
       new MetadataLogFileIndex(sparkSession, new Path(paths.head),
         options.asScala.toMap, userSpecifiedSchema)
     } else {
+      //非流式文件数据源
       // This is a non-streaming file based datasource.
       val rootPathsSpecified = DataSource.checkAndGlobPathIfNecessary(paths, hadoopConf,
         checkEmptyGlobPath = true, checkFilesExist = true, enableGlobbing = globPaths)
@@ -60,7 +62,8 @@ abstract class FileTable(
         sparkSession, rootPathsSpecified, caseSensitiveMap, userSpecifiedSchema, fileStatusCache)
     }
   }
-
+ //如果用户指定了 Schema，则直接使用
+  //否则，调用 inferSchema(fileIndex.allFiles()) 自动推断 Schema
   lazy val dataSchema: StructType = {
     val schema = userSpecifiedSchema.map { schema =>
       val partitionSchema = fileIndex.partitionSchema
@@ -76,7 +79,7 @@ abstract class FileTable(
       case _ => schema.asNullable
     }
   }
-
+  //完整 Schema，包括分区字段
   override lazy val schema: StructType = {
     val caseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
     SchemaUtils.checkSchemaColumnNameDuplication(dataSchema, caseSensitive)
@@ -110,12 +113,15 @@ abstract class FileTable(
    * does not support inference, or no valid files are given should return None.  In these cases
    * Spark will require that user specify the schema manually.
    */
+  //由子类实现，用于从文件内容推断 Schema（如 CSV/JSON 需要扫描一部分数据）
   def inferSchema(files: Seq[FileStatus]): Option[StructType]
 
   /**
    * Returns whether this format supports the given [[DataType]] in read/write path.
    * By default all data types are supported.
    */
+    //默认支持所有数据类型
+    //但某些文件格式（如 CSV）可能不支持复杂类型（Map/Struct/Array），子类可以重写此方法
   def supportsDataType(dataType: DataType): Boolean = true
 
   /**
@@ -126,6 +132,8 @@ abstract class FileTable(
    *   override def formatName(): String = "ORC"
    * }}}
    */
+  //数据源格式名称
+  //该方法返回数据源的格式名称，如 "parquet"、"json"、"csv"
   def formatName: String
 
   /**
@@ -135,6 +143,7 @@ abstract class FileTable(
    *    source via SQL configuration and fall back to FileFormat.
    * 2. Catalog support is required, which is still under development for data source V2.
    */
+  //回退到 V1 版本的 FileFormat
   def fallbackFileFormat: Class[_ <: FileFormat]
 
   /**

@@ -31,6 +31,7 @@ import org.apache.spark.util.collection.BitSet
 /**
  * An interface for expressions that contain a [[QueryPlan]].
  */
+//主要用于表示包含查询计划（QueryPlan）的表达式
 abstract class PlanExpression[T <: QueryPlan[_]] extends Expression {
 
   // Override `treePatternBits` to propagate bits for its internal plan.
@@ -40,9 +41,9 @@ abstract class PlanExpression[T <: QueryPlan[_]] extends Expression {
     bits.union(plan.treePatternBits)
     bits
   }
-
+  //用于描述查询计划中节点的模式
   final override val nodePatterns: Seq[TreePattern] = Seq(PLAN_EXPRESSION) ++ nodePatternsInternal
-
+  //表示当前表达式是否是确定性的
   override lazy val deterministic: Boolean = children.forall(_.deterministic) &&
     plan.deterministic
 
@@ -53,6 +54,7 @@ abstract class PlanExpression[T <: QueryPlan[_]] extends Expression {
   def exprId: ExprId
 
   /** The plan being wrapped in the query. */
+  //此表达式封装的查询计划
   def plan: T
 
   /** Updates the expression with a new plan. */
@@ -73,18 +75,18 @@ abstract class PlanExpression[T <: QueryPlan[_]] extends Expression {
  *              this subquery.
  */
 abstract class SubqueryExpression(
-    plan: LogicalPlan,
-    outerAttrs: Seq[Expression],
-    exprId: ExprId,
-    joinCond: Seq[Expression],
+    plan: LogicalPlan, //子查询的逻辑计划
+    outerAttrs: Seq[Expression], //外部查询中的引用（outer references）。这些引用指的是在子查询中引用的外部查询中的字段
+    exprId: ExprId, //表达式的唯一标识符
+    joinCond: Seq[Expression], //表示连接条件。它是外部查询和子查询之间的连接条件
     hint: Option[HintInfo]) extends PlanExpression[LogicalPlan] {
   override lazy val resolved: Boolean = childrenResolved && plan.resolved
   override lazy val references: AttributeSet =
-    AttributeSet.fromAttributeSets(outerAttrs.map(_.references))
-  override def children: Seq[Expression] = outerAttrs ++ joinCond
+    AttributeSet.fromAttributeSets(outerAttrs.map(_.references))  //返回子查询中所有外部引用的字段集合（outerAttrs）。外部引用是指在子查询中引用外部查询的字段，这些字段会影响子查询的结果
+  override def children: Seq[Expression] = outerAttrs ++ joinCond  //子查询表达式的子节点
   override def withNewPlan(plan: LogicalPlan): SubqueryExpression
-  def isCorrelated: Boolean = outerAttrs.nonEmpty
-  def hint: Option[HintInfo]
+  def isCorrelated: Boolean = outerAttrs.nonEmpty  //检查子查询是否是相关子查询（correlated subquery）。如果子查询中引用了外部查询的字段（即outerAttrs非空），则该子查询是相关子查询，返回true；否则返回false
+  def hint: Option[HintInfo]  //子查询的提示信息（如果存在）。提示信息用于优化执行计划
   def withNewHint(hint: Option[HintInfo]): SubqueryExpression
 }
 
@@ -93,9 +95,10 @@ object SubqueryExpression {
    * Returns true when an expression contains an IN or correlated EXISTS subquery
    * and false otherwise.
    */
+    //表达式是否包含IN或者相关的EXISTS子查询。如果表达式是ListQuery或者Exists且是相关子查询（即ex.isCorrelated为true），则返回true，否则返回false
   def hasInOrCorrelatedExistsSubquery(e: Expression): Boolean = {
     e.exists {
-      case _: ListQuery => true
+      case _: ListQuery => true //ListQuery 是in语句
       case ex: Exists => ex.isCorrelated
       case _ => false
     }
@@ -106,6 +109,7 @@ object SubqueryExpression {
    * reference attributes are kept as children of subquery expression by
    * [[org.apache.spark.sql.catalyst.analysis.Analyzer.ResolveSubquery]]
    */
+    //检查一个表达式是否包含相关的子查询。如果表达式中存在SubqueryExpression并且该子查询是相关的，则返回true，否则返回false
   def hasCorrelatedSubquery(e: Expression): Boolean = {
     e.exists {
       case s: SubqueryExpression => s.isCorrelated
@@ -116,6 +120,7 @@ object SubqueryExpression {
   /**
    * Returns true when an expression contains a subquery
    */
+    //检查一个表达式是否包含子查询。如果表达式中存在任何类型的SubqueryExpression，则返回true，否则返回false
   def hasSubquery(e: Expression): Boolean = {
     e.exists {
       case _: SubqueryExpression => true
@@ -262,13 +267,14 @@ object SubExprUtils extends PredicateHelper {
  * It is set in PullupCorrelatedPredicates to true/false, before it is set its value is None.
  * See constructLeftJoins in RewriteCorrelatedScalarSubquery for more details.
  */
+//表示返回单行单列结果的子查询表达式。它通常会在查询计划中被转换为标量子查询（scalar subquery）
 case class ScalarSubquery(
-    plan: LogicalPlan,
-    outerAttrs: Seq[Expression] = Seq.empty,
+    plan: LogicalPlan, //子查询的执行逻辑
+    outerAttrs: Seq[Expression] = Seq.empty,  //表示外部查询中的列，它们在子查询中被引用
     exprId: ExprId = NamedExpression.newExprId,
-    joinCond: Seq[Expression] = Seq.empty,
+    joinCond: Seq[Expression] = Seq.empty,  //连接条件，用于描述如何将外部查询与ScalarSubquery连接
     hint: Option[HintInfo] = None,
-    mayHaveCountBug: Option[Boolean] = None)
+    mayHaveCountBug: Option[Boolean] = None) //用于标记子查询是否可能在空输入（零元组）上评估为非空（非null）
   extends SubqueryExpression(plan, outerAttrs, exprId, joinCond, hint) with Unevaluable {
   override def dataType: DataType = {
     assert(plan.schema.fields.nonEmpty, "Scalar subquery should have only one column")
@@ -296,6 +302,7 @@ case class ScalarSubquery(
 }
 
 object ScalarSubquery {
+  //检查一个表达式是否包含相关的ScalarSubquery
   def hasCorrelatedScalarSubquery(e: Expression): Boolean = {
     e.exists {
       case s: ScalarSubquery => s.isCorrelated
@@ -310,11 +317,12 @@ object ScalarSubquery {
  *
  * Note: `exprId` is used to have a unique name in explain string output.
  */
+//返回多行多列的子查询，通常用于与外部查询结合执行。它与外部查询的连接通常会在优化阶段转换为JOIN操
 case class LateralSubquery(
-    plan: LogicalPlan,
-    outerAttrs: Seq[Expression] = Seq.empty,
+    plan: LogicalPlan, //逻辑计划
+    outerAttrs: Seq[Expression] = Seq.empty, //表示在LateralSubquery中引用的外部查询列
     exprId: ExprId = NamedExpression.newExprId,
-    joinCond: Seq[Expression] = Seq.empty,
+    joinCond: Seq[Expression] = Seq.empty,  //外部查询和LateralSubquery之间的连接条件
     hint: Option[HintInfo] = None)
   extends SubqueryExpression(plan, outerAttrs, exprId, joinCond, hint) with Unevaluable {
   override def dataType: DataType = plan.output.toStructType
@@ -352,16 +360,16 @@ case class LateralSubquery(
  * }}}
  */
 case class ListQuery(
-    plan: LogicalPlan,
-    outerAttrs: Seq[Expression] = Seq.empty,
-    exprId: ExprId = NamedExpression.newExprId,
+    plan: LogicalPlan, //子查询的逻辑计划
+    outerAttrs: Seq[Expression] = Seq.empty,  //外部查询中的引用，表示在IN子查询中引用的外部查询的字段。这些字段通常是外部查询中的列，它们会作为条件参与子查询的计算
+    exprId: ExprId = NamedExpression.newExprId, //每个表达式都有一个唯一的标识符ExprId，用于区分不同的表达式实例
     // The plan of list query may have more columns after de-correlation, and we need to track the
     // number of the columns of the original plan, to report the data type properly.
-    numCols: Int = -1,
-    joinCond: Seq[Expression] = Seq.empty,
+    numCols: Int = -1, //表示原始子查询计划的列数。numCols用于追踪子查询的列数
+    joinCond: Seq[Expression] = Seq.empty, //外部查询和IN子查询之间的连接条件
     hint: Option[HintInfo] = None)
   extends SubqueryExpression(plan, outerAttrs, exprId, joinCond, hint) with Unevaluable {
-  def childOutputs: Seq[Attribute] = plan.output.take(numCols)
+  def childOutputs: Seq[Attribute] = plan.output.take(numCols) //numCols用于指定我们要从子查询计划中取出多少列的输出
   override def dataType: DataType = if (numCols > 1) {
     childOutputs.toStructType
   } else {
@@ -424,10 +432,10 @@ case class ListQuery(
  * }}}
  */
 case class Exists(
-    plan: LogicalPlan,
-    outerAttrs: Seq[Expression] = Seq.empty,
+    plan: LogicalPlan, //子查询的逻辑计划
+    outerAttrs: Seq[Expression] = Seq.empty, //外部查询中的引用属性（外部查询的列）。这些列用于定义Exists子查询的相关条件
     exprId: ExprId = NamedExpression.newExprId,
-    joinCond: Seq[Expression] = Seq.empty,
+    joinCond: Seq[Expression] = Seq.empty, //包含连接条件的序列（如果有的话）。joinCond定义了外部查询和子查询之间的连接条件
     hint: Option[HintInfo] = None)
   extends SubqueryExpression(plan, outerAttrs, exprId, joinCond, hint)
   with Predicate

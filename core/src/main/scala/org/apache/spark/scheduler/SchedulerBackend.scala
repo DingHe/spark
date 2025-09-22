@@ -25,17 +25,18 @@ import org.apache.spark.storage.BlockManagerId
  * TaskSchedulerImpl. We assume a Mesos-like model where the application gets resource offers as
  * machines become available and can launch tasks on them.
  */
+//Spark 中用于调度的后端接口。该接口允许插件式地替换不同的调度系统
 private[spark] trait SchedulerBackend {
-  private val appId = "spark-application-" + System.currentTimeMillis
+  private val appId = "spark-application-" + System.currentTimeMillis  //应用程序的唯一标识符
 
-  def start(): Unit
-  def stop(): Unit
+  def start(): Unit  //启动调度器后端
+  def stop(): Unit   //停止调度器后端
   def stop(exitCode: Int): Unit = stop()
   /**
    * Update the current offers and schedule tasks
    */
-  def reviveOffers(): Unit
-  def defaultParallelism(): Int
+  def reviveOffers(): Unit  //更新当前的资源提供信息，并调度任务
+  def defaultParallelism(): Int  //获取默认的并行度（即同时执行的任务数）
 
   /**
    * Requests that an executor kills a running task.
@@ -45,14 +46,15 @@ private[spark] trait SchedulerBackend {
    * @param interruptThread Whether the executor should interrupt the task thread.
    * @param reason The reason for the task kill.
    */
+    //请求杀死一个正在运行的任务
   def killTask(
-      taskId: Long,
-      executorId: String,
-      interruptThread: Boolean,
-      reason: String): Unit =
+      taskId: Long, //任务 ID
+      executorId: String, //执行器 ID
+      interruptThread: Boolean, //是否中断任务线程
+      reason: String): Unit =  //杀死任务的原因
     throw new UnsupportedOperationException
 
-  def isReady(): Boolean = true
+  def isReady(): Boolean = true //判断调度器是否已经准备好进行任务调度
 
   /**
    * Get an application ID associated with the job.
@@ -67,21 +69,21 @@ private[spark] trait SchedulerBackend {
    *
    * @return The application attempt id, if available.
    */
-  def applicationAttemptId(): Option[String] = None
+  def applicationAttemptId(): Option[String] = None  //获取应用程序的尝试 ID
 
   /**
    * Get the URLs for the driver logs. These URLs are used to display the links in the UI
    * Executors tab for the driver.
    * @return Map containing the log names and their respective URLs
    */
-  def getDriverLogUrls: Option[Map[String, String]] = None
+  def getDriverLogUrls: Option[Map[String, String]] = None  //获取驱动程序日志的 URL
 
   /**
    * Get the attributes on driver. These attributes are used to replace log URLs when
    * custom log url pattern is specified.
    * @return Map containing attributes on driver.
    */
-  def getDriverAttributes: Option[Map[String, String]] = None
+  def getDriverAttributes: Option[Map[String, String]] = None //获取驱动程序的属性
 
   /**
    * Get the max number of tasks that can be concurrent launched based on the ResourceProfile
@@ -92,7 +94,7 @@ private[spark] trait SchedulerBackend {
    * @param rp ResourceProfile which to use to calculate max concurrent tasks.
    * @return The max number of tasks that can be concurrent launched currently.
    */
-  def maxNumConcurrentTasks(rp: ResourceProfile): Int
+  def maxNumConcurrentTasks(rp: ResourceProfile): Int  //获取当前可并发启动的最大任务数
 
   /**
    * Get the list of host locations for push based shuffle
@@ -104,6 +106,6 @@ private[spark] trait SchedulerBackend {
    */
   def getShufflePushMergerLocations(
       numPartitions: Int,
-      resourceProfileId: Int): Seq[BlockManagerId] = Nil
+      resourceProfileId: Int): Seq[BlockManagerId] = Nil  //获取推送式 shuffle 的主机位置
 
 }

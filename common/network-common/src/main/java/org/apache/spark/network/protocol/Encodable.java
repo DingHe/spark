@@ -22,7 +22,7 @@ import io.netty.buffer.ByteBuf;
 /**
  * Interface for an object which can be encoded into a ByteBuf. Multiple Encodable objects are
  * stored in a single, pre-allocated ByteBuf, so Encodables must also provide their length.
- *
+ * 定义可以被编码为 ByteBuf 对象的类，要求实现类提供能够将对象转换为字节流的功能，并通过 ByteBuf 来传输或存储数据
  * Encodable objects should provide a static "decode(ByteBuf)" method which is invoked by
  * {@link MessageDecoder}. During decoding, if the object uses the ByteBuf as its data (rather than
  * just copying data from it), then you must retain() the ByteBuf.
@@ -31,11 +31,11 @@ import io.netty.buffer.ByteBuf;
  */
 public interface Encodable {
   /** Number of bytes of the encoded form of this object. */
-  int encodedLength();
+  int encodedLength(); //返回对象的编码后字节长度，即对象序列化后占用的字节数
 
   /**
    * Serializes this object by writing into the given ByteBuf.
    * This method must write exactly encodedLength() bytes.
    */
-  void encode(ByteBuf buf);
+  void encode(ByteBuf buf); //负责将对象编码成字节数据，并写入到传入的 ByteBuf 缓冲区中
 }

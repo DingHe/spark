@@ -25,13 +25,13 @@ import org.apache.spark.sql.catalyst.util.{ArrayData, SQLOrderingUtil}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteExactNumeric, ByteType, CalendarIntervalType, CharType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalExactNumeric, DecimalType, DoubleExactNumeric, DoubleType, FloatExactNumeric, FloatType, FractionalType, IntegerExactNumeric, IntegerType, IntegralType, LongExactNumeric, LongType, MapType, NullType, NumericType, ShortExactNumeric, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, VarcharType, YearMonthIntervalType}
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
-
+//表示数据物理类型的一个抽象类。在 Spark SQL 中，它用于表示数据的底层物理类型，通常是与数据库中的数据格式对应的类型。
 sealed abstract class PhysicalDataType {
-  private[sql] type InternalType
-  private[sql] def ordering: Ordering[InternalType]
-  private[sql] val tag: TypeTag[InternalType]
+  private[sql] type InternalType //物理数据类型的内部类型
+  private[sql] def ordering: Ordering[InternalType] //比较 InternalType 类型数据的 Ordering 实例
+  private[sql] val tag: TypeTag[InternalType] //TypeTag 允许在运行时访问类型信息
 }
-
+//工厂方法，接受 DataType 类型（这是 Spark SQL 中定义的各种数据类型，比如 IntegerType、StringType 等），并根据不同的 DataType 返回不同的 PhysicalDataType 实例
 object PhysicalDataType {
   def apply(dt: DataType): PhysicalDataType = dt match {
     case NullType => PhysicalNullType
@@ -64,16 +64,16 @@ object PhysicalDataType {
 }
 
 sealed trait PhysicalPrimitiveType
-
+//表示数值类型的数据（如整数、浮点数等）
 sealed abstract class PhysicalNumericType extends PhysicalDataType {
   // Unfortunately we can't get this implicitly as that breaks Spark Serialization. In order for
   // implicitly[Numeric[JvmType]] to be valid, we have to change JvmType from a type variable to a
   // type parameter and add a numeric annotation (i.e., [JvmType : Numeric]). This gets
   // desugared by the compiler into an argument to the objects constructor. This means there is no
   // longer a no argument constructor and thus the JVM cannot serialize the object anymore.
-  private[sql] val numeric: Numeric[InternalType]
+  private[sql] val numeric: Numeric[InternalType] //用于执行数值相关的操作（比如加法、减法等）
 
-  private[sql] def exactNumeric: Numeric[InternalType] = numeric
+  private[sql] def exactNumeric: Numeric[InternalType] = numeric //返回一个 Numeric 实例，用于表示精确的数值运算
 }
 
 object PhysicalNumericType {
@@ -91,8 +91,8 @@ object PhysicalNumericType {
 }
 
 sealed abstract class PhysicalFractionalType extends PhysicalNumericType {
-  private[sql] val fractional: Fractional[InternalType]
-  private[sql] val asIntegral: Integral[InternalType]
+  private[sql] val fractional: Fractional[InternalType] //带有小数部分的数值类型的 Fractional 实例，提供了浮点数相关的操作
+  private[sql] val asIntegral: Integral[InternalType] //将分数类型当作整数类型处理，提供整数相关的操作
 }
 
 object PhysicalFractionalType {
@@ -106,7 +106,7 @@ object PhysicalFractionalType {
 }
 
 sealed abstract class PhysicalIntegralType extends PhysicalNumericType {
-  private[sql] val integral: Integral[InternalType]
+  private[sql] val integral: Integral[InternalType] //提供整数相关的操作
 }
 
 object PhysicalIntegralType {

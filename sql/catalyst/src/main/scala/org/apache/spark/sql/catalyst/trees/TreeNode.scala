@@ -53,7 +53,7 @@ import org.apache.spark.util.collection.BitSet
 private class MutableInt(var i: Int)
 
 // A tag of a `TreeNode`, which defines name and type
-case class TreeNodeTag[T](name: String)
+case class TreeNodeTag[T](name: String)   //TreeNode标志的类名
 
 // A functor that always returns true.
 object AlwaysProcess {
@@ -61,11 +61,21 @@ object AlwaysProcess {
 }
 
 // scalastyle:off
-abstract class TreeNode[BaseType <: TreeNode[BaseType]]
+//主要用于在Apache Spark的查询优化过程中处理抽象语法树（AST）和逻辑计划。
+// 具体来说，TreeNode是树形数据结构中每个节点的基类，其他树节点类将继承它，并实现各种遍历和操作功能
+//Product 是一个通用的特质，主要为拥有多个元素的容器类提供方法。Product 特质定义了以下常用方法
+//productArity: 返回元素的数量（即成员的数量）
+//productElement(n: Int): 获取第 n 个元素（从 0 开始）
+//productIterator: 返回一个迭代器，遍历所有元素
+//如果你需要自定义一个类，且希望它继承 Product，你需要实现 productArity 和 productElement 方法
+abstract class TreeNode[BaseType <: TreeNode[BaseType]]  //BaseType表示子节点的类型
   extends Product
   with TreePatternBits
   with WithOrigin {
 // scalastyle:on
+  //这是一个自类型（Self-type），表示TreeNode类必须具备BaseType类型。
+  // 这意味着当前类（TreeNode）的实例必须具有BaseType类型的成员和行为。
+  // 换句话说，TreeNode类的子类必须将自身限制为 BaseType 类型
   self: BaseType =>
 
   override val origin: Origin = CurrentOrigin.get
@@ -74,11 +84,13 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * A mutable map for holding auxiliary information of this tree node. It will be carried over
    * when this node is copied via `makeCopy`, or transformed via `transformUp`/`transformDown`.
    */
+    //存储附加信息
   private val tags: mutable.Map[TreeNodeTag[_], Any] = mutable.Map.empty
 
   /**
    * Default tree pattern [[BitSet] for a [[TreeNode]].
    */
+    //该方法生成并返回一个BitSet，包含当前节点及其所有子节点的树形模式。这是treePatternBits的默认实现
   protected def getDefaultTreePatternBits: BitSet = {
     val bits: BitSet = new BitSet(TreePattern.maxId)
     // Propagate node pattern bits
@@ -107,12 +119,14 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * ineffective for subsequent apply calls on this tree because query plan structures are
    * immutable.
    */
+    //用于记录哪些规则在当前节点及其子树中无效
   private val ineffectiveRules: BitSet = new BitSet(RuleIdCollection.NumRules)
 
   /**
    * @return a sequence of tree pattern enums in a TreeNode T. It does not include propagated
    *         patterns in the subtree of T.
    */
+   //表示当前节点的树形模式，默认情况下为空
   protected val nodePatterns: Seq[TreePattern] = Seq()
 
   /**
@@ -120,6 +134,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *
    * @param ruleId the unique identifier of the rule. If `ruleId` is UnknownId, it is a no-op.
    */
+    //用于标记某个规则（通过ruleId标识）在当前节点及其子树中为无效
   protected def markRuleAsIneffective(ruleId : RuleId): Unit = {
     if (ruleId eq UnknownRuleId) {
       return
@@ -135,13 +150,14 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * @return true if the rule has been marked as ineffective; false otherwise. If `ruleId` is
    *         UnknownId, it returns false.
    */
+    //标记该节点及其子节点是否对ruleId无效
   protected def isRuleIneffective(ruleId : RuleId): Boolean = {
     if (ruleId eq UnknownRuleId) {
       return false
     }
     ineffectiveRules.get(ruleId.id)
   }
-
+  //从其他节点拷贝tags
   def copyTagsFrom(other: BaseType): Unit = {
     // SPARK-32753: it only makes sense to copy tags to a new node
     // but it's too expensive to detect other cases likes node removal
@@ -150,7 +166,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
       tags ++= other.tags
     }
   }
-
+  //设置tag
   def setTagValue[T](tag: TreeNodeTag[T], value: T): Unit = {
     tags(tag) = value
   }
@@ -167,6 +183,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Returns a Seq of the children of this node.
    * Children should not change. Immutability required for containsChild optimization
    */
+  //子节点
   def children: Seq[BaseType]
 
   lazy val containsChild: Set[TreeNode[_]] = children.toSet
@@ -210,6 +227,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Find the first [[TreeNode]] that satisfies the condition specified by `f`.
    * The condition is recursively applied to this node and all of its children (pre-order).
    */
+    //查找第一个满足f函数的节点
   def find(f: BaseType => Boolean): Option[BaseType] = if (f(this)) {
     Some(this)
   } else {
@@ -220,6 +238,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Test whether there is [[TreeNode]] satisfies the conditions specified in `f`.
    * The condition is recursively applied to this node and all of its children (pre-order).
    */
+    //当前节点或者子节点是否满足函数f
   def exists(f: BaseType => Boolean): Boolean = if (f(this)) {
     true
   } else {
@@ -230,6 +249,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Runs the given function on this node and then recursively on [[children]].
    * @param f the function to be applied to each node in the tree.
    */
+    //对当前节点及其子节点应用f函数
   def foreach(f: BaseType => Unit): Unit = {
     f(this)
     children.foreach(_.foreach(f))
@@ -239,6 +259,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Runs the given function recursively on [[children]] then on this node.
    * @param f the function to be applied to each node in the tree.
    */
+    //先对子节点应用f函数，然后到当前节点
   def foreachUp(f: BaseType => Unit): Unit = {
     children.foreach(_.foreachUp(f))
     f(this)
@@ -249,6 +270,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * node in this tree in a preorder traversal.
    * @param f the function to be applied.
    */
+    //对当前节点及其子节点应用f函数，然后把结果用Seq数组的形式返回
   def map[A](f: BaseType => A): Seq[A] = {
     val ret = new collection.mutable.ArrayBuffer[A]()
     foreach(ret += f(_))
@@ -259,9 +281,10 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Returns a Seq by applying a function to all nodes in this tree and using the elements of the
    * resulting collections.
    */
+    //跟map一样算法，不会f函数返回数组
   def flatMap[A](f: BaseType => TraversableOnce[A]): Seq[A] = {
     val ret = new collection.mutable.ArrayBuffer[A]()
-    foreach(ret ++= f(_))
+    foreach(ret ++= f(_)) //++=用于把数组添加到ArrayBuffer
     ret.toSeq
   }
 
@@ -269,16 +292,20 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Returns a Seq containing the result of applying a partial function to all elements in this
    * tree on which the function is defined.
    */
+    //返回满足偏函数的节点的集合
   def collect[B](pf: PartialFunction[BaseType, B]): Seq[B] = {
     val ret = new collection.mutable.ArrayBuffer[B]()
     val lifted = pf.lift
-    foreach(node => lifted(node).foreach(ret.+=))
+    //Option 类中有一个非常常用的方法叫做 foreach，它允许你对 Some 类型的值执行操作，并忽略 None。
+    // 也就是说，只有在 Option 是 Some 时，foreach 才会执行提供的函数；如果是 None，则什么都不做
+    foreach(node => lifted(node).foreach(ret.+=))  //第二个foreach是Option类的
     ret.toSeq
   }
 
   /**
    * Returns a Seq containing the leaves in this tree.
    */
+    //返回叶子节点的集合
   def collectLeaves(): Seq[BaseType] = {
     this.collect { case p if p.children.isEmpty => p }
   }
@@ -287,6 +314,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * Finds and returns the first [[TreeNode]] of the tree for which the given partial function
    * is defined (pre-order), and applies the partial function to it.
    */
+    //返回第一个满足偏函数的节点
   def collectFirst[B](pf: PartialFunction[BaseType, B]): Option[B] = {
     val lifted = pf.lift
     lifted(this).orElse {
@@ -297,7 +325,10 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
   /**
    * Efficient alternative to `productIterator.map(f).toArray`.
    */
+    //应用f函数到所有的元素，并把结果返回
   protected def mapProductIterator[B: ClassTag](f: Any => B): Array[B] = {
+    // Array.ofDim[B](productArity) 创建了一个类型为 B 的数组，数组的大小为 productArity。
+    // productArity 是 Product 类型的一个方法，返回该产品类型（如case class）的字段数量（即成员的数量）
     val arr = Array.ofDim[B](productArity)
     var i = 0
     while (i < arr.length) {
@@ -306,7 +337,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
     }
     arr
   }
-
+  //快速判断子节点是否相等
   private def childrenFastEquals(
       originalChildren: IndexedSeq[BaseType], newChildren: IndexedSeq[BaseType]): Boolean = {
     val size = originalChildren.size
@@ -326,7 +357,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
       case other => other.toIndexedSeq
     }
   }
-
+  //子节点更新为newChildren
   final def withNewChildren(newChildren: Seq[BaseType]): BaseType = {
     val childrenIndexedSeq = asIndexedSeq(children)
     val newChildrenIndexedSeq = asIndexedSeq(newChildren)
@@ -401,6 +432,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *
    * @param rule the function used to transform this nodes children
    */
+    //应用规则转换此节点
   def transform(rule: PartialFunction[BaseType, BaseType]): BaseType = {
     transformDown(rule)
   }
@@ -421,6 +453,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *               subtree. Do not pass it if the rule is not purely functional and reads a
    *               varying initial state for different invocations.
    */
+   //默认ruleId为Unknown
   def transformWithPruning(cond: TreePatternBits => Boolean,
     ruleId: RuleId = UnknownRuleId)(rule: PartialFunction[BaseType, BaseType])
   : BaseType = {
@@ -434,6 +467,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * @param rule the function used to transform this nodes children
    */
   def transformDown(rule: PartialFunction[BaseType, BaseType]): BaseType = {
+    //AlwaysProcess.fn标注所有的模式都适用
     transformDownWithPruning(AlwaysProcess.fn, UnknownRuleId)(rule)
   }
 
@@ -451,20 +485,26 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *               subtree. Do not pass it if the rule is not purely functional and reads a
    *               varying initial state for different invocations.
    */
+  //作用是递归地对当前树节点及其所有子节点应用给定的规则 rule，
+  // 同时提供条件判断（cond）来修剪（prune）不需要遍历的树节点，以及根据规则标识（ruleId）来跳过无效的节点和子树的遍历
   def transformDownWithPruning(cond: TreePatternBits => Boolean,
     ruleId: RuleId = UnknownRuleId)(rule: PartialFunction[BaseType, BaseType])
   : BaseType = {
+    //不满足条件以及rule对该节点无效，则直接返回
     if (!cond.apply(this) || isRuleIneffective(ruleId)) {
       return this
     }
+    //如果规则适用，返回规则变换后的新节点；否则，返回原节点（通过 identity[BaseType] 保持不变）
     val afterRule = CurrentOrigin.withOrigin(origin) {
       rule.applyOrElse(this, identity[BaseType])
     }
 
     // Check if unchanged and then possibly return old copy to avoid gc churn.
+    //判断当前节点是否与变换后的节点 afterRule 相同。如果相同，则表示规则没有改变当前节点，接下来检查子节点
     if (this fastEquals afterRule) {
       val rewritten_plan = mapChildren(_.transformDownWithPruning(cond, ruleId)(rule))
       if (this eq rewritten_plan) {
+        //如果子节点还相同，则标注此规则无效
         markRuleAsIneffective(ruleId)
         this
       } else {
@@ -484,7 +524,9 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *
    * @param rule   the function used to transform this nodes children
    */
+
   def transformUp(rule: PartialFunction[BaseType, BaseType]): BaseType = {
+    //AlwaysProcess.fn标注所有的模式都适用
     transformUpWithPruning(AlwaysProcess.fn, UnknownRuleId)(rule)
   }
 
@@ -503,6 +545,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *               subtree. Do not pass it if the rule is not purely functional and reads a
    *               varying initial state for different invocations.
    */
+    //从子节点开始应用规则
   def transformUpWithPruning(cond: TreePatternBits => Boolean,
     ruleId: RuleId = UnknownRuleId)(rule: PartialFunction[BaseType, BaseType])
   : BaseType = {
@@ -546,18 +589,23 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *               subtree. Do not pass it if the rule is not purely functional and reads a
    *               varying initial state for different invocations.
    */
+    //用于在树的节点上应用规则，并支持在应用规则时访问当前节点及其子节点的变换前后的状态。
+  // 它采用后序遍历方式，意味着它会先应用规则于子节点，然后再应用于当前节点
   def transformUpWithBeforeAndAfterRuleOnChildren(
       cond: BaseType => Boolean, ruleId: RuleId = UnknownRuleId)(
     rule: PartialFunction[(BaseType, BaseType), BaseType]): BaseType = {
+    //如果不满足cond或者节点无效，则直接返回
     if (!cond.apply(this) || isRuleIneffective(ruleId)) {
       return this
     }
+    //先把规则应用到子节点上
     val afterRuleOnChildren =
       mapChildren(_.transformUpWithBeforeAndAfterRuleOnChildren(cond, ruleId)(rule))
     val newNode = CurrentOrigin.withOrigin(origin) {
+      //对当前节点及其子树（变换后的子节点 afterRuleOnChildren）应用规则 rule。规则应用的输入是一个元组 (this, afterRuleOnChildren)，即当前节点及其变换后的子树
       rule.applyOrElse((this, afterRuleOnChildren), { t: (BaseType, BaseType) => t._2 })
     }
-    if (this eq newNode) {
+    if (this eq newNode) {  //如果节点不变，则标注此规则无效
       this.markRuleAsIneffective(ruleId)
       this
     } else {
@@ -634,10 +682,18 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    *               varying initial state for different invocations.
    * @return       the stream of alternatives
    */
+    //使用提供的规则对树的每个节点生成替代版本。该方法以懒加载的 Stream 形式返回结果，
+  // 确保只有在需要时才计算替代节点，从而避免对大规模树结构进行不必要的计算
+    //Stream 可以被视为一个惰性列表，其中的元素在迭代时被逐个计算，而不是一次性计算并存储所有的元素
+    //val stream1 = Stream.cons(1, Stream.cons(2, Stream.cons(3, Stream.empty)))
+    //val stream2 = Stream(1, 2, 3, 4)
+    //val infiniteStream = Stream.from(1)
+    //println(infiniteStream.take(5).toList)
   def multiTransformDownWithPruning(
       cond: TreePatternBits => Boolean,
       ruleId: RuleId = UnknownRuleId
     )(rule: PartialFunction[BaseType, Seq[BaseType]]): Stream[BaseType] = {
+    //不满足cond或者ruleId无效，则直接返回
     if (!cond.apply(this) || isRuleIneffective(ruleId)) {
       return Stream(this)
     }
@@ -651,6 +707,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
     // alternatives. I.e. the "multiTransformDown is lazy" test case in `TreeNodeSuite` would fail.
     // Please note that this behaviour has a downside as well that we can only mark the rule on the
     // original node ineffective if the rule didn't match.
+    //如果规则返回空序列，则意味着该节点被剪枝，返回一个空的流 (Stream.empty)
     var ruleApplied = true
     val afterRules = CurrentOrigin.withOrigin(origin) {
       rule.applyOrElse(this, (_: BaseType) => {
@@ -681,7 +738,9 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
     }
 
     afterRulesStream.flatMap { afterRule =>
+      //如果有子节点
       if (afterRule.containsChild.nonEmpty) {
+        //对子节点不断应用multiTransformDownWithPruning函数，返回的结果生成笛卡尔积，然后当作此节点的新的子节点
         MultiTransform.generateCartesianProduct(
             afterRule.children.map(c => () => c.multiTransformDownWithPruning(cond, ruleId)(rule)))
           .map(afterRule.withNewChildren)
@@ -694,6 +753,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
   /**
    * Returns a copy of this node where `f` has been applied to all the nodes in `children`.
    */
+    //应用f函数到子节点，然后把更新后的子节点更新到此节点
   def mapChildren(f: BaseType => BaseType): BaseType = {
     if (containsChild.nonEmpty) {
       withNewChildren(children.map(f))
@@ -724,9 +784,14 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * @param newArgs the new product arguments.
    * @param allowEmptyArgs whether to allow argument list to be empty.
    */
+    //创建当前树节点类型的副本，并应用转换
   private def makeCopy(
       newArgs: Array[AnyRef],
       allowEmptyArgs: Boolean): BaseType = {
+    //newArgs: Array[AnyRef]
+    // allowEmptyArgs 是否允许构造函数的参数列表为空。这个参数主要用于决定是否允许没有参数的构造函数
+
+    //获取构造函数，如果新的参数为空，并且构造函数也为空，则直接返回this
     val allCtors = getClass.getConstructors
     if (newArgs.isEmpty && allCtors.isEmpty) {
       // This is a singleton object which doesn't have any constructor. Just return `this` as we
@@ -756,7 +821,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
         ClassUtils.isAssignable(argsArray, ctor.getParameterTypes, true /* autoboxing */)
       }
     }.getOrElse(ctors.maxBy(_.getParameterCount)) // fall back to older heuristic
-
+    //创建副本并复制标签
     try {
       CurrentOrigin.withOrigin(origin) {
         val res = defaultCtor.newInstance(allArgs.toArray: _*).asInstanceOf[BaseType]
@@ -832,7 +897,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
   protected def stringArgs: Iterator[Any] = productIterator
 
   private lazy val allChildren: Set[TreeNode[_]] = (children ++ innerChildren).toSet[TreeNode[_]]
-
+  //处理一个映射（Map），对其中的敏感信息进行遮蔽（根据键进行遮蔽），并将映射格式化为字符串表示（格式为 key=value），
+  // 如果生成的字符串包含过多的元素，还会进行截断
   private def redactMapString[K, V](map: Map[K, V], maxFields: Int): List[String] = {
     // For security reason, redact the map value if the key is in certain patterns
     val redactedMap = SQLConf.get.redactOptions(map.toMap)
@@ -842,7 +908,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
     }
     truncatedString(keyValuePairs, "[", ", ", "]", maxFields) :: Nil
   }
-
+  //格式化参数，太长会截断
   private def formatArg(arg: Any, maxFields: Int): String = arg match {
     case seq: Seq[_] =>
       truncatedString(seq.map(formatArg(_, maxFields)), "[", ", ", "]", maxFields)
@@ -856,16 +922,18 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
   }
 
   /** Returns a string representing the arguments to this node, minus any children */
+  //返回该节点的参数字符串表示（不包括子节点）
+    //maxFields，表示最多可以显示的字段数量
   def argString(maxFields: Int): String = stringArgs.flatMap {
-    case tn: TreeNode[_] if allChildren.contains(tn) => Nil
+    case tn: TreeNode[_] if allChildren.contains(tn) => Nil  //返回一个空的列表（即不输出这个节点的信息）
     case Some(tn: TreeNode[_]) if allChildren.contains(tn) => Nil
-    case Some(tn: TreeNode[_]) => tn.simpleString(maxFields) :: Nil
+    case Some(tn: TreeNode[_]) => tn.simpleString(maxFields) :: Nil  //该节点不是子节点之一，调用 tn.simpleString(maxFields) 获取该节点的简化字符串表示
     case tn: TreeNode[_] => tn.simpleString(maxFields) :: Nil
-    case seq: Seq[Any] if seq.toSet.subsetOf(allChildren.asInstanceOf[Set[Any]]) => Nil
+    case seq: Seq[Any] if seq.toSet.subsetOf(allChildren.asInstanceOf[Set[Any]]) => Nil  //该序列中的所有元素都是当前节点的子节点之一，则返回 Nil，即不显示这个序列
     case iter: Iterable[_] if iter.isEmpty => Nil
     case array: Array[_] if array.isEmpty => Nil
     case xs @ (_: Seq[_] | _: Set[_] | _: Array[_]) =>
-      formatArg(xs, maxFields) :: Nil
+      formatArg(xs, maxFields) :: Nil  //如果 xs 是一个 Seq、Set 或 Array 类型，则调用 formatArg(xs, maxFields) 对其进行格式化，并将格式化结果放入一个列表中
     case null => Nil
     case None => Nil
     case Some(null) => Nil
@@ -986,6 +1054,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * All the nodes that should be shown as a inner nested tree of this node.
    * For example, this can be used to show sub-queries.
    */
+    //内部使用的子节点
   def innerChildren: Seq[TreeNode[_]] = Seq.empty
 
   /**
@@ -1071,6 +1140,9 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
    * case of 'pure' `TreeNodes` that only contain primitives and other TreeNodes, the result can be
    * pasted in the REPL to build an equivalent Tree.
    */
+    //将当前 TreeNode 及其子节点转换为类似 Scala 代码的字符串表示，
+  // 通常用于调试场景，帮助展示树形结构的真实样貌，避免在调试过程中被更复杂的 toString 方法所掩盖。
+  // 这个方法可以将树节点的结构转换为一个可以在 REPL 中直接粘贴使用的形式，从而构建一个相同结构的树。
   def asCode: String = {
     val args = productIterator.map {
       case tn: TreeNode[_] => tn.asCode
@@ -1200,16 +1272,19 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]
     case _ => false
   }
 }
-
+//用于表示树中的叶子节点。叶子节点在树结构中通常没有子节点，因此提供了一些方法的默认实现来适应这一特性
 trait LeafLike[T <: TreeNode[T]] { self: TreeNode[T] =>
+  //返回 Nil，表示叶子节点没有子节点
   override final def children: Seq[T] = Nil
+  //默认实现返回 this.asInstanceOf[T]，也就是说叶子节点没有子节点，因此映射操作不会改变当前节点
   override final def mapChildren(f: T => T): T = this.asInstanceOf[T]
   // Stateful expressions should override this method to return a new instance.
+  //这个方法用于替换叶子节点的子节点，默认实现返回 this.asInstanceOf[T]，因为叶子节点本身没有子节点，不需要做任何修改
   override def withNewChildrenInternal(newChildren: IndexedSeq[T]): T = this.asInstanceOf[T]
 }
-
+//为树结构中的单子节点（即只有一个子节点的节点）提供了通用的行为
 trait UnaryLike[T <: TreeNode[T]] { self: TreeNode[T] =>
-  def child: T
+  def child: T  //表示该节点的唯一子节点。每个继承了 UnaryLike 特质的类必须提供这个方法来指定它的子节点
   @transient override final lazy val children: Seq[T] = IndexedSeq(child)
 
   override final def mapChildren(f: T => T): T = {
@@ -1229,12 +1304,12 @@ trait UnaryLike[T <: TreeNode[T]] { self: TreeNode[T] =>
     assert(newChildren.size == 1, "Incorrect number of children")
     withNewChildInternal(newChildren.head)
   }
-
+  //子类需要实现该方法来根据新的子节点创建一个新的节点实例
   protected def withNewChildInternal(newChild: T): T
 }
-
+//为二叉树节点（即有两个子节点的节点）提供的通用行为
 trait BinaryLike[T <: TreeNode[T]] { self: TreeNode[T] =>
-  def left: T
+  def left: T  //left 和 right 是抽象方法，表示节点的左子节点和右子节点
   def right: T
   @transient override final lazy val children: Seq[T] = IndexedSeq(left, right)
 
@@ -1259,10 +1334,10 @@ trait BinaryLike[T <: TreeNode[T]] { self: TreeNode[T] =>
     assert(newChildren.size == 2, "Incorrect number of children")
     withNewChildrenInternal(newChildren(0), newChildren(1))
   }
-
+   //子类需要实现该方法来根据新的左右子节点创建一个新的节点实例
   protected def withNewChildrenInternal(newLeft: T, newRight: T): T
 }
-
+//为那些具有三个子节点的树节点提供的特质，它继承自 TreeNode，并实现了处理和操作三个子节点的通用行为
 trait TernaryLike[T <: TreeNode[T]] { self: TreeNode[T] =>
   def first: T
   def second: T
@@ -1295,7 +1370,7 @@ trait TernaryLike[T <: TreeNode[T]] { self: TreeNode[T] =>
 
   protected def withNewChildrenInternal(newFirst: T, newSecond: T, newThird: T): T
 }
-
+//为具有四个子节点的树节点提供的特质，类似于 UnaryLike, BinaryLike, 和 TernaryLike，但此特质专为包含四个子节点的树节点设计
 trait QuaternaryLike[T <: TreeNode[T]] { self: TreeNode[T] =>
   def first: T
   def second: T
@@ -1341,11 +1416,18 @@ object MultiTransform {
    * @return            the stream of generated `Seq` elements
    */
   def generateCartesianProduct[T](elementSeqs: Seq[() => Seq[T]]): Stream[Seq[T]] = {
+    //elementSeqs: Seq[() => Seq[T]]  一个函数列表，每个函数返回一个序列 (Seq[T])
+    //这表示我们有多个元素序列，需要从这些序列中选择一个元素，生成它们的所有组合
     elementSeqs.foldRight(Stream(Seq.empty[T]))((elements, elementTails) =>
+      //对于每个序列elements，不断取出元素和elementTails组合，生成新的序列返回
       for {
         elementTail <- elementTails
         element <- elements()
       } yield element +: elementTail
+      //+:表示将新的元素加到Seq的前面，返回新的Seq
+      //val seq1 = Seq(2, 3, 4)
+      //val seq2 = 1 +: seq1
+      //println(seq2)  // 输出: Seq(1, 2, 3, 4)
     )
   }
 }

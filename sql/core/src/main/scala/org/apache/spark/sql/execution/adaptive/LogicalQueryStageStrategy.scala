@@ -33,15 +33,16 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNes
  *    [[BroadcastQueryStageExec]]. This is to prevent reversing a broadcast stage into a shuffle
  *    stage in case of the larger join child relation finishes before the smaller relation. Note
  *    that this rule needs to be applied before regular join strategies.
- */
+ */ //用于将包含 LogicalQueryStage 节点的逻辑查询计划转换为相应的物理执行计划
 object LogicalQueryStageStrategy extends Strategy {
-
+  //判断某个查询计划是否为 BroadcastQueryStage 阶段。BroadcastQueryStage 是一个逻辑查询阶段，它标志着某个查询计划已经变成了广播阶段
   private def isBroadcastStage(plan: LogicalPlan): Boolean = plan match {
     case LogicalQueryStage(_, _: BroadcastQueryStageExec) => true
     case _ => false
   }
 
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
+    //等值连接，如果左节点或者有节点为广播节点，则进行广播hash join
     case ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, otherCondition, _,
           left, right, hint)
         if isBroadcastStage(left) || isBroadcastStage(right) =>
@@ -49,12 +50,12 @@ object LogicalQueryStageStrategy extends Strategy {
       Seq(BroadcastHashJoinExec(
         leftKeys, rightKeys, joinType, buildSide, otherCondition, planLater(left),
         planLater(right)))
-
+    //单列非空反连接，转为BroadcastHashJoinExec
     case j @ ExtractSingleColumnNullAwareAntiJoin(leftKeys, rightKeys)
         if isBroadcastStage(j.right) =>
       Seq(joins.BroadcastHashJoinExec(leftKeys, rightKeys, LeftAnti, BuildRight,
         None, planLater(j.left), planLater(j.right), isNullAwareAntiJoin = true))
-
+    //其他join，其中一边是广播，则使用BroadcastNestedLoopJoinExec
     case j @ Join(left, right, joinType, condition, _)
         if isBroadcastStage(left) || isBroadcastStage(right) =>
       val buildSide = if (isBroadcastStage(left)) BuildLeft else BuildRight

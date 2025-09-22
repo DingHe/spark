@@ -41,22 +41,22 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 import org.apache.spark.util.collection.BitSet
-
+//表示在物理计划中进行数据源扫描的节点
 trait DataSourceScanExec extends LeafExecNode {
-  def relation: BaseRelation
-  def tableIdentifier: Option[TableIdentifier]
+  def relation: BaseRelation  //表示数据源的基本关系，通常是数据源的元数据表示
+  def tableIdentifier: Option[TableIdentifier] //表示表的标识符，用来指定扫描的表格
 
-  protected val nodeNamePrefix: String = ""
+  protected val nodeNamePrefix: String = ""  //用于构建节点名称时的前缀
 
   override val nodeName: String = {
     s"Scan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
   }
 
   // Metadata that describes more details of this scan.
-  protected def metadata: Map[String, String]
+  protected def metadata: Map[String, String]  //存储有关扫描操作的元数据信息
 
-  protected val maxMetadataValueLength = conf.maxMetadataStringLength
-
+  protected val maxMetadataValueLength = conf.maxMetadataStringLength  //从配置中获取最大元数据字符串的长度
+  //返回一个简化的字符串描述，包括节点名称、输出字段、元数据（按照最大字段数限制）等
   override def simpleString(maxFields: Int): String = {
     val metadataEntries = metadata.toSeq.sorted.map {
       case (key, value) =>
@@ -66,7 +66,7 @@ trait DataSourceScanExec extends LeafExecNode {
     redact(
       s"$nodeNamePrefix$nodeName${truncatedString(output, "[", ",", "]", maxFields)}$metadataStr")
   }
-
+  //返回一个详细的字符串描述，包含节点名称、输出字段和元数据，适用于更详细的日志或调试信息
   override def verboseStringWithOperatorId(): String = {
     val metadataStr = metadata.toSeq.sorted.filterNot {
       case (_, value) if (value.isEmpty || value.equals("[]")) => true
@@ -86,6 +86,7 @@ trait DataSourceScanExec extends LeafExecNode {
   /**
    * Shorthand for calling redactString() without specifying redacting rules
    */
+  //用于掩码字符串中的敏感信息
   protected def redact(text: String): String = {
     Utils.redact(conf.stringRedactionPattern, text)
   }
@@ -94,6 +95,7 @@ trait DataSourceScanExec extends LeafExecNode {
    * The data being read in.  This is to provide input to the tests in a way compatible with
    * [[InputRDDCodegen]] which all implementations used to extend.
    */
+  //输入的数据
   def inputRDDs(): Seq[RDD[InternalRow]]
 }
 
@@ -180,37 +182,37 @@ case class RowDataSourceScanExec(
       tableIdentifier = None)
 }
 
-/**
+/** 通常用于处理文件数据源扫描的底层逻辑。它结合了文件扫描、文件元数据处理、动态分区裁剪和查询优化等功能。这个 trait 包含许多方法和属性，用于描述和执行文件扫描操作，特别是对文件进行筛选、统计和优化
  * A base trait for file scans containing file listing and metrics code.
  */
 trait FileSourceScanLike extends DataSourceScanExec {
 
   // Filters on non-partition columns.
-  def dataFilters: Seq[Expression]
+  def dataFilters: Seq[Expression]  //表示应用在数据列上的过滤条件（非分区列）
   // Disable bucketed scan based on physical query plan, see rule
   // [[DisableUnnecessaryBucketedScan]] for details.
-  def disableBucketedScan: Boolean
+  def disableBucketedScan: Boolean  //指示是否禁用基于物理查询计划的分桶扫描
   // Bucket ids for bucket pruning.
-  def optionalBucketSet: Option[BitSet]
+  def optionalBucketSet: Option[BitSet] //表示用于分桶裁剪的桶 ID 集合
   // Number of coalesced buckets.
-  def optionalNumCoalescedBuckets: Option[Int]
+  def optionalNumCoalescedBuckets: Option[Int] //表示合并桶的数量。桶合并是指在读取时将多个桶合并为一个桶，这通常用于减少任务数
   // Output attributes of the scan, including data attributes and partition attributes.
-  def output: Seq[Attribute]
+  def output: Seq[Attribute] //表示扫描结果的输出列，包括数据列和分区列
   // Predicates to use for partition pruning.
-  def partitionFilters: Seq[Expression]
+  def partitionFilters: Seq[Expression]  //表示应用在分区列上的过滤条件
   // The file-based relation to scan.
-  def relation: HadoopFsRelation
+  def relation: HadoopFsRelation  //表示要扫描的文件源关系（Hadoop 文件系统关系）。HadoopFsRelation 包含文件格式、路径、分区模式等信息
   // Required schema of the underlying relation, excluding partition columns.
-  def requiredSchema: StructType
+  def requiredSchema: StructType  //表示底层数据关系所需的模式（不包括分区列）
   // Identifier for the table in the metastore.
-  def tableIdentifier: Option[TableIdentifier]
+  def tableIdentifier: Option[TableIdentifier]  //表示元数据中表的标识符。用于标识扫描的表
 
-
+  //收集所有的常量元数据列，通常这些列在扫描过程中需要被附加到每个数据行中，用于表示额外的元数据（例如文件路径、文件名等）
   lazy val fileConstantMetadataColumns: Seq[AttributeReference] = output.collect {
     // Collect metadata columns to be handled outside of the scan by appending constant columns.
     case FileSourceConstantMetadataAttribute(attr) => attr
   }
-
+  //返回支持的向量化读取类型。如果文件格式支持向量化读取（例如，Parquet 或 ORC），则返回相应的向量类型，此外，还会考虑常量元数据列
   override def vectorTypes: Option[Seq[String]] =
     relation.fileFormat.vectorTypes(
       requiredSchema = requiredSchema,
@@ -220,7 +222,7 @@ trait FileSourceScanLike extends DataSourceScanExec {
           // for column-based file format, append metadata column's vector type classes if any
           fileConstantMetadataColumns.map { _ => classOf[ConstantColumnVector].getName }
       }
-
+  //定义一组驱动端的 SQL 性能指标（metrics），包括文件数量、元数据时间、文件大小等。还包括分区读取的指标，如分区数和动态分区裁剪时间
   lazy val driverMetrics = Map(
     "numFiles" -> SQLMetrics.createMetric(sparkContext, "number of files read"),
     "metadataTime" -> SQLMetrics.createTimingMetric(sparkContext, "metadata time"),
@@ -239,15 +241,15 @@ trait FileSourceScanLike extends DataSourceScanExec {
   /**
    * Send the driver-side metrics. Before calling this function, selectedPartitions has
    * been initialized. See SPARK-26327 for more details.
-   */
+   *///发送驱动端的性能指标数据
   protected def sendDriverMetrics(): Unit = {
     val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
     SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, driverMetrics.values.toSeq)
   }
-
+  //检查给定的过滤表达式是否为动态分区裁剪过滤器
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
-
+  //根据过滤条件选择需要扫描的分区。selectedPartitions 存储所有符合条件的分区目录
   @transient lazy val selectedPartitions: Array[PartitionDirectory] = {
     val optimizerMetadataTimeNs = relation.location.metadataOpsTimeNs.getOrElse(0L)
     val startTime = System.nanoTime()
@@ -266,7 +268,7 @@ trait FileSourceScanLike extends DataSourceScanExec {
   // time (for instance the keys used in the other side of a join).
   @transient protected lazy val dynamicallySelectedPartitions: Array[PartitionDirectory] = {
     val dynamicPartitionFilters = partitionFilters.filter(isDynamicPruningFilter)
-
+    //对动态分区裁剪的支持。此方法会检查是否存在动态分区裁剪的过滤条件，并根据这些条件进一步筛选出需要的分区
     if (dynamicPartitionFilters.nonEmpty) {
       val startTime = System.nanoTime()
       // call the file index for the files matching all filters except dynamic partition filters
@@ -290,7 +292,7 @@ trait FileSourceScanLike extends DataSourceScanExec {
   /**
    * [[partitionFilters]] can contain subqueries whose results are available only at runtime so
    * accessing [[selectedPartitions]] should be guarded by this method during planning
-   */
+   */ //检查查询计划中是否存在运行时子查询（这些子查询的结果只在运行时可用），如果有，则需要在运行时决定分区
   private def hasPartitionsAvailableAtRunTime: Boolean = {
     partitionFilters.exists(ExecSubqueryExpression.hasSubquery)
   }
@@ -298,7 +300,7 @@ trait FileSourceScanLike extends DataSourceScanExec {
   private def toAttribute(colName: String): Option[Attribute] =
     output.find(_.name == colName)
 
-  // exposed for testing
+  // exposed for testing  检查当前数据源是否支持分桶扫描
   lazy val bucketedScan: Boolean = {
     if (relation.sparkSession.sessionState.conf.bucketingEnabled && relation.bucketSpec.isDefined
       && !disableBucketedScan) {
@@ -489,7 +491,7 @@ trait FileSourceScanLike extends DataSourceScanExec {
   } ++ driverMetrics
 }
 
-/**
+/**  Apache Spark 中用于从 Hadoop 文件系统（如 HDFS、S3 等）扫描数据的物理计划节点（Physical Plan Node）
  * Physical plan node for scanning data from HadoopFsRelations.
  *
  * @param relation The file-based relation to scan.
@@ -504,12 +506,12 @@ trait FileSourceScanLike extends DataSourceScanExec {
  *                            [[DisableUnnecessaryBucketedScan]] for details.
  */
 case class FileSourceScanExec(
-    @transient override val relation: HadoopFsRelation,
-    override val output: Seq[Attribute],
+    @transient override val relation: HadoopFsRelation, //扫描的文件数据源关系，它包含文件格式、文件路径、分区信息等
+    override val output: Seq[Attribute],  //表示扫描操作的输出列，包括数据列和分区列
     override val requiredSchema: StructType,
     override val partitionFilters: Seq[Expression],
     override val optionalBucketSet: Option[BitSet],
-    override val optionalNumCoalescedBuckets: Option[Int],
+    override val optionalNumCoalescedBuckets: Option[Int], //要合并成多少个buckets
     override val dataFilters: Seq[Expression],
     override val tableIdentifier: Option[TableIdentifier],
     override val disableBucketedScan: Boolean = false)
@@ -517,7 +519,7 @@ case class FileSourceScanExec(
 
   // Note that some vals referring the file-based relation are lazy intentionally
   // so that this plan can be canonicalized on executor side too. See SPARK-23731.
-  override lazy val supportsColumnar: Boolean = {
+  override lazy val supportsColumnar: Boolean = {  //判断是否支持列式存储优化
     val conf = relation.sparkSession.sessionState.conf
     // Only output columnar if there is WSCG to read it.
     val requiredWholeStageCodegenSettings =
@@ -525,7 +527,7 @@ case class FileSourceScanExec(
     requiredWholeStageCodegenSettings &&
       relation.fileFormat.supportBatch(relation.sparkSession, schema)
   }
-
+  //判断是否需要进行 UnsafeRow 转换
   private lazy val needsUnsafeRowConversion: Boolean = {
     if (relation.fileFormat.isInstanceOf[ParquetSource]) {
       conf.parquetVectorizedReaderEnabled
@@ -559,7 +561,7 @@ case class FileSourceScanExec(
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     inputRDD :: Nil
   }
-
+  //执行文件扫描操作，并将数据转换为 InternalRow
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     if (needsUnsafeRowConversion) {
@@ -580,7 +582,7 @@ case class FileSourceScanExec(
       }
     }
   }
-
+  //执行列式扫描操作，返回 ColumnarBatch 数据格式。列式扫描可以提高查询性能，特别是在使用列式存储格式（如 Parquet 或 ORC）时
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
@@ -616,10 +618,10 @@ case class FileSourceScanExec(
    * @param bucketSpec the bucketing spec.
    * @param readFile a function to read each (part of a) file.
    * @param selectedPartitions Hive-style partition that are part of the read.
-   */
+   */ //目的是为基于分桶（bucketed）的读取创建一个 RDD。在 Apache Spark 中，分桶是对数据的物理划分，它将数据划分成多个桶（类似于哈希分区），通常用于优化大数据集的查询，尤其是当查询需要对特定桶的数据进行操作时
   private def createBucketedReadRDD(
-      bucketSpec: BucketSpec,
-      readFile: (PartitionedFile) => Iterator[InternalRow],
+      bucketSpec: BucketSpec, //表示分桶规范，定义了数据集的桶数和分桶方式
+      readFile: (PartitionedFile) => Iterator[InternalRow], //用于读取文件中的数据
       selectedPartitions: Array[PartitionDirectory]): RDD[InternalRow] = {
     logInfo(s"Planning with ${bucketSpec.numBuckets} buckets")
     val filesGroupedToBuckets =
@@ -627,19 +629,19 @@ case class FileSourceScanExec(
         p.files.map(f => PartitionedFileUtil.getPartitionedFile(f, p.values))
       }.groupBy { f =>
         BucketingUtils
-          .getBucketId(f.toPath.getName)
+          .getBucketId(f.toPath.getName) //根据文件的路径和文件名获取分桶 ID（getBucketId）
           .getOrElse(throw QueryExecutionErrors.invalidBucketFile(f.urlEncodedPath))
       }
 
     val prunedFilesGroupedToBuckets = if (optionalBucketSet.isDefined) {
-      val bucketSet = optionalBucketSet.get
+      val bucketSet = optionalBucketSet.get //如果提供了一个桶 ID 集合（optionalBucketSet），则根据该集合进行桶裁剪
       filesGroupedToBuckets.filter {
         f => bucketSet.get(f._1)
       }
     } else {
       filesGroupedToBuckets
     }
-
+    //合并桶（Coalescing Buckets）
     val filePartitions = optionalNumCoalescedBuckets.map { numCoalescedBuckets =>
       logInfo(s"Coalescing to ${numCoalescedBuckets} buckets")
       val coalescedBuckets = prunedFilesGroupedToBuckets.groupBy(_._1 % numCoalescedBuckets)
@@ -654,7 +656,7 @@ case class FileSourceScanExec(
         FilePartition(bucketId, prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty))
       }
     }
-
+    //创建 FileScanRDD
     new FileScanRDD(relation.sparkSession, readFile, filePartitions,
       new StructType(requiredSchema.fields ++ relation.partitionSchema.fields),
       fileConstantMetadataColumns, relation.fileFormat.fileConstantMetadataExtractors,
@@ -664,47 +666,47 @@ case class FileSourceScanExec(
   /**
    * Create an RDD for non-bucketed reads.
    * The bucketed variant of this function is [[createBucketedReadRDD]].
-   *
+   * 目的是为非分桶（non-bucketed）读取创建一个 RDD
    * @param readFile a function to read each (part of a) file.
    * @param selectedPartitions Hive-style partition that are part of the read.
    */
   private def createReadRDD(
       readFile: (PartitionedFile) => Iterator[InternalRow],
-      selectedPartitions: Array[PartitionDirectory]): RDD[InternalRow] = {
-    val openCostInBytes = relation.sparkSession.sessionState.conf.filesOpenCostInBytes
+      selectedPartitions: Array[PartitionDirectory]): RDD[InternalRow] = { //包含所有被选中的 Hive 分区的数组。每个分区包含了一些文件
+    val openCostInBytes = relation.sparkSession.sessionState.conf.filesOpenCostInBytes  //通常是为了决定是否应该将多个文件合并成一个分片。如果文件打开的成本过高，可能会影响性能
     val maxSplitBytes =
-      FilePartition.maxSplitBytes(relation.sparkSession, selectedPartitions)
+      FilePartition.maxSplitBytes(relation.sparkSession, selectedPartitions) //每个分区的处理数据的大小，默认的128M和所有文件大小除以最小分区数量，取最小值
     logInfo(s"Planning scan with bin packing, max size: $maxSplitBytes bytes, " +
       s"open cost is considered as scanning $openCostInBytes bytes.")
 
-    // Filter files with bucket pruning if possible
+    // Filter files with bucket pruning if possible  过滤文件以进行桶裁剪，检查当前 Spark 会话是否启用了分桶（bucketing）。如果启用了分桶，则根据文件的名称和桶 ID 判断是否处理该文件
     val bucketingEnabled = relation.sparkSession.sessionState.conf.bucketingEnabled
     val shouldProcess: Path => Boolean = optionalBucketSet match {
-      case Some(bucketSet) if bucketingEnabled =>
+      case Some(bucketSet) if bucketingEnabled =>  //如果启用了分桶并且提供了一个桶集合（optionalBucketSet），则只有桶 ID 在集合中的文件才会被处理
         // Do not prune the file if bucket file name is invalid
         filePath => BucketingUtils.getBucketId(filePath.getName).forall(bucketSet.get)
       case _ =>
-        _ => true
+        _ => true  //如果没有启用分桶或没有提供桶集合，则所有文件都将被处理
     }
-
+    //根据分片规则分割文件
     val splitFiles = selectedPartitions.flatMap { partition =>
       partition.files.flatMap { file =>
-        if (shouldProcess(file.getPath)) {
+        if (shouldProcess(file.getPath)) {  //分桶检查是否要处理
           val isSplitable = relation.fileFormat.isSplitable(
-              relation.sparkSession, relation.options, file.getPath)
+              relation.sparkSession, relation.options, file.getPath)  //检查文件是否可拆分
           PartitionedFileUtil.splitFiles(
             sparkSession = relation.sparkSession,
             file = file,
             isSplitable = isSplitable,
             maxSplitBytes = maxSplitBytes,
             partitionValues = partition.values
-          )
+          )  //对于每个文件，尝试将其拆分为多个分片。拆分的依据是文件是否可拆分（isSplitable），以及最大分片大小（maxSplitBytes）
         } else {
           Seq.empty
         }
       }
     }.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
-
+    //上面的splitFiles已经按照设置的并行度计算分区大小，这里主要是合并一些小的分区文件
     val partitions =
       FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
 

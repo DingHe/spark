@@ -19,6 +19,7 @@ package org.apache.spark.sql.catalyst.parser
 /**
  * Concrete SQL parser for Catalyst-only SQL statements.
  */
+//重写了访问者类，CatalystSqlParser 仅用于 Catalyst 内部
 class CatalystSqlParser extends AbstractSqlParser {
   override val astBuilder: AstBuilder = new AstBuilder
 }

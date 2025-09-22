@@ -32,12 +32,13 @@ import org.apache.spark.sql.errors.QueryExecutionErrors
  * [[SubqueryBroadcastExec]] and the child will be optimized with the ReusedExchange
  * from the build side.
  */
+//表示启用自适应查询执行（AQE）和动态分区剪裁（DPP）的广播子查询的中间节点
 case class SubqueryAdaptiveBroadcastExec(
-    name: String,
-    index: Int,
-    onlyInBroadcast: Boolean,
-    @transient buildPlan: LogicalPlan,
-    buildKeys: Seq[Expression],
+    name: String, //表示该物理执行计划的名称
+    index: Int, //用于标识该节点在父级执行计划中的位置
+    onlyInBroadcast: Boolean, //标识是否仅在广播时使用该执行计划
+    @transient buildPlan: LogicalPlan, //表示构建表的逻辑计划
+    buildKeys: Seq[Expression], //构建子查询时用于连接的列或表达式，通常是子查询与主查询之间的连接条件
     child: SparkPlan) extends BaseSubqueryExec with UnaryExecNode {
 
   protected override def doExecute(): RDD[InternalRow] = {

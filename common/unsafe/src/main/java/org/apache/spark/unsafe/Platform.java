@@ -24,12 +24,12 @@ import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 
 import sun.misc.Unsafe;
-
+//主要就是解决堆外内存分配及存取的问题
 public final class Platform {
 
-  private static final Unsafe _UNSAFE;
+  private static final Unsafe _UNSAFE; //Unsafe 提供了对底层内存的直接操作
 
-  public static final int BOOLEAN_ARRAY_OFFSET;
+  public static final int BOOLEAN_ARRAY_OFFSET; //存储数组类型的基地址偏移量
 
   public static final int BYTE_ARRAY_OFFSET;
 
@@ -43,12 +43,12 @@ public final class Platform {
 
   public static final int DOUBLE_ARRAY_OFFSET;
 
-  private static final boolean unaligned;
+  private static final boolean unaligned; //是否支持非对齐内存访问，取决于操作系统架构（例如 ppc64 不支持，而 x86、x64、ARM 等支持
 
   // Split java.version on non-digit chars:
   private static final int majorVersion =
     Integer.parseInt(System.getProperty("java.version").split("\\D+")[0]);
-
+  //DirectByteBuffer的构造函数、cleaner字段和cleaner的创建方法，通过下面的static静态模块初始化
   // Access fields and constructors once and store them, for performance:
   private static final Constructor<?> DBB_CONSTRUCTOR;
   private static final Field DBB_CLEANER_FIELD;

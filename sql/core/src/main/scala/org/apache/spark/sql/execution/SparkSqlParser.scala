@@ -45,6 +45,7 @@ import org.apache.spark.sql.types.StringType
 /**
  * Concrete parser for Spark SQL statements.
  */
+//Sp缸kSqlParser 用于外部调用
 class SparkSqlParser extends AbstractSqlParser {
   val astBuilder = new SparkSqlAstBuilder()
 

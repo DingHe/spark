@@ -32,6 +32,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch;
  *
  * @since 3.0.0
  */
+//数据源 V2 API 的一个核心接口，它的主要作用是 创建分区读取器（PartitionReader），用于 RDD 分区级数据读取
 @Evolving
 public interface PartitionReaderFactory extends Serializable {
 
@@ -41,6 +42,7 @@ public interface PartitionReaderFactory extends Serializable {
    * Implementations probably need to cast the input partition to the concrete
    * {@link InputPartition} class defined for the data source.
    */
+  //创建 行式（row-based）分区读取器，用于读取 InternalRow 数据
   PartitionReader<InternalRow> createReader(InputPartition partition);
 
   /**
@@ -49,6 +51,7 @@ public interface PartitionReaderFactory extends Serializable {
    * Implementations probably need to cast the input partition to the concrete
    * {@link InputPartition} class defined for the data source.
    */
+  //如果数据源支持 列式读取（columnar format，如 Parquet, ORC），需要 重写 该方法
   default PartitionReader<ColumnarBatch> createColumnarReader(InputPartition partition) {
     throw new UnsupportedOperationException("Cannot create columnar reader.");
   }
@@ -62,6 +65,8 @@ public interface PartitionReaderFactory extends Serializable {
    * Data source can't mix columnar and row-based partitions. This may be relaxed in future
    * versions.
    */
+  //返回 true 表示支持列式读取，
+  //default 关键字用于 提供方法的默认实现。这允许接口定义具有可选实现的方法，而不强制所有实现类都必须提供自己的实现
   default boolean supportColumnarReads(InputPartition partition) {
     return false;
   }

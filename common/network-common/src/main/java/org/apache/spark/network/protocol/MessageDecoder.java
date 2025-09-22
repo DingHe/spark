@@ -26,7 +26,7 @@ import io.netty.handler.codec.MessageToMessageDecoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
+/** 客户侧解码器，解码服务端到客户端的响应
  * Decoder used by the client side to encode server-to-client responses.
  * This encoder is stateless so it is safe to be shared by multiple threads.
  */

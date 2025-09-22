@@ -35,16 +35,18 @@ import org.apache.spark.util.{AccumulatorContext, AccumulatorV2, ThreadUtils, Ut
  * Classes that represent cleaning tasks.
  */
 private sealed trait CleanupTask
-private case class CleanRDD(rddId: Int) extends CleanupTask
-private case class CleanShuffle(shuffleId: Int) extends CleanupTask
-private case class CleanBroadcast(broadcastId: Long) extends CleanupTask
-private case class CleanAccum(accId: Long) extends CleanupTask
-private case class CleanCheckpoint(rddId: Int) extends CleanupTask
-private case class CleanSparkListener(listener: SparkListener) extends CleanupTask
+private case class CleanRDD(rddId: Int) extends CleanupTask                //清理rdd
+private case class CleanShuffle(shuffleId: Int) extends CleanupTask        //清理shuffle
+private case class CleanBroadcast(broadcastId: Long) extends CleanupTask   //清理广播变量
+private case class CleanAccum(accId: Long) extends CleanupTask             //清理累计变量
+private case class CleanCheckpoint(rddId: Int) extends CleanupTask         //清理检查点
+private case class CleanSparkListener(listener: SparkListener) extends CleanupTask    //清理监听器
 
 /**
  * A WeakReference associated with a CleanupTask.
- *
+ * 弱引用（Weak Reference）：只有在垃圾回收时，弱引用的对象才会被回收，无论内存是否充足
+ * 与 ReferenceQueue 配合使用： WeakReference 通常与 ReferenceQueue 配合使用。
+ * 当引用的对象被垃圾回收时，WeakReference 会被自动加入到 ReferenceQueue 中。这可以用于实现对象的清理工作
  * When the referent object becomes only weakly reachable, the corresponding
  * CleanupTaskWeakReference is automatically added to the given reference queue.
  */
@@ -70,16 +72,16 @@ private[spark] class ContextCleaner(
    * have not been handled by the reference queue.
    */
   private val referenceBuffer =
-    Collections.newSetFromMap[CleanupTaskWeakReference](new ConcurrentHashMap)
+    Collections.newSetFromMap[CleanupTaskWeakReference](new ConcurrentHashMap)  //缓存清理任务的集合
 
-  private val referenceQueue = new ReferenceQueue[AnyRef]
+  private val referenceQueue = new ReferenceQueue[AnyRef] //管理与弱引用（WeakReference）关联的清理任务。当目标对象被垃圾回收时，相关的 CleanupTaskWeakReference 会自动加入到这个队列中
 
-  private val listeners = new ConcurrentLinkedQueue[CleanerListener]()
+  private val listeners = new ConcurrentLinkedQueue[CleanerListener]() //监听器可以接收到清理任务的通知，如 RDD、shuffle、广播等资源被清除的事件
 
-  private val cleaningThread = new Thread() { override def run(): Unit = keepCleaning() }
+  private val cleaningThread = new Thread() { override def run(): Unit = keepCleaning() } //用于持续监听垃圾回收队列（referenceQueue），并执行清理任务
 
   private val periodicGCService: ScheduledExecutorService =
-    ThreadUtils.newDaemonSingleThreadScheduledExecutor("context-cleaner-periodic-gc")
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("context-cleaner-periodic-gc")  //定期触发垃圾回收的服务。通过定时调用 System.gc() 来触发垃圾回收
 
   /**
    * How often to trigger a garbage collection in this JVM.
@@ -89,7 +91,7 @@ private[spark] class ContextCleaner(
    * on the driver, this may happen very occasionally or not at all. Not cleaning at all may
    * lead to executors running out of disk space after a while.
    */
-  private val periodicGCInterval = sc.conf.get(CLEANER_PERIODIC_GC_INTERVAL)
+  private val periodicGCInterval = sc.conf.get(CLEANER_PERIODIC_GC_INTERVAL)  //定义了垃圾回收的触发间隔，单位是秒
 
   /**
    * Whether the cleaning thread will block on cleanup tasks (other than shuffle, which
@@ -101,6 +103,7 @@ private[spark] class ContextCleaner(
    * for instance, when the driver performs a GC and cleans up all broadcast blocks that are no
    * longer in scope.
    */
+    //控制在清理任务（如 RDD、广播等）执行时是否阻塞当前线程。默认情况下，它设置为 true，这是一种临时的解决方法，以避免高频次的阻塞 RPC 调用
   private val blockOnCleanupTasks = sc.conf.get(CLEANER_REFERENCE_TRACKING_BLOCKING)
 
   /**
@@ -113,17 +116,19 @@ private[spark] class ContextCleaner(
    * until the real RPC issue (referred to in the comment above `blockOnCleanupTasks`) is
    * resolved.
    */
+    //控制是否在清理 shuffle 任务时阻塞当前线程。默认情况下，它不阻塞，以避免在清理 shuffle 时出现超时异常
   private val blockOnShuffleCleanupTasks =
     sc.conf.get(CLEANER_REFERENCE_TRACKING_BLOCKING_SHUFFLE)
 
   @volatile private var stopped = false
-
+  //向 ContextCleaner 注册一个监听器，用于接收清理事件的通知（如 RDD、shuffle、广播等资源被清理的事件）
   /** Attach a listener object to get information of when objects are cleaned. */
   def attachListener(listener: CleanerListener): Unit = {
     listeners.add(listener)
   }
 
   /** Start the cleaner. */
+  //启动清理线程 cleaningThread 和定时垃圾回收服务 periodicGCService。清理线程开始监听垃圾回收队列并执行清理任务
   def start(): Unit = {
     cleaningThread.setDaemon(true)
     cleaningThread.setName("Spark Context Cleaner")
@@ -132,7 +137,7 @@ private[spark] class ContextCleaner(
       periodicGCInterval, periodicGCInterval, TimeUnit.SECONDS)
   }
 
-  /**
+  /** 停止清理线程，等待清理线程完成当前任务后再退出
    * Stop the cleaning thread and wait until the thread has finished running its current task.
    */
   def stop(): Unit = {
@@ -178,7 +183,7 @@ private[spark] class ContextCleaner(
       listener: SparkListener): Unit = {
     registerForCleanup(listenerOwner, CleanSparkListener(listener))
   }
-
+  //注册一个cleanTask，当它被垃圾回收时会触发清理操作
   /** Register an object for cleanup. */
   private def registerForCleanup(objectForCleanup: AnyRef, task: CleanupTask): Unit = {
     referenceBuffer.add(new CleanupTaskWeakReference(task, objectForCleanup, referenceQueue))

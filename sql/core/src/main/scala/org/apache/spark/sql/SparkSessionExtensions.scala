@@ -102,25 +102,27 @@ import org.apache.spark.sql.execution.{ColumnarRule, SparkPlan}
  * Note that none of the injected builders should assume that the [[SparkSession]] is fully
  * initialized and should not touch the session's internals (e.g. the SessionState).
  */
+//扩展和定制 Spark SQL 中的多个方面，允许开发者在运行时插入自定义的规则、策略、解析器、函数等。
+// 它提供了一组 API，用于注入不同类型的自定义操作。这些扩展点可以用于不同的阶段，如查询规划、优化、执行等
 @DeveloperApi
 @Experimental
 @Unstable
 class SparkSessionExtensions {
-  type RuleBuilder = SparkSession => Rule[LogicalPlan]
-  type CheckRuleBuilder = SparkSession => LogicalPlan => Unit
-  type StrategyBuilder = SparkSession => Strategy
-  type ParserBuilder = (SparkSession, ParserInterface) => ParserInterface
-  type FunctionDescription = (FunctionIdentifier, ExpressionInfo, FunctionBuilder)
+  type RuleBuilder = SparkSession => Rule[LogicalPlan]  //定义一个函数，接受一个 SparkSession 对象，并返回一个 Rule[LogicalPlan]
+  type CheckRuleBuilder = SparkSession => LogicalPlan => Unit //定义一个函数，接受 SparkSession 和 LogicalPlan，返回一个 Unit
+  type StrategyBuilder = SparkSession => Strategy  //定义一个函数，接受 SparkSession，返回一个 Strategy
+  type ParserBuilder = (SparkSession, ParserInterface) => ParserInterface  //定义一个函数，接受 SparkSession 和 ParserInterface，返回一个 ParserInterface
+  type FunctionDescription = (FunctionIdentifier, ExpressionInfo, FunctionBuilder)  //表示自定义函数的描述，包含 FunctionIdentifier、ExpressionInfo 和 FunctionBuilder
   type TableFunctionDescription = (FunctionIdentifier, ExpressionInfo, TableFunctionBuilder)
-  type ColumnarRuleBuilder = SparkSession => ColumnarRule
-  type QueryPostPlannerStrategyBuilder = SparkSession => Rule[SparkPlan]
+  type ColumnarRuleBuilder = SparkSession => ColumnarRule  //定义一个函数，接受 SparkSession，返回一个 ColumnarRule
+  type QueryPostPlannerStrategyBuilder = SparkSession => Rule[SparkPlan]  //定义一个函数，接受 SparkSession，返回一个 Rule[SparkPlan]
   type QueryStagePrepRuleBuilder = SparkSession => Rule[SparkPlan]
   type QueryStageOptimizerRuleBuilder = SparkSession => Rule[SparkPlan]
 
-  private[this] val columnarRuleBuilders = mutable.Buffer.empty[ColumnarRuleBuilder]
+  private[this] val columnarRuleBuilders = mutable.Buffer.empty[ColumnarRuleBuilder]  //存储所有注入的 ColumnarRuleBuilder
   private[this] val queryPostPlannerStrategyRuleBuilders =
-    mutable.Buffer.empty[QueryPostPlannerStrategyBuilder]
-  private[this] val queryStagePrepRuleBuilders = mutable.Buffer.empty[QueryStagePrepRuleBuilder]
+    mutable.Buffer.empty[QueryPostPlannerStrategyBuilder]  //存储所有注入的 QueryPostPlannerStrategyBuilder
+  private[this] val queryStagePrepRuleBuilders = mutable.Buffer.empty[QueryStagePrepRuleBuilder]  //存储所有注入的 QueryStagePrepRuleBuilder
   private[this] val runtimeOptimizerRules = mutable.Buffer.empty[RuleBuilder]
   private[this] val queryStageOptimizerRuleBuilders =
     mutable.Buffer.empty[QueryStageOptimizerRuleBuilder]
@@ -128,6 +130,7 @@ class SparkSessionExtensions {
   /**
    * Build the override rules for columnar execution.
    */
+    //构建列式执行的重写规则
   private[sql] def buildColumnarRules(session: SparkSession): Seq[ColumnarRule] = {
     columnarRuleBuilders.map(_.apply(session)).toSeq
   }
@@ -135,6 +138,7 @@ class SparkSessionExtensions {
   /**
    * Build the override rules for the query post planner strategy phase of adaptive query execution.
    */
+    //构建查询后规划策略阶段的规则
   private[sql] def buildQueryPostPlannerStrategyRules(
       session: SparkSession): Seq[Rule[SparkPlan]] = {
     queryPostPlannerStrategyRuleBuilders.map(_.apply(session)).toSeq
@@ -143,6 +147,7 @@ class SparkSessionExtensions {
   /**
    * Build the override rules for the query stage preparation phase of adaptive query execution.
    */
+    //构建查询阶段准备规则
   private[sql] def buildQueryStagePrepRules(session: SparkSession): Seq[Rule[SparkPlan]] = {
     queryStagePrepRuleBuilders.map(_.apply(session)).toSeq
   }
@@ -150,6 +155,7 @@ class SparkSessionExtensions {
   /**
    * Build the override rules for the optimizer of adaptive query execution.
    */
+    //构建运行时优化器规则
   private[sql] def buildRuntimeOptimizerRules(session: SparkSession): Seq[Rule[LogicalPlan]] = {
     runtimeOptimizerRules.map(_.apply(session)).toSeq
   }
@@ -157,6 +163,7 @@ class SparkSessionExtensions {
   /**
    * Build the override rules for the query stage optimizer phase of adaptive query execution.
    */
+    //构建查询阶段优化规则
   private[sql] def buildQueryStageOptimizerRules(session: SparkSession): Seq[Rule[SparkPlan]] = {
     queryStageOptimizerRuleBuilders.map(_.apply(session)).toSeq
   }
@@ -164,6 +171,7 @@ class SparkSessionExtensions {
   /**
    * Inject a rule that can override the columnar execution of an executor.
    */
+    //注入一个 ColumnarRuleBuilder，该规则用于列式执行的重写
   def injectColumnar(builder: ColumnarRuleBuilder): Unit = {
     columnarRuleBuilders += builder
   }
@@ -173,6 +181,7 @@ class SparkSessionExtensions {
    * it can get the whole plan before injecting exchanges.
    * Note, these rules can only be applied within AQE.
    */
+    //注入一个规则，这些规则应用于查询计划后阶段，即 plannerStrategy 和 queryStagePrepRules 之间，通常在自适应查询执行（AQE）过程中使用
   def injectQueryPostPlannerStrategyRule(builder: QueryPostPlannerStrategyBuilder): Unit = {
     queryPostPlannerStrategyRuleBuilders += builder
   }
@@ -181,6 +190,7 @@ class SparkSessionExtensions {
    * Inject a rule that can override the query stage preparation phase of adaptive query
    * execution.
    */
+    //注入一个 QueryStagePrepRuleBuilder，用于自适应查询执行中的查询阶段准备
   def injectQueryStagePrepRule(builder: QueryStagePrepRuleBuilder): Unit = {
     queryStagePrepRuleBuilders += builder
   }
@@ -194,6 +204,7 @@ class SparkSessionExtensions {
    *
    * Note that, it does not work if adaptive query execution is disabled.
    */
+    //注入一个 RuleBuilder，用于运行时优化器规则。它可以在自适应查询执行启用时，提高基于准确统计数据的逻辑计划质量
   def injectRuntimeOptimizerRule(builder: RuleBuilder): Unit = {
     runtimeOptimizerRules += builder
   }
@@ -202,15 +213,17 @@ class SparkSessionExtensions {
    * Inject a rule that can override the query stage optimizer phase of adaptive query
    * execution.
    */
+    //注入一个 QueryStageOptimizerRuleBuilder，用于优化查询阶段
   def injectQueryStageOptimizerRule(builder: QueryStageOptimizerRuleBuilder): Unit = {
     queryStageOptimizerRuleBuilders += builder
   }
-
+  //存储所有注入的 RuleBuilder，用于解析阶段的规则
   private[this] val resolutionRuleBuilders = mutable.Buffer.empty[RuleBuilder]
 
   /**
    * Build the analyzer resolution `Rule`s using the given [[SparkSession]].
    */
+    //构建解析规则。
   private[sql] def buildResolutionRules(session: SparkSession): Seq[Rule[LogicalPlan]] = {
     resolutionRuleBuilders.map(_.apply(session)).toSeq
   }
@@ -219,6 +232,7 @@ class SparkSessionExtensions {
    * Inject an analyzer resolution `Rule` builder into the [[SparkSession]]. These analyzer
    * rules will be executed as part of the resolution phase of analysis.
    */
+    //注入一个 RuleBuilder，用于分析解析阶段的规则。这些规则在查询解析过程中应用，通常用于自定义规则的注入
   def injectResolutionRule(builder: RuleBuilder): Unit = {
     resolutionRuleBuilders += builder
   }

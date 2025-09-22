@@ -48,8 +48,8 @@ import org.apache.spark.storage.BlockId
  */
 private[spark] class UnifiedMemoryManager(
     conf: SparkConf,
-    val maxHeapMemory: Long,
-    onHeapStorageRegionSize: Long,
+    val maxHeapMemory: Long,  //总的堆内内存
+    onHeapStorageRegionSize: Long,  //存储内存
     numCores: Int)
   extends MemoryManager(
     conf,
@@ -64,11 +64,11 @@ private[spark] class UnifiedMemoryManager(
   }
 
   assertInvariants()
-
+  //总的堆内内存
   override def maxOnHeapStorageMemory: Long = synchronized {
     maxHeapMemory - onHeapExecutionMemoryPool.memoryUsed
   }
-
+ //总的堆外内存
   override def maxOffHeapStorageMemory: Long = synchronized {
     maxOffHeapMemory - offHeapExecutionMemoryPool.memoryUsed
   }
@@ -103,7 +103,7 @@ private[spark] class UnifiedMemoryManager(
 
     /**
      * Grow the execution pool by evicting cached blocks, thereby shrinking the storage pool.
-     *
+     * 如果执行内存不足且存储区域占用了超过onHeapStorageRegionSize的空间，则通过驱逐存储块释放内存
      * When acquiring memory for a task, the execution pool may need to make multiple
      * attempts. Each attempt must be able to evict storage in case another task jumps in
      * and caches a large block between the attempts. This is called once per attempt.
@@ -116,13 +116,13 @@ private[spark] class UnifiedMemoryManager(
         // the memory that storage has borrowed from execution.
         val memoryReclaimableFromStorage = math.max(
           storagePool.memoryFree,
-          storagePool.poolSize - storageRegionSize)
+          storagePool.poolSize - storageRegionSize)  //计算可从存储内存回收的空间
         if (memoryReclaimableFromStorage > 0) {
           // Only reclaim as much space as is necessary and available:
-          val spaceToReclaim = storagePool.freeSpaceToShrinkPool(
+          val spaceToReclaim = storagePool.freeSpaceToShrinkPool(  //释放存储内存的空间
             math.min(extraMemoryNeeded, memoryReclaimableFromStorage))
-          storagePool.decrementPoolSize(spaceToReclaim)
-          executionPool.incrementPoolSize(spaceToReclaim)
+          storagePool.decrementPoolSize(spaceToReclaim)   //手动释放存储内存的空间
+          executionPool.incrementPoolSize(spaceToReclaim)  //手动增加执行内存的空间
         }
       }
     }
@@ -164,13 +164,13 @@ private[spark] class UnifiedMemoryManager(
         offHeapStorageMemoryPool,
         maxOffHeapStorageMemory)
     }
-    if (numBytes > maxMemory) {
+    if (numBytes > maxMemory) {  //如果大于最大存储内存，则直接返回放不下
       // Fail fast if the block simply won't fit
       logInfo(s"Will not store $blockId as the required space ($numBytes bytes) exceeds our " +
         s"memory limit ($maxMemory bytes)")
       return false
     }
-    if (numBytes > storagePool.memoryFree) {
+    if (numBytes > storagePool.memoryFree) {  //如果不足，则尝试从执行内存获取
       // There is not enough free memory in the storage pool, so try to borrow free memory from
       // the execution pool.
       val memoryBorrowedFromExecution = Math.min(executionPool.memoryFree,
@@ -180,7 +180,7 @@ private[spark] class UnifiedMemoryManager(
     }
     storagePool.acquireMemory(blockId, numBytes)
   }
-
+  //展开内存跟存储内存一样的逻辑
   override def acquireUnrollMemory(
       blockId: BlockId,
       numBytes: Long,
@@ -195,7 +195,7 @@ object UnifiedMemoryManager {
   // This serves a function similar to `spark.memory.fraction`, but guarantees that we reserve
   // sufficient memory for the system even for small heaps. E.g. if we have a 1GB JVM, then
   // the memory used for execution and storage will be (1024 - 300) * 0.6 = 434MB by default.
-  private val RESERVED_SYSTEM_MEMORY_BYTES = 300 * 1024 * 1024
+  private val RESERVED_SYSTEM_MEMORY_BYTES = 300 * 1024 * 1024 //为非执行和非存储任务保留固定内存（300MB），确保系统运行正常
 
   def apply(conf: SparkConf, numCores: Int): UnifiedMemoryManager = {
     val maxMemory = getMaxMemory(conf)
@@ -211,11 +211,11 @@ object UnifiedMemoryManager {
    * Return the total amount of memory shared between execution and storage, in bytes.
    */
   private def getMaxMemory(conf: SparkConf): Long = {
-    val systemMemory = conf.get(TEST_MEMORY)
+    val systemMemory = conf.get(TEST_MEMORY)  //配置用于获取系统内存总量（以字节为单位），系统总内存通常来源于JVM配置（例如-Xmx参数）
     val reservedMemory = conf.getLong(TEST_RESERVED_MEMORY.key,
-      if (conf.contains(IS_TESTING)) 0 else RESERVED_SYSTEM_MEMORY_BYTES)
-    val minSystemMemory = (reservedMemory * 1.5).ceil.toLong
-    if (systemMemory < minSystemMemory) {
+      if (conf.contains(IS_TESTING)) 0 else RESERVED_SYSTEM_MEMORY_BYTES) //计算保留的系统内存
+    val minSystemMemory = (reservedMemory * 1.5).ceil.toLong //计算最小系统内存
+    if (systemMemory < minSystemMemory) {  //系统内存小于最小内存则报错
       throw new SparkIllegalArgumentException(
         errorClass = "INVALID_DRIVER_MEMORY",
         messageParameters = Map(
@@ -224,7 +224,7 @@ object UnifiedMemoryManager {
           "config" -> config.DRIVER_MEMORY.key))
     }
     // SPARK-12759 Check executor memory to fail fast if memory is insufficient
-    if (conf.contains(config.EXECUTOR_MEMORY)) {
+    if (conf.contains(config.EXECUTOR_MEMORY)) {  //计算executor的内存，如果小于最小内存则报错
       val executorMemory = conf.getSizeAsBytes(config.EXECUTOR_MEMORY.key)
       if (executorMemory < minSystemMemory) {
         throw new SparkIllegalArgumentException(
@@ -235,8 +235,8 @@ object UnifiedMemoryManager {
             "config" -> config.EXECUTOR_MEMORY.key))
       }
     }
-    val usableMemory = systemMemory - reservedMemory
-    val memoryFraction = conf.get(config.MEMORY_FRACTION)
+    val usableMemory = systemMemory - reservedMemory  //系统内存减去保留内存就是可用内存
+    val memoryFraction = conf.get(config.MEMORY_FRACTION) //用户配置的可用内存比例，默认0.6，表示Spark使用可用内存中的60%用于执行和存储
     (usableMemory * memoryFraction).toLong
   }
 }

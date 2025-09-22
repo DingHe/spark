@@ -39,7 +39,7 @@ import org.apache.spark.sql.types.DayTimeIntervalType._
 import org.apache.spark.sql.types.YearMonthIntervalType._
 import org.apache.spark.util.SparkClassUtils
 
-/**
+/**  所有spark sql的基础类
  * The base type of all Spark SQL data types.
  *
  * @since 1.3.0
@@ -52,9 +52,10 @@ abstract class DataType extends AbstractDataType {
   /**
    * The default size of a value of this data type, used internally for size estimation.
    */
-  def defaultSize: Int
+  def defaultSize: Int  //表示该数据类型的默认大小
 
   /** Name of the type used in JSON serialization. */
+    //数据类型的名称，去除掉 $、Type 或 UDT 后缀，并转为小写字母形式
   def typeName: String = {
     this.getClass.getSimpleName
       .stripSuffix("$").stripSuffix("Type").stripSuffix("UDT")
@@ -64,13 +65,13 @@ abstract class DataType extends AbstractDataType {
   private[sql] def jsonValue: JValue = typeName
 
   /** The compact JSON representation of this data type. */
-  def json: String = compact(render(jsonValue))
+  def json: String = compact(render(jsonValue))  //返回数据类型的紧凑型 JSON 字符串表示，使用 compact(render(jsonValue)) 实现
 
   /** The pretty (i.e. indented) JSON representation of this data type. */
-  def prettyJson: String = pretty(render(jsonValue))
+  def prettyJson: String = pretty(render(jsonValue))  //返回数据类型的格式化（即带缩进的）JSON 字符串表示
 
   /** Readable string representation for the type. */
-  def simpleString: String = typeName
+  def simpleString: String = typeName  //返回一个易于阅读的字符串表示形式，通常就是 typeName
 
   /** String representation for the type saved in external catalogs. */
   def catalogString: String = simpleString
@@ -84,6 +85,7 @@ abstract class DataType extends AbstractDataType {
    * Check if `this` and `other` are the same data type when ignoring nullability
    * (`StructField.nullable`, `ArrayType.containsNull`, and `MapType.valueContainsNull`).
    */
+    //方法用于比较两个数据类型是否相同，忽略 nullable 属性（即是否可为 null）
   private[spark] def sameType(other: DataType): Boolean =
     if (SqlApiConf.get.caseSensitiveAnalysis) {
       DataType.equalsIgnoreNullability(this, other)
@@ -95,13 +97,14 @@ abstract class DataType extends AbstractDataType {
    * Returns the same data type but set all nullability fields are true
    * (`StructField.nullable`, `ArrayType.containsNull`, and `MapType.valueContainsNull`).
    */
-  private[spark] def asNullable: DataType
+  private[spark] def asNullable: DataType  //返回当前数据类型的副本，但将所有 nullable 字段设置为 true
 
   /**
    * Returns true if any `DataType` of this DataType tree satisfies the given function `f`.
    */
+    //递归检查当前数据类型树中的某个 DataType 是否满足给定的函数 f
   private[spark] def existsRecursively(f: (DataType) => Boolean): Boolean = f(this)
-
+  //返回当前数据类型的具体类型
   override private[sql] def defaultConcreteType: DataType = this
 
   override private[sql] def acceptsType(other: DataType): Boolean = sameType(other)
@@ -117,7 +120,7 @@ object DataType {
   private val FIXED_DECIMAL = """decimal\(\s*(\d+)\s*,\s*(\-?\d+)\s*\)""".r
   private val CHAR_TYPE = """char\(\s*(\d+)\s*\)""".r
   private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
-
+  //从 DDL 字符串解析数据类型
   def fromDDL(ddl: String): DataType = {
     parseTypeWithFallback(
       ddl,
@@ -135,6 +138,7 @@ object DataType {
    * @param fallbackParser The function that is called when `parser` fails.
    * @return The data type parsed from the `schema` schema.
    */
+    //解析数据类型的方法。如果 parser 解析失败，会使用 fallbackParser 进行二次解析
   def parseTypeWithFallback(
       schema: String,
       parser: String => DataType,
@@ -154,7 +158,7 @@ object DataType {
         }
     }
   }
-
+  //从 JSON 字符串解析数据类型
   def fromJson(json: String): DataType = parseDataType(parse(json))
 
   private val otherTypes = {
@@ -178,6 +182,7 @@ object DataType {
   }
 
   /** Given the string representation of a type, return its DataType */
+    //将字符串形式的类型名称转换为相应的 DataType 实例
   private def nameToType(name: String): DataType = {
     name match {
       case "decimal" => DecimalType.USER_DEFAULT

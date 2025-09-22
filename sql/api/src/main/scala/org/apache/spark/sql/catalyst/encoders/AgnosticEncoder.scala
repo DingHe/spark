@@ -38,13 +38,14 @@ import org.apache.spark.util.SparkClassUtils
  * will always produce instance of the external type.
  *
  */
+//为类型 T 提供一个非特定实现的编码器，通用编码器，它不依赖于特定的实现，可以适应不同的数据类型
 trait AgnosticEncoder[T] extends Encoder[T] {
-  def isPrimitive: Boolean
-  def nullable: Boolean = !isPrimitive
-  def dataType: DataType
+  def isPrimitive: Boolean  //该类型是否是原始类型（例如 Int, Long, Boolean 等）
+  def nullable: Boolean = !isPrimitive  //原始类型（如 Int）不支持 null，而复杂类型（如对象）则默认支持 null
+  def dataType: DataType  //该编码器支持的数据类型。这个数据类型是 Spark 内部使用的表示数据类型的类型（例如 StringType, IntegerType 等）
   override def schema: StructType = StructType(StructField("value", dataType, nullable) :: Nil)
-  def lenientSerialization: Boolean = false
-  def isStruct: Boolean = false
+  def lenientSerialization: Boolean = false  //是否启用宽松的序列化。在宽松模式下，序列化时不要求输入数据类型完全匹配外部数据类型。例如，日期类型的序列化时，既允许使用 java.sql.Date 也允许使用 java.time.LocalDate 类型
+  def isStruct: Boolean = false  //用于表示该编码器是否是一个结构体类型的编码器。默认值为 false，表明它不是结构体类型
 }
 
 object AgnosticEncoders {
@@ -92,8 +93,8 @@ object AgnosticEncoders {
   }
 
   case class EncoderField(
-      name: String,
-      enc: AgnosticEncoder[_],
+      name: String,  //名字
+      enc: AgnosticEncoder[_], //编码器
       nullable: Boolean,
       metadata: Metadata,
       readMethod: Option[String] = None,
@@ -131,11 +132,11 @@ object AgnosticEncoders {
       tag.runtimeClass.getName.startsWith("scala.Tuple")
     }
   }
-
+  //基础的行编码器
   abstract class BaseRowEncoder extends StructEncoder[Row] {
     override def clsTag: ClassTag[Row] = classTag[Row]
   }
-
+  //Row数据类型的编码器，包含Fields字段
   case class RowEncoder(override val fields: Seq[EncoderField]) extends BaseRowEncoder
 
   object UnboundRowEncoder extends BaseRowEncoder {

@@ -33,8 +33,9 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  * differs significantly, the concept is similar to the exchange operator described in
  * "Volcano -- An Extensible and Parallel Query Evaluation System" by Goetz Graefe.
  */
+//Exchange 是数据交换操作的基类，它可能会将数据从一个计算节点传递到另一个节点，output 属性就是用来标识交换数据之后，数据的列（即属性）
 abstract class Exchange extends UnaryExecNode {
-  override def output: Seq[Attribute] = child.output
+  override def output: Seq[Attribute] = child.output  //表示子节点（child）的输出属性
   final override val nodePatterns: Seq[TreePattern] = Seq(EXCHANGE)
 
   override def stringArgs: Iterator[Any] = super.stringArgs ++ Iterator(s"[plan_id=$id]")

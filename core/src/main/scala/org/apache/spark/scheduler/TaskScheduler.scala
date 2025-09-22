@@ -33,30 +33,31 @@ import org.apache.spark.util.AccumulatorV2
  * them, retrying if there are failures, and mitigating stragglers. They return events to the
  * DAGScheduler.
  */
+//接收来自 DAGScheduler 的任务集合，并负责将任务发送到集群、执行它们、处理任务失败重试以及处理拖延任务。
 private[spark] trait TaskScheduler {
 
-  private val appId = "spark-application-" + System.currentTimeMillis
+  private val appId = "spark-application-" + System.currentTimeMillis  //用于生成应用程序的 ID
 
-  def rootPool: Pool
+  def rootPool: Pool  //任务调度器的根池
 
   def schedulingMode: SchedulingMode
 
-  def start(): Unit
+  def start(): Unit  //启动任务调度器
 
   // Invoked after system has successfully initialized (typically in spark context).
   // Yarn uses this to bootstrap allocation of resources based on preferred locations,
   // wait for executor registrations, etc.
-  def postStartHook(): Unit = { }
+  def postStartHook(): Unit = { }   //通常用于在系统成功初始化之后做一些额外的工作
 
   // Disconnect from the cluster.
-  def stop(exitCode: Int = 0): Unit
+  def stop(exitCode: Int = 0): Unit  //停止任务调度器。可以选择传入退出码，表示任务调度器停止时的状态
 
   // Submit a sequence of tasks to run.
-  def submitTasks(taskSet: TaskSet): Unit
+  def submitTasks(taskSet: TaskSet): Unit //提交一组任务执行。taskSet 是一组要执行的任务，通常是由 DAGScheduler 传递过来的。
 
   // Kill all the tasks in a stage and fail the stage and all the jobs that depend on the stage.
   // Throw UnsupportedOperationException if the backend doesn't support kill tasks.
-  def cancelTasks(stageId: Int, interruptThread: Boolean, reason: String): Unit
+  def cancelTasks(stageId: Int, interruptThread: Boolean, reason: String): Unit  //取消某个 stage 中的所有任务，并使该 stage 和依赖该 stage 的所有作业失败。
 
   /**
    * Kills a task attempt.
@@ -64,20 +65,22 @@ private[spark] trait TaskScheduler {
    *
    * @return Whether the task was successfully killed.
    */
-  def killTaskAttempt(taskId: Long, interruptThread: Boolean, reason: String): Boolean
+  def killTaskAttempt(taskId: Long, interruptThread: Boolean, reason: String): Boolean  //杀死某个任务尝试。
 
   // Kill all the running task attempts in a stage.
   // Throw UnsupportedOperationException if the backend doesn't support kill tasks.
-  def killAllTaskAttempts(stageId: Int, interruptThread: Boolean, reason: String): Unit
+  def killAllTaskAttempts(stageId: Int, interruptThread: Boolean, reason: String): Unit  //杀死某个 stage 中所有正在运行的任务尝试
 
   // Notify the corresponding `TaskSetManager`s of the stage, that a partition has already completed
   // and they can skip running tasks for it.
+  // 通知对应的 TaskSetManager 某个分区的任务已经完成，可以跳过对该分区的任务执行。
   def notifyPartitionCompletion(stageId: Int, partitionId: Int): Unit
 
   // Set the DAG scheduler for upcalls. This is guaranteed to be set before submitTasks is called.
   def setDAGScheduler(dagScheduler: DAGScheduler): Unit
 
   // Get the default level of parallelism to use in the cluster, as a hint for sizing jobs.
+  //获取集群的默认并行度，作为任务分配时的参考
   def defaultParallelism(): Int
 
   /**

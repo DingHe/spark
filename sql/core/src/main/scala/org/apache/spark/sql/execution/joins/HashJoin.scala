@@ -39,36 +39,36 @@ private[joins] case class HashedRelationInfo(
     relationTerm: String,
     keyIsUnique: Boolean,
     isEmpty: Boolean)
-
+//专门处理基于哈希表的连接算法，支持不同类型的连接操作，比如内连接、外连接、半连接等
 trait HashJoin extends JoinCodegenSupport {
-  def buildSide: BuildSide
+  def buildSide: BuildSide  //表示在哈希连接中，哪一侧是“构建侧” (build side)，哪一侧是“流侧” (stream side)，构建侧是基于哈希表的构建操作，而流侧则是基于流式扫描的操作
 
   override def simpleStringWithNodeId(): String = {
     val opId = ExplainUtils.getOpId(this)
     s"$nodeName $joinType ${buildSide} ($opId)".trim
   }
-
+  //返回HashJoin操作的输出列
   override def output: Seq[Attribute] = {
     joinType match {
       case _: InnerLike =>
-        left.output ++ right.output
+        left.output ++ right.output  //左侧和右侧的输出列都会包含
       case LeftOuter =>
-        left.output ++ right.output.map(_.withNullability(true))
+        left.output ++ right.output.map(_.withNullability(true))  //左侧的输出列和右侧的输出列（可为空）都会包含
       case RightOuter =>
-        left.output.map(_.withNullability(true)) ++ right.output
+        left.output.map(_.withNullability(true)) ++ right.output  //右侧的输出列和左侧的输出列（可为空）都会包含
       case j: ExistenceJoin =>
-        left.output :+ j.exists
+        left.output :+ j.exists  //仅返回左侧的输出列加上exists列（是否存在匹配项）
       case LeftExistence(_) =>
-        left.output
+        left.output    //仅返回左侧的输出列
       case x =>
         throw new IllegalArgumentException(s"HashJoin should not take $x as the JoinType")
     }
   }
-
+  //返回HashJoin操作的输出分区策略，它决定了如何将数据划分到不同的任务中。分区策略取决于连接的类型和构建侧
   override def outputPartitioning: Partitioning = buildSide match {
     case BuildLeft =>
       joinType match {
-        case _: InnerLike | RightOuter => right.outputPartitioning
+        case _: InnerLike | RightOuter => right.outputPartitioning  //如果连接类型是InnerLike或RightOuter，则分区策略是右侧的输出分区
         case x =>
           throw new IllegalArgumentException(
             s"HashJoin should not take $x as the JoinType with building left side")
@@ -76,13 +76,13 @@ trait HashJoin extends JoinCodegenSupport {
     case BuildRight =>
       joinType match {
         case _: InnerLike | LeftOuter | LeftSemi | LeftAnti | _: ExistenceJoin =>
-          left.outputPartitioning
+          left.outputPartitioning   //如果连接类型是InnerLike、LeftOuter、LeftSemi、LeftAnti或ExistenceJoin，则分区策略是左侧的输出分区
         case x =>
           throw new IllegalArgumentException(
             s"HashJoin should not take $x as the JoinType with building right side")
       }
   }
-
+  //返回HashJoin操作的输出排序策略，它决定了如何对连接结果进行排序。排序规则取决于连接类型和构建侧
   override def outputOrdering: Seq[SortOrder] = buildSide match {
     case BuildLeft =>
       joinType match {
@@ -100,12 +100,12 @@ trait HashJoin extends JoinCodegenSupport {
             s"HashJoin should not take $x as the JoinType with building right side")
       }
   }
-
+  //buildPlan和streamedPlan分别表示构建侧和流侧的执行计划（SparkPlan）
   protected lazy val (buildPlan, streamedPlan) = buildSide match {
     case BuildLeft => (left, right)
     case BuildRight => (right, left)
   }
-
+  //buildKeys和streamedKeys分别表示构建侧和流侧的连接键（即用于连接的列）
   protected lazy val (buildKeys, streamedKeys) = {
     require(leftKeys.length == rightKeys.length &&
       leftKeys.map(_.dataType)
@@ -124,13 +124,13 @@ trait HashJoin extends JoinCodegenSupport {
       case BuildRight => (right.output, left.output)
     }
   }
-
+  //buildBoundKeys和streamedBoundKeys是分别绑定构建侧和流侧连接键的表达式。bindReferences用于将连接键与输出列绑定，确保在生成代码时能够正确访问这些列
   @transient protected lazy val buildBoundKeys =
     bindReferences(HashJoin.rewriteKeyExpr(buildKeys), buildOutput)
 
   @transient protected lazy val streamedBoundKeys =
     bindReferences(HashJoin.rewriteKeyExpr(streamedKeys), streamedOutput)
-
+  //分别为构建侧和流侧生成UnsafeProjection。UnsafeProjection是一个高效的投影操作，能够将输入行转化为目标输出行
   protected def buildSideKeyGenerator(): UnsafeProjection =
     UnsafeProjection.create(buildBoundKeys)
 
@@ -157,16 +157,16 @@ trait HashJoin extends JoinCodegenSupport {
       UnsafeProjection.create(
         output, (streamedPlan.output ++ buildPlan.output).map(_.withNullability(true)))
   }
-
+  //基于哈希表来进行高效查找匹配项，处理的核心思想是通过构建侧的哈希关系来查找流侧的匹配项
   private def innerJoin(
-      streamIter: Iterator[InternalRow],
-      hashedRelation: HashedRelation): Iterator[InternalRow] = {
-    val joinRow = new JoinedRow
+      streamIter: Iterator[InternalRow], //流侧（stream side）的行的迭代器。流侧是输入的另一个集合，在内连接过程中需要与构建侧进行匹配
+      hashedRelation: HashedRelation): Iterator[InternalRow] = { //构建侧的哈希关系。它是通过哈希表存储构建侧的所有行，能够根据连接键快速查找匹配项
+    val joinRow = new JoinedRow   //用于将流侧和构建侧的行合并为一行。JoinedRow会在流侧和构建侧有匹配时，将两侧的行合并成一个结果行
     val joinKeys = streamSideKeyGenerator()
 
-    if (hashedRelation == EmptyHashedRelation) {
+    if (hashedRelation == EmptyHashedRelation) {  //判断hashedRelation是否为空
       Iterator.empty
-    } else if (hashedRelation.keyIsUnique) {
+    } else if (hashedRelation.keyIsUnique) {  //处理唯一键的情况
       streamIter.flatMap { srow =>
         joinRow.withLeft(srow)
         val matched = hashedRelation.getValue(joinKeys(srow))
@@ -176,10 +176,10 @@ trait HashJoin extends JoinCodegenSupport {
           None
         }
       }
-    } else {
+    } else {  //处理非唯一键的情况
       streamIter.flatMap { srow =>
         joinRow.withLeft(srow)
-        val matches = hashedRelation.get(joinKeys(srow))
+        val matches = hashedRelation.get(joinKeys(srow))  //这里返回多行
         if (matches != null) {
           matches.map(joinRow.withRight).filter(boundCondition)
         } else {
@@ -188,15 +188,16 @@ trait HashJoin extends JoinCodegenSupport {
       }
     }
   }
-
+  //用于实现外连接（Outer Join）的方法，主要用于处理像左外连接（Left Outer Join）、右外连接（Right Outer Join）或全外连接（Full Outer Join）等。
+  // 外连接的目的是返回两个集合中所有符合连接条件的行，以及那些没有匹配的行（填充为 null）
   private def outerJoin(
-      streamedIter: Iterator[InternalRow],
-      hashedRelation: HashedRelation): Iterator[InternalRow] = {
+      streamedIter: Iterator[InternalRow],  //流侧（stream side）的行的迭代器。流侧是其中一个输入集合，通常是查询中右侧的表
+      hashedRelation: HashedRelation): Iterator[InternalRow] = {  //构建侧（build side）的哈希关系。它是通过哈希表存储构建侧的所有行，能够根据连接键快速查找匹配项
     val joinedRow = new JoinedRow()
     val keyGenerator = streamSideKeyGenerator()
-    val nullRow = new GenericInternalRow(buildPlan.output.length)
+    val nullRow = new GenericInternalRow(buildPlan.output.length)  //如果流侧的某一行没有找到匹配的构建侧行，那么就需要用 nullRow 来填充构建侧的内容
 
-    if (hashedRelation.keyIsUnique) {
+    if (hashedRelation.keyIsUnique) { //唯一键情况下
       streamedIter.map { currentRow =>
         val rowKey = keyGenerator(currentRow)
         joinedRow.withLeft(currentRow)
@@ -207,7 +208,7 @@ trait HashJoin extends JoinCodegenSupport {
           joinedRow.withRight(nullRow)
         }
       }
-    } else {
+    } else {  //非唯一键情况下
       streamedIter.flatMap { currentRow =>
         val rowKey = keyGenerator(currentRow)
         joinedRow.withLeft(currentRow)
@@ -234,7 +235,8 @@ trait HashJoin extends JoinCodegenSupport {
       }
     }
   }
-
+  //用于实现半连接（Semi Join）。
+  // 半连接的目的是从流侧（stream side）返回所有有匹配构建侧（build side）行的记录。与普通连接不同，半连接只返回流侧的行，而不包含构建侧的任何信息
   private def semiJoin(
       streamIter: Iterator[InternalRow],
       hashedRelation: HashedRelation): Iterator[InternalRow] = {
@@ -243,10 +245,11 @@ trait HashJoin extends JoinCodegenSupport {
 
     if (hashedRelation == EmptyHashedRelation) {
       Iterator.empty
-    } else if (hashedRelation.keyIsUnique) {
+    } else if (hashedRelation.keyIsUnique) { //唯一键情况下
       streamIter.filter { current =>
         val key = joinKeys(current)
         lazy val matched = hashedRelation.getValue(key)
+        //如果连接键不为空且在构建侧找到了匹配的行（matched != null），且连接条件满足（boundCondition），则返回该行
         !key.anyNull && matched != null &&
           (condition.isEmpty || boundCondition(joinedRow(current, matched)))
       }
@@ -254,33 +257,40 @@ trait HashJoin extends JoinCodegenSupport {
       streamIter.filter { current =>
         val key = joinKeys(current)
         lazy val buildIter = hashedRelation.get(key)
+        //如果连接键不为空且在构建侧找到了匹配的行（buildIter != null），且连接条件满足（boundCondition），则返回该行
         !key.anyNull && buildIter != null && (condition.isEmpty || buildIter.exists {
           (row: InternalRow) => boundCondition(joinedRow(current, row))
         })
       }
     }
   }
-
+  //用于实现 存在性连接（Existence Join）。
+  // 这个连接类型的目的是检查流侧（stream side）每一行是否在构建侧（build side）中有匹配的行。
+  // 如果存在匹配行，则返回一个标志，通常是一个布尔值，表示该流侧行是否匹配到构建侧的行。
+  // 与半连接类似，存在性连接也不返回构建侧的字段，只返回流侧的字段和一个表示匹配情况的布尔值
   private def existenceJoin(
       streamIter: Iterator[InternalRow],
       hashedRelation: HashedRelation): Iterator[InternalRow] = {
     val joinKeys = streamSideKeyGenerator()
-    val result = new GenericInternalRow(Array[Any](null))
+    val result = new GenericInternalRow(Array[Any](null)) //包含一个布尔类型的字段，用于表示流侧行是否在构建侧中找到了匹配项
     val joinedRow = new JoinedRow
 
-    if (hashedRelation.keyIsUnique) {
+    if (hashedRelation.keyIsUnique) { //唯一键情况下
       streamIter.map { current =>
         val key = joinKeys(current)
         lazy val matched = hashedRelation.getValue(key)
+        //如果连接键不为空且在构建侧找到了匹配的行（matched != null），则通过 boundCondition 检查连接条件是否满足。如果满足，设置 exists 为 true
         val exists = !key.anyNull && matched != null &&
           (condition.isEmpty || boundCondition(joinedRow(current, matched)))
-        result.setBoolean(0, exists)
+        result.setBoolean(0, exists) //将 exists 结果保存在 result 中
         joinedRow(current, result)
       }
-    } else {
+    } else {  //非唯一键情况下
       streamIter.map { current =>
         val key = joinKeys(current)
         lazy val buildIter = hashedRelation.get(key)
+        //如果连接键不为空且在构建侧找到了匹配的行（buildIter != null），
+        // 则通过 boundCondition 检查连接条件是否满足。如果有任意一行匹配且满足条件，exists 设置为 true
         val exists = !key.anyNull && buildIter != null && (condition.isEmpty || buildIter.exists {
           (row: InternalRow) => boundCondition(joinedRow(current, row))
         })
@@ -289,7 +299,8 @@ trait HashJoin extends JoinCodegenSupport {
       }
     }
   }
-
+  //用于执行 反连接（Anti Join） 操作。反连接与半连接（Semi Join）类似，
+  // 都是基于流侧的每一行是否在构建侧找到匹配项来进行过滤，但反连接返回的是流侧那些 没有匹配到构建侧 的行
   private def antiJoin(
       streamIter: Iterator[InternalRow],
       hashedRelation: HashedRelation): Iterator[InternalRow] = {
@@ -301,14 +312,16 @@ trait HashJoin extends JoinCodegenSupport {
     val joinKeys = streamSideKeyGenerator()
     val joinedRow = new JoinedRow
 
-    if (hashedRelation.keyIsUnique) {
+    if (hashedRelation.keyIsUnique) { //唯一键情况
       streamIter.filter { current =>
         val key = joinKeys(current)
         lazy val matched = hashedRelation.getValue(key)
+        //如果连接键为空（key.anyNull）或者在构建侧没有匹配（matched == null），那么这一行流侧行会被保留
+        //如果构建侧有匹配行，还会通过 boundCondition 来检查连接条件是否满足，如果条件不满足，流侧行也会被保留
         key.anyNull || matched == null ||
           (condition.isDefined && !boundCondition(joinedRow(current, matched)))
       }
-    } else {
+    } else {  //非唯一键情况
       streamIter.filter { current =>
         val key = joinKeys(current)
         lazy val buildIter = hashedRelation.get(key)
@@ -705,16 +718,18 @@ trait HashJoin extends JoinCodegenSupport {
 }
 
 object HashJoin extends CastSupport with SQLConfHelper {
-
+  //判断给定的连接键 keys 是否能够被重写为 LongType
   private def canRewriteAsLongType(keys: Seq[Expression]): Boolean = {
     // TODO: support BooleanType, DateType and TimestampType
     keys.forall(_.dataType.isInstanceOf[IntegralType]) &&
       keys.map(_.dataType.defaultSize).sum <= 8
+    //检查所有键的 defaultSize（即每个键的字节大小）之和是否小于等于 8 字节（64 位）。
+    // 这是因为 LongType 是 8 字节的，所有连接键的总大小必须小于或等于 8 字节才能将它们打包成一个 LongType
   }
 
   /**
    * Try to rewrite the key as LongType so we can use getLong(), if they key can fit with a long.
-   *
+   * 尝试将连接键重写为 LongType，以便通过 getLong() 高效访问。它的作用是将多个连接键打包成一个 LongType，如果这些键的大小符合条件
    * If not, returns the original expressions.
    */
   def rewriteKeyExpr(keys: Seq[Expression]): Seq[Expression] = {
@@ -722,12 +737,12 @@ object HashJoin extends CastSupport with SQLConfHelper {
     if (!canRewriteAsLongType(keys)) {
       return keys
     }
-
+    //如果连接键的大小符合条件，方法将通过以下步骤将多个键合并为一个 LongType
     var keyExpr: Expression = if (keys.head.dataType != LongType) {
       cast(keys.head, LongType)
     } else {
       keys.head
-    }
+    } //通过位运算（左移、按位与、按位或）将其余的键与第一个键合并。每个键会根据它的数据类型大小进行适当的左移
     keys.tail.foreach { e =>
       val bits = e.dataType.defaultSize * 8
       keyExpr = BitwiseOr(ShiftLeft(keyExpr, Literal(bits)),
@@ -736,7 +751,7 @@ object HashJoin extends CastSupport with SQLConfHelper {
     keyExpr :: Nil
   }
 
-  /**
+  /** 从已经被打包为 LongType 的连接键中提取特定的键。它是从一个 LongType 中解包出指定的连接键
    * Extract a given key which was previously packed in a long value using its index to
    * determine the number of bits to shift
    */

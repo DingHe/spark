@@ -87,7 +87,7 @@ class SparkContext(config: SparkConf) extends Logging {
 
   // The call site where this SparkContext was constructed.
   private val creationSite: CallSite = Utils.getCallSite()
-
+  //是否允许executor创建SparkContext
   if (!config.get(EXECUTOR_ALLOW_SPARK_CONTEXT)) {
     // In order to prevent SparkContext from being created in executors.
     SparkContext.assertOnDriver()
@@ -96,12 +96,12 @@ class SparkContext(config: SparkConf) extends Logging {
   // In order to prevent multiple SparkContexts from being active at the same time, mark this
   // context as having started construction.
   // NOTE: this must be placed at the beginning of the SparkContext constructor.
-  SparkContext.markPartiallyConstructed(this)
+  SparkContext.markPartiallyConstructed(this)  //确保在构建SparkContext的过程中不会存在同时构建
 
-  val startTime = System.currentTimeMillis()
+  val startTime = System.currentTimeMillis()   //当前系统的时间
 
-  private[spark] val stopped: AtomicBoolean = new AtomicBoolean(false)
-
+  private[spark] val stopped: AtomicBoolean = new AtomicBoolean(false)  //是否已经停止
+  //判断SparkContext是否停止了
   private[spark] def assertNotStopped(): Unit = {
     if (stopped.get()) {
       val activeContext = SparkContext.activeContext.get()
@@ -128,7 +128,7 @@ class SparkContext(config: SparkConf) extends Logging {
    * Create a SparkContext that loads settings from system properties (for instance, when
    * launching with ./bin/spark-submit).
    */
-  def this() = this(new SparkConf())
+  def this() = this(new SparkConf())   //默认的配置的构造函数
 
   /**
    * Alternative constructor that allows setting common Spark properties directly
@@ -138,7 +138,7 @@ class SparkContext(config: SparkConf) extends Logging {
    * @param conf a [[org.apache.spark.SparkConf]] object specifying other Spark parameters
    */
   def this(master: String, appName: String, conf: SparkConf) =
-    this(SparkContext.updatedConf(conf, master, appName))
+    this(SparkContext.updatedConf(conf, master, appName))  //可以设置master appName和其他配置的构造函数
 
   /**
    * Alternative constructor that allows setting common Spark properties directly
@@ -243,39 +243,39 @@ class SparkContext(config: SparkConf) extends Logging {
    | context.                                                                              |
    * ------------------------------------------------------------------------------------- */
 
-  private[spark] def conf: SparkConf = _conf
+  private[spark] def conf: SparkConf = _conf  //配置信息
 
   /**
    * Return a copy of this SparkContext's configuration. The configuration ''cannot'' be
    * changed at runtime.
    */
-  def getConf: SparkConf = conf.clone()
+  def getConf: SparkConf = conf.clone()  //返回当前SparkConf
 
-  def resources: Map[String, ResourceInformation] = _resources
+  def resources: Map[String, ResourceInformation] = _resources   //GPU FPGA等资源信息
 
-  def jars: Seq[String] = _jars
-  def files: Seq[String] = _files
-  def archives: Seq[String] = _archives
-  def master: String = _conf.get("spark.master")
-  def deployMode: String = _conf.get(SUBMIT_DEPLOY_MODE)
-  def appName: String = _conf.get("spark.app.name")
+  def jars: Seq[String] = _jars   //jar资源
+  def files: Seq[String] = _files  //文件资源
+  def archives: Seq[String] = _archives   //归档资源
+  def master: String = _conf.get("spark.master")   //master
+  def deployMode: String = _conf.get(SUBMIT_DEPLOY_MODE)   //部署方式
+  def appName: String = _conf.get("spark.app.name")    //应用名称
 
-  private[spark] def isEventLogEnabled: Boolean = _conf.get(EVENT_LOG_ENABLED)
-  private[spark] def eventLogDir: Option[URI] = _eventLogDir
-  private[spark] def eventLogCodec: Option[String] = _eventLogCodec
+  private[spark] def isEventLogEnabled: Boolean = _conf.get(EVENT_LOG_ENABLED)  //是否打开事件日记
+  private[spark] def eventLogDir: Option[URI] = _eventLogDir   //事件日志的路径
+  private[spark] def eventLogCodec: Option[String] = _eventLogCodec   //事件日志的压缩编码
 
-  def isLocal: Boolean = Utils.isLocalMaster(_conf)
+  def isLocal: Boolean = Utils.isLocalMaster(_conf)   //是否本地模式运行
 
   /**
    * @return true if context is stopped or in the midst of stopping.
    */
   def isStopped: Boolean = stopped.get()
 
-  private[spark] def statusStore: AppStatusStore = _statusStore
+  private[spark] def statusStore: AppStatusStore = _statusStore  //kv数据库的状态存储
 
   // An asynchronous listener bus for Spark events
-  private[spark] def listenerBus: LiveListenerBus = _listenerBus
-
+  private[spark] def listenerBus: LiveListenerBus = _listenerBus   //事件总线
+  //通过SparkEnv的静态方法创建SparkEnv环境
   // This function allows components created by SparkEnv to be mocked in unit tests:
   private[spark] def createSparkEnv(
       conf: SparkConf,
@@ -288,25 +288,29 @@ class SparkContext(config: SparkConf) extends Logging {
 
   // Used to store session UUID with a URL for each static file/jar together and
   // the file's local timestamp. It's session uuid -> (URL -> timestamp).
+  //文件、归档文件和jar包的存储
   private[spark] val addedFiles = new ConcurrentHashMap[
     String, ScalaConcurrentMap[String, Long]]().asScala
   private[spark] val addedArchives = new ConcurrentHashMap[
     String, ScalaConcurrentMap[String, Long]]().asScala
   private[spark] val addedJars = new ConcurrentHashMap[
     String, ScalaConcurrentMap[String, Long]]().asScala
-
+  //返回文件、归档文件和jar包的存储
   private[spark] def allAddedFiles = addedFiles.values.flatten.toMap
   private[spark] def allAddedArchives = addedArchives.values.flatten.toMap
   private[spark] def allAddedJars = addedJars.values.flatten.toMap
-
+   //负责跟踪持久化的rdd
   // Keeps track of all persisted RDDs
   private[spark] val persistentRdds = {
+    //MapMaker() 是来自 Google Guava 库的类，用于构建 Map 的实例
+    //weakValues() 方法表示映射中的值（即 RDD）将是弱引用。这意味着，当某个 RDD 没有强引用时，它会被垃圾回收
+    //makeMap() 方法实际创建一个 ConcurrentMap，这个 ConcurrentMap 具有弱引用值
     val map: ConcurrentMap[Int, RDD[_]] = new MapMaker().weakValues().makeMap[Int, RDD[_]]()
     map.asScala
   }
-  def statusTracker: SparkStatusTracker = _statusTracker
+  def statusTracker: SparkStatusTracker = _statusTracker  //状态跟踪
 
-  private[spark] def progressBar: Option[ConsoleProgressBar] = _progressBar
+  private[spark] def progressBar: Option[ConsoleProgressBar] = _progressBar  //进度条
 
   private[spark] def ui: Option[SparkUI] = _ui
 
@@ -318,29 +322,29 @@ class SparkContext(config: SparkConf) extends Logging {
    * @note As it will be reused in all Hadoop RDDs, it's better not to modify it unless you
    * plan to set some global configurations for all Hadoop RDDs.
    */
-  def hadoopConfiguration: Configuration = _hadoopConfiguration
+  def hadoopConfiguration: Configuration = _hadoopConfiguration   //hadoop的配置
 
-  private[spark] def executorMemory: Int = _executorMemory
+  private[spark] def executorMemory: Int = _executorMemory  //执行内存的大小
 
   // Environment variables to pass to our executors.
-  private[spark] val executorEnvs = HashMap[String, String]()
+  private[spark] val executorEnvs = HashMap[String, String]()   //传递给执行器的环境信息
 
   // Set SPARK_USER for user who is running SparkContext.
-  val sparkUser = Utils.getCurrentUserName()
+  val sparkUser = Utils.getCurrentUserName()   //当前用户名
 
-  private[spark] def schedulerBackend: SchedulerBackend = _schedulerBackend
+  private[spark] def schedulerBackend: SchedulerBackend = _schedulerBackend   //调度后端
 
-  private[spark] def taskScheduler: TaskScheduler = _taskScheduler
+  private[spark] def taskScheduler: TaskScheduler = _taskScheduler   //任务调度器
   private[spark] def taskScheduler_=(ts: TaskScheduler): Unit = {
     _taskScheduler = ts
   }
 
-  private[spark] def dagScheduler: DAGScheduler = _dagScheduler
+  private[spark] def dagScheduler: DAGScheduler = _dagScheduler   //dag调度图
   private[spark] def dagScheduler_=(ds: DAGScheduler): Unit = {
     _dagScheduler = ds
   }
 
-  private[spark] def shuffleDriverComponents: ShuffleDriverComponents = _shuffleDriverComponents
+  private[spark] def shuffleDriverComponents: ShuffleDriverComponents = _shuffleDriverComponents   //shuffle相关的组件
 
   /**
    * A unique identifier for the Spark application.
@@ -351,20 +355,20 @@ class SparkContext(config: SparkConf) extends Logging {
    *  in case of MESOS something like 'driver-20170926223339-0001'
    * )
    */
-  def applicationId: String = _applicationId
-  def applicationAttemptId: Option[String] = _applicationAttemptId
+  def applicationId: String = _applicationId   //应用id
+  def applicationAttemptId: Option[String] = _applicationAttemptId  //应用尝试的id
 
   private[spark] def eventLogger: Option[EventLoggingListener] = _eventLogger
 
   private[spark] def executorAllocationManager: Option[ExecutorAllocationManager] =
-    _executorAllocationManager
+    _executorAllocationManager   //执行器分配管理器
 
-  private[spark] def resourceProfileManager: ResourceProfileManager = _resourceProfileManager
+  private[spark] def resourceProfileManager: ResourceProfileManager = _resourceProfileManager   //资源管理器
 
   private[spark] def cleaner: Option[ContextCleaner] = _cleaner
-
+  //检查点的路径，一般是hdfs类分布式系统
   private[spark] var checkpointDir: Option[String] = None
-
+  //获取本地变量
   // Thread Local variable that can be used by users to pass information down the stack
   protected[spark] val localProperties = new InheritableThreadLocal[Properties] {
     override def childValue(parent: Properties): Properties = {
@@ -712,7 +716,7 @@ class SparkContext(config: SparkConf) extends Logging {
       }
   }
 
-  /**
+  /** 通过 Spark Web UI 获取某个 Executor 的线程堆栈信息。方法可能会因为 Executor 无响应、网络问题等原因而失败，因此需要处理异常
    * Called by the web UI to obtain executor thread dumps.  This method may be expensive.
    * Logs an error and returns None if we failed to obtain a thread dump, which could occur due
    * to an executor being dead or unresponsive or due to network issues while sending the thread
@@ -720,10 +724,10 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   private[spark] def getExecutorThreadDump(executorId: String): Option[Array[ThreadStackTrace]] = {
     try {
-      if (executorId == SparkContext.DRIVER_IDENTIFIER) {
+      if (executorId == SparkContext.DRIVER_IDENTIFIER) {  //如果是driver
         Some(Utils.getThreadDump())
       } else {
-        env.blockManager.master.getExecutorEndpointRef(executorId) match {
+        env.blockManager.master.getExecutorEndpointRef(executorId) match {  //通过executor的id获取断电
           case Some(endpointRef) =>
             Some(endpointRef.askSync[Array[ThreadStackTrace]](TriggerThreadDump))
           case None =>
@@ -739,7 +743,7 @@ class SparkContext(config: SparkConf) extends Logging {
     }
   }
 
-  /**
+  /** 用于通过 Spark Web UI 获取某个 Executor 的堆内存直方图（Heap Histogram）。方法的主要目标是为用户提供 Executor 内存使用的详细信息，帮助分析其内存分配和垃圾回收情况
    * Called by the web UI to obtain executor heap histogram.
    */
   private[spark] def getExecutorHeapHistogram(executorId: String): Option[Array[String]] = {
@@ -1853,6 +1857,7 @@ class SparkContext(config: SparkConf) extends Logging {
    * @param rp ResourceProfile which to use to calculate max concurrent tasks.
    * @return The max number of tasks that can be concurrent launched currently.
    */
+    //获取资源的最大并发数
   private[spark] def maxNumConcurrentTasks(rp: ResourceProfile): Int = {
     schedulerBackend.maxNumConcurrentTasks(rp)
   }
@@ -2056,14 +2061,14 @@ class SparkContext(config: SparkConf) extends Logging {
     dagScheduler.getPreferredLocs(rdd, partition)
   }
 
-  /**
+  /** persistentRdds实际就是一个ConcurrentMap，里面通过弱引用的方式存储rdd
    * Register an RDD to be persisted in memory and/or disk storage
    */
   private[spark] def persistRDD(rdd: RDD[_]): Unit = {
     persistentRdds(rdd.id) = rdd
   }
 
-  /**
+  /**  块管理器master发起rdd删除操作，persistentRdds（ConcurrentMap）删除此rdd
    * Unpersist an RDD from memory and/or disk storage
    */
   private[spark] def unpersistRDD(rddId: Int, blocking: Boolean): Unit = {
@@ -2366,7 +2371,7 @@ class SparkContext(config: SparkConf) extends Logging {
     )
   }
 
-  /**
+  /** 它是执行某个 Action 操作的入口点。它通过传入的 func 和 partitions 参数，异步执行分区内的任务，并将结果传递给给定的 resultHandler
    * Run a function on a given set of partitions in an RDD and pass the results to the given
    * handler function. This is the main entry point for all actions in Spark.
    *
@@ -2377,10 +2382,10 @@ class SparkContext(config: SparkConf) extends Logging {
    * @param resultHandler callback to pass each result to
    */
   def runJob[T, U: ClassTag](
-      rdd: RDD[T],
-      func: (TaskContext, Iterator[T]) => U,
-      partitions: Seq[Int],
-      resultHandler: (Int, U) => Unit): Unit = {
+      rdd: RDD[T], //目标 RDD，即要在其上执行任务的 RDD
+      func: (TaskContext, Iterator[T]) => U, //定义了每个分区内执行的任务，Iterator[T] 代表 RDD 中分区的数据
+      partitions: Seq[Int], //指定要处理的分区编号。如果不需要对所有分区执行操作，可以指定一个特定的分区集合。
+      resultHandler: (Int, U) => Unit): Unit = { //回调函数，接收每个分区的结果。它的签名为 (Int, U) => Unit，Int 是分区索引，U 是 func 执行后的结果。
     if (stopped.get()) {
       throw new IllegalStateException("SparkContext has been shutdown")
     }
@@ -2390,8 +2395,10 @@ class SparkContext(config: SparkConf) extends Logging {
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
+    //使用 dagScheduler.runJob 调度任务。这个方法会将作业切分为不同的阶段，并按需运行各个任务
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
+    //在作业完成后，如果需要，调用 doCheckpoint() 对 RDD 进行检查点操作。这对于长时间运行的作业来说非常重要，以避免数据丢失。
     rdd.doCheckpoint()
   }
 
@@ -2822,9 +2829,9 @@ object SparkContext extends Logging {
    *
    * Access to this field is guarded by `SPARK_CONTEXT_CONSTRUCTOR_LOCK`.
    */
-  private var contextBeingConstructed: Option[SparkContext] = None
+  private var contextBeingConstructed: Option[SparkContext] = None   //正在构建的sparkContext
 
-  /**
+  /** 判断没有其他的sparkContext在运行
    * Called to ensure that no other SparkContext is running in this JVM.
    *
    * Throws an exception if a running context is detected and logs a warning if another thread is
@@ -2915,7 +2922,7 @@ object SparkContext extends Logging {
     }
   }
 
-  /**
+  /** 标注当前SparkContext正在部分构建
    * Called at the beginning of the SparkContext constructor to ensure that no SparkContext is
    * running. Throws an exception if a running context is detected and logs a warning if another
    * thread is constructing a SparkContext. This warning is necessary because the current locking

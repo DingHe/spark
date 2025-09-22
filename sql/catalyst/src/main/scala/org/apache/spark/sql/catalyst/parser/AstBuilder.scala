@@ -123,7 +123,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
    * Override the default behavior for all visit methods. This will only return a non-null result
    * when the context has only one child. This is done because there is no generic method to
    * combine the results of the context children. In all other cases null is returned.
-   */
+   */ //重写了visitChildren的实现，只有一个子节点时继续访问，否则返回null
   override def visitChildren(node: RuleNode): AnyRef = {
     if (node.getChildCount == 1) {
       node.getChild(0).accept(this)
@@ -133,7 +133,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
   }
 
   override def visitSingleStatement(ctx: SingleStatementContext): LogicalPlan = withOrigin(ctx) {
-    visit(ctx.statement).asInstanceOf[LogicalPlan]
+    visit(ctx.statement).asInstanceOf[LogicalPlan]  //visit默认的实现就是访问对象接受访问，访问对象接受访问的默认实现就是递归访问子节点
   }
 
   override def visitSingleExpression(ctx: SingleExpressionContext): Expression = withOrigin(ctx) {
@@ -169,7 +169,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
    * ******************************************************************************************** */
   protected def plan(tree: ParserRuleContext): LogicalPlan = typedVisit(tree)
 
-  /**
+  /** query = ctes? queryTerm queryOrganization
    * Create a top-level plan with Common Table Expressions.
    */
   override def visitQuery(ctx: QueryContext): LogicalPlan = withOrigin(ctx) {
@@ -731,7 +731,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
 
   override def visitRegularQuerySpecification(
       ctx: RegularQuerySpecificationContext): LogicalPlan = withOrigin(ctx) {
-    val from = OneRowRelation().optional(ctx.fromClause) {
+    val from = OneRowRelation().optional(ctx.fromClause) {  //如果fromClause存在，则继续访问，如果不存则返回OneRowRelation
       visitFromClause(ctx.fromClause)
     }
     withSelectQuerySpecification(
@@ -1005,14 +1005,14 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
       schemaLess)
   }
 
-  /**
+  /**负责解析from语句
    * Create a logical plan for a given 'FROM' clause. Note that we support multiple (comma
    * separated) relations here, these get converted into a single plan by condition-less inner join.
    */
   override def visitFromClause(ctx: FromClauseContext): LogicalPlan = withOrigin(ctx) {
     val from = ctx.relation.asScala.foldLeft(null: LogicalPlan) { (left, relation) =>
       val relationPrimary = relation.relationPrimary()
-      val right = if (conf.ansiRelationPrecedence) {
+      val right = if (conf.ansiRelationPrecedence) {  //这里指定from语句中，关系结合的优先级，是从先往后，还是从后往前
         visitRelation(relation)
       } else {
         plan(relationPrimary)
@@ -1531,7 +1531,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
   override def visitTableName(ctx: TableNameContext): LogicalPlan = withOrigin(ctx) {
     val relation = createUnresolvedRelation(ctx.identifierReference)
     val table = mayApplyAliasPlan(
-      ctx.tableAlias, relation.optionalMap(ctx.temporalClause)(withTimeTravel))
+      ctx.tableAlias, relation.optionalMap(ctx.temporalClause)(withTimeTravel))  //如果时间旅行存在，继续访问，没有返回原表relation
     table.optionalMap(ctx.sample)(withSample)
   }
 
@@ -1710,7 +1710,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
    * column aliases for a [[LogicalPlan]].
    */
   private def mayApplyAliasPlan(tableAlias: TableAliasContext, plan: LogicalPlan): LogicalPlan = {
-    if (tableAlias.strictIdentifier != null) {
+    if (tableAlias.strictIdentifier != null) {  //如果有别名，继续访问别名
       val alias = tableAlias.strictIdentifier.getText
       if (tableAlias.identifierList != null) {
         val columnNames = visitIdentifierList(tableAlias.identifierList)
@@ -1718,7 +1718,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
       } else {
         SubqueryAlias(alias, plan)
       }
-    } else {
+    } else {   //没有继续返回plan
       plan
     }
   }
@@ -1756,7 +1756,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
     FunctionIdentifier(ctx.function.getText, Option(ctx.db).map(_.getText))
   }
 
-  /**
+  /** 获取表名，表名可能由多部分组成
    * Create a multi-part identifier.
    */
   override def visitMultipartIdentifier(ctx: MultipartIdentifierContext): Seq[String] =
@@ -2795,7 +2795,7 @@ class AstBuilder extends DataTypeAstBuilder with SQLConfHelper with Logging {
     }
   }
 
-  /**
+  /** 从ctx获取表的标识符，然后创建一个未解析的关系节点
    * Create an [[UnresolvedRelation]] from an identifier reference.
    */
   private def createUnresolvedRelation(

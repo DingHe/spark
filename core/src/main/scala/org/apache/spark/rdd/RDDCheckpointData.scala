@@ -29,9 +29,12 @@ import org.apache.spark.Partition
 private[spark] object CheckpointState extends Enumeration {
   type CheckpointState = Value
   val Initialized, CheckpointingInProgress, Checkpointed = Value
+  //Initialized：表示检查点还没有开始，初始状态
+  //CheckpointingInProgress：表示检查点正在进行中
+  //Checkpointed：表示检查点已经完成
 }
 
-/**
+/** 每个实例都与一个RDD关联，负责管理RDD的检查点过程，并提供更新后的分区、迭代器以及检查点RDD的位置
  * This class contains all the information related to RDD checkpointing. Each instance of this
  * class is associated with an RDD. It manages process of checkpointing of the associated RDD,
  * as well as, manages the post-checkpoint state by providing the updated partitions,
@@ -43,21 +46,21 @@ private[spark] abstract class RDDCheckpointData[T: ClassTag](@transient private 
   import CheckpointState._
 
   // The checkpoint state of the associated RDD.
-  protected var cpState = Initialized
+  protected var cpState = Initialized  //检查点状态
 
   // The RDD that contains our checkpointed data
-  private var cpRDD: Option[CheckpointRDD[T]] = None
+  private var cpRDD: Option[CheckpointRDD[T]] = None //存储检查点后的RDD。如果检查点操作已完成，cpRDD将包含一个CheckpointRDD实例，否则为None
 
   // TODO: are we sure we need to use a global lock in the following methods?
 
-  /**
+  /** 返回当前RDD是否已经完成了检查点操作
    * Return whether the checkpoint data for this RDD is already persisted.
    */
   def isCheckpointed: Boolean = RDDCheckpointData.synchronized {
     cpState == Checkpointed
   }
 
-  /**
+  /** 执行检查点操作
    * Materialize this RDD and persist its content.
    * This is called immediately after the first action invoked on this RDD has completed.
    */
@@ -71,7 +74,7 @@ private[spark] abstract class RDDCheckpointData[T: ClassTag](@transient private 
         return
       }
     }
-
+    //子类提供具体的实现
     val newRDD = doCheckpoint()
 
     // Update our state and truncate the RDD lineage
@@ -84,7 +87,7 @@ private[spark] abstract class RDDCheckpointData[T: ClassTag](@transient private 
 
   /**
    * Materialize this RDD and persist its content.
-   *
+   * 子类需要重写此方法来实现自定义的检查点行为，该方法负责创建一个检查点RDD，并返回
    * Subclasses should override this method to define custom checkpointing behavior.
    * @return the checkpoint RDD created in the process.
    */

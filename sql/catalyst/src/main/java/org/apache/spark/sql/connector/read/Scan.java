@@ -39,6 +39,8 @@ import org.apache.spark.sql.connector.catalog.TableCapability;
  *
  * @since 3.0.0
  */
+//用于表示数据源扫描（Scan）的逻辑层。它用于提供数据源的逻辑信息，例如实际读取的模式（schema），以及是否支持批处理或流式处理。
+// 这个接口可以用于批处理查询、微批处理流式查询（Micro-Batch Streaming），以及连续流式查询（Continuous Streaming）
 @Evolving
 public interface Scan {
 
@@ -46,6 +48,7 @@ public interface Scan {
    * Returns the actual schema of this data source scan, which may be different from the physical
    * schema of the underlying storage, as column pruning or other optimizations may happen.
    */
+  //返回此数据源扫描的实际 Schema（数据结构）
   StructType readSchema();
 
   /**
@@ -57,6 +60,7 @@ public interface Scan {
    * meaningful description.
    * </p>
    */
+  //返回扫描的描述信息
   default String description() {
     return this.getClass().toString();
   }
@@ -73,6 +77,7 @@ public interface Scan {
    *
    * @throws UnsupportedOperationException
    */
+  //返回批处理（Batch）扫描的物理表示（Batch 对象）
   default Batch toBatch() {
     throw new UnsupportedOperationException(description() + ": Batch scan are not supported");
   }
@@ -89,6 +94,8 @@ public interface Scan {
    *
    * @throws UnsupportedOperationException
    */
+  //返回微批（Micro-Batch）流式查询的物理表示
+  //checkpointLocation：用于故障恢复的 Hadoop 文件系统（HDFS）路径
   default MicroBatchStream toMicroBatchStream(String checkpointLocation) {
     throw new UnsupportedOperationException(description() + ": Micro-batch scan are not supported");
   }
@@ -105,6 +112,7 @@ public interface Scan {
    *
    * @throws UnsupportedOperationException
    */
+  //返回连续流（Continuous Streaming）查询的物理表示
   default ContinuousStream toContinuousStream(String checkpointLocation) {
     throw new UnsupportedOperationException(description() + ": Continuous scan are not supported");
   }
@@ -113,6 +121,7 @@ public interface Scan {
    * Returns an array of supported custom metrics with name and description.
    * By default it returns empty array.
    */
+  //返回该扫描支持的 自定义度量指标（Custom Metrics）
   default CustomMetric[] supportedCustomMetrics() {
     return new CustomMetric[]{};
   }
@@ -122,6 +131,7 @@ public interface Scan {
    * Note that these metrics must be included in the supported custom metrics reported by
    * `supportedCustomMetrics`.
    */
+  //返回仅在 Driver 端 计算的自定义度量指标。
   default CustomTaskMetric[] reportDriverMetrics() {
     return new CustomTaskMetric[]{};
   }
@@ -135,9 +145,9 @@ public interface Scan {
    * @since 3.5.0
    */
   enum ColumnarSupportMode {
-    PARTITION_DEFINED,
-    SUPPORTED,
-    UNSUPPORTED
+    PARTITION_DEFINED,   //每个分区自己决定是否支持列存
+    SUPPORTED,   //整个扫描都支持列存
+    UNSUPPORTED  //不支持列存（即数据是行存）
   }
 
   /**
@@ -146,6 +156,7 @@ public interface Scan {
    *
    * @since 3.5.0
    */
+  //定义数据源是否支持 列式存储（Columnar Storage）
   default ColumnarSupportMode columnarSupportMode() {
     return ColumnarSupportMode.PARTITION_DEFINED;
   }

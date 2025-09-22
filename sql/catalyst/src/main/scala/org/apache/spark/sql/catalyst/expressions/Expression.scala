@@ -98,6 +98,7 @@ abstract class Expression extends TreeNode[Expression] {
    *  - A [[Literal]] is foldable
    *  - A [[Cast]] or [[UnaryMinus]] is foldable if its child is foldable
    */
+    //表达式是否可以在查询执行前进行常量折叠。即，是否可以提前计算出表达式的结果
   def foldable: Boolean = false
 
   /**
@@ -114,8 +115,9 @@ abstract class Expression extends TreeNode[Expression] {
    * An example would be `SparkPartitionID` that relies on the partition id returned by TaskContext.
    * By default leaf expressions are deterministic as Nil.forall(_.deterministic) returns true.
    */
+    //表示表达式是否是确定性的。即，在固定输入下，每次执行结果是否相同
   lazy val deterministic: Boolean = children.forall(_.deterministic)
-
+  //表示表达式的输出是否可能为null
   def nullable: Boolean
 
   /**
@@ -124,7 +126,7 @@ abstract class Expression extends TreeNode[Expression] {
   @transient
   private lazy val _references: AttributeSet =
     AttributeSet.fromAttributeSets(children.map(_.references))
-
+  //返回表达式引用的所有字段集合
   def references: AttributeSet = _references
 
   /**
@@ -138,6 +140,7 @@ abstract class Expression extends TreeNode[Expression] {
    *   df.select(rand, rand) // These 2 rand should not share a state.
    * }}}
    */
+    //返回表达式是否包含可变状态
   def stateful: Boolean = false
 
   /**
@@ -145,6 +148,8 @@ abstract class Expression extends TreeNode[Expression] {
    * uninitialized copies. If the expression contains no stateful expressions then the original
    * expression is returned.
    */
+    //是返回当前表达式的副本，其中所有包含可变状态的子表达式都被替换为新的未初始化的副本。
+  // 如果表达式中没有状态依赖的子表达式，则直接返回原始表达式
   def freshCopyIfContainsStatefulExpression(): Expression = {
     val childrenIndexedSeq: IndexedSeq[Expression] = children match {
       case types: IndexedSeq[Expression] => types
@@ -164,6 +169,7 @@ abstract class Expression extends TreeNode[Expression] {
     }
     // If the children contain stateful expressions and get copied, or this expression is stateful,
     // copy this expression with the new children.
+    //检查子表达式是否发生了变化
     if (anyChildChanged || stateful) {
       CurrentOrigin.withOrigin(origin) {
         val res = withNewChildrenInternal(newChildren)
@@ -176,6 +182,7 @@ abstract class Expression extends TreeNode[Expression] {
   }
 
   /** Returns the result of evaluating this expression on a given input Row */
+  //评估表达式并返回结果，接受一个InternalRow作为输入，并返回计算结果。
   def eval(input: InternalRow = null): Any
 
   /**
@@ -186,6 +193,7 @@ abstract class Expression extends TreeNode[Expression] {
    * @return [[ExprCode]]
    */
   def genCode(ctx: CodegenContext): ExprCode = {
+    //检查当前表达式是否与之前的子表达式重复。如果表达式是重复的（已经生成过代码），则可以复用之前的代码，从而避免不必要的重复计算
     ctx.subExprEliminationExprs.get(ExpressionEquals(this)).map { subExprState =>
       // This expression is repeated which means that the code to evaluate it has already been added
       // as a function before. In that case, we just re-use it.
@@ -193,13 +201,13 @@ abstract class Expression extends TreeNode[Expression] {
         ctx.registerComment(this.toString),
         subExprState.eval.isNull,
         subExprState.eval.value)
-    }.getOrElse {
-      val isNull = ctx.freshName("isNull")
-      val value = ctx.freshName("value")
+    }.getOrElse { //如果没有重复表达式
+      val isNull = ctx.freshName("isNull")   //空值检测变量
+      val value = ctx.freshName("value")     //实际值的变量
       val eval = doGenCode(ctx, ExprCode(
         JavaCode.isNullVariable(isNull),
         JavaCode.variable(value, dataType)))
-      reduceCodeSize(ctx, eval)
+      reduceCodeSize(ctx, eval)   //如果代码过长，就拆分为子函数
       if (eval.code.toString.nonEmpty) {
         // Add `this` in the comment.
         eval.copy(code = ctx.registerComment(this.toString) + eval.code)
@@ -208,12 +216,14 @@ abstract class Expression extends TreeNode[Expression] {
       }
     }
   }
-
+  //这段代码主要是在生成代码过大时，将其拆分成更小的函数，以减少冗余和提高代码的可管理性
   private def reduceCodeSize(ctx: CodegenContext, eval: ExprCode): Unit = {
     // TODO: support whole stage codegen too
+    //获取配置的阈值，用来决定是否需要将代码拆分成多个函数
     val splitThreshold = SQLConf.get.methodSplitThreshold
     if (eval.code.length > splitThreshold && ctx.INPUT_ROW != null && ctx.currentVars == null) {
       val setIsNull = if (!eval.isNull.isInstanceOf[LiteralValue]) {
+        //判断当前的isNull是否为LiteralValue
         val globalIsNull = ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "globalIsNull")
         val localIsNull = eval.isNull
         eval.isNull = JavaCode.isNullGlobal(globalIsNull)
@@ -249,6 +259,7 @@ abstract class Expression extends TreeNode[Expression] {
    * @param ev an [[ExprCode]] with unique terms.
    * @return an [[ExprCode]] containing the Java source code to generate the given expression
    */
+  //具体的Expression子类会实现该方法来生成针对该表达式的Java代码
   protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode
 
   /**
@@ -258,6 +269,7 @@ abstract class Expression extends TreeNode[Expression] {
    * Implementations of expressions should override this if the resolution of this type of
    * expression involves more than just the resolution of its children and type checking.
    */
+    //表示表达式及其所有子表达式是否已经解析并检查了数据类型。如果表达式仍未解析，resolved 将为 false
   lazy val resolved: Boolean = childrenResolved && checkInputDataTypes().isSuccess
 
   /**
@@ -270,6 +282,7 @@ abstract class Expression extends TreeNode[Expression] {
    * Returns true if  all the children of this expression have been resolved to a specific schema
    * and false if any still contains any unresolved placeholders.
    */
+    //表示表达式的所有子表达式是否已解析。如果所有子表达式都解析了，则返回 true
   def childrenResolved: Boolean = children.forall(_.resolved)
 
   /**
@@ -290,6 +303,7 @@ abstract class Expression extends TreeNode[Expression] {
    * This means that the lazy `cannonicalized` is called and computed only on the root of the
    * adjacent expressions.
    */
+    //返回一个标准化的表达式，即去除一些外部差异（如大小写、运算顺序等）后，表达式的规范化版本
   lazy val canonicalized: Expression = withCanonicalizedChildren
 
   /**
@@ -307,6 +321,7 @@ abstract class Expression extends TreeNode[Expression] {
    *
    * See [[Canonicalize]] for more details.
    */
+    //判断两个表达式是否语义上相等，即使它们的表示方式可能不同（如大小写不同，但结果相同）
   final def semanticEquals(other: Expression): Boolean =
     deterministic && other.deterministic && canonicalized == other.canonicalized
 
@@ -323,15 +338,17 @@ abstract class Expression extends TreeNode[Expression] {
    * or returns a `TypeCheckResult` with an error message if invalid.
    * Note: it's not valid to call this method until `childrenResolved == true`.
    */
+    //检查表达式的输入数据类型是否有效。如果输入数据类型不匹配，会返回一个错误信息
   def checkInputDataTypes(): TypeCheckResult = TypeCheckResult.TypeCheckSuccess
 
   /**
    * Returns a user-facing string representation of this expression's name.
    * This should usually match the name of the function in SQL.
    */
+    //返回表达式的用户友好的名字，通常与 SQL 函数名匹配
   def prettyName: String =
     getTagValue(FunctionRegistry.FUNC_ALIAS).getOrElse(nodeName.toLowerCase(Locale.ROOT))
-
+ //返回表达式的所有参数的平铺形式，主要用于将复杂的参数结构展平成简单的结构
   protected def flatArguments: Iterator[Any] = stringArgs.flatMap {
     case t: Iterable[_] => t
     case single => single :: Nil
@@ -339,6 +356,7 @@ abstract class Expression extends TreeNode[Expression] {
 
   // Marks this as final, Expression.verboseString should never be called, and thus shouldn't be
   // overridden by concrete classes.
+  //返回表达式的详细字符串表示。此方法被标记为 final，并且不应被具体类重写
   final override def verboseString(maxFields: Int): String = simpleString(maxFields)
 
   override def simpleString(maxFields: Int): String = toString
@@ -350,6 +368,7 @@ abstract class Expression extends TreeNode[Expression] {
    * Returns SQL representation of this expression.  For expressions extending [[NonSQLExpression]],
    * this method may return an arbitrary user facing string.
    */
+    //返回表达式的 SQL 表达式表示。例如，Add(1, 2) 会转换为 SQL 表达式 1 + 2
   def sql: String = {
     val childrenSQL = children.map(_.sql).mkString(", ")
     s"$prettyName($childrenSQL)"
@@ -358,7 +377,7 @@ abstract class Expression extends TreeNode[Expression] {
   override def simpleStringWithNodeId(): String = {
     throw SparkException.internalError(s"$nodeName does not implement simpleStringWithNodeId")
   }
-
+  //数据类型前缀
   protected def typeSuffix =
     if (resolved) {
       dataType match {
@@ -376,11 +395,13 @@ abstract class Expression extends TreeNode[Expression] {
  * optimization time (e.g. Star) and should not be evaluated during query planning and
  * execution.
  */
+//表示在查询执行过程中无法被评估的表达式
 trait Unevaluable extends Expression {
 
   /** Unevaluable is not foldable because we don't have an eval for it. */
+    //表示该表达式是否可以在查询执行前被折叠（即在编译时或优化阶段进行简化）。在这里，它的值是 false，意味着该表达式无法在执行前被计算或简化
   final override def foldable: Boolean = false
-
+  //该方法用于评估表达式，并返回计算结果。但由于这个表达式不能被评估，它会抛出一个错误
   final override def eval(input: InternalRow = null): Any =
     throw QueryExecutionErrors.cannotEvaluateExpressionError(this)
 
@@ -394,7 +415,9 @@ trait Unevaluable extends Expression {
  * expression for evaluation. This is mainly used to provide compatibility with other databases.
  * For example, we use this to support "nvl" by replacing it with "coalesce".
  */
+//表示在运行时会被替换为其他表达式的表达式，通常是在查询优化阶段进行替换
 trait RuntimeReplaceable extends Expression {
+  //该表达式在运行时会被替换为的实际表达式。替换后的表达式会被评估
   def replacement: Expression
 
   override val nodePatterns: Seq[TreePattern] = Seq(RUNTIME_REPLACEABLE)
@@ -418,12 +441,16 @@ trait RuntimeReplaceable extends Expression {
  * the original parameters. For an example, see [[TryAdd]]. To make sure the explain plan and
  * expression SQL works correctly, the implementation should also implement the `parameters` method.
  */
+////增强版的 RuntimeReplaceable，其作用是使得 replacement 成为当前表达式的子表达式，
+// 从而继承其分析规则，比如类型强制转换。这允许替换表达式的规则（如类型推断、优化等）能够自动应用到包含它的表达式上
 trait InheritAnalysisRules extends UnaryLike[Expression] { self: RuntimeReplaceable =>
-  override def child: Expression = replacement
-  def parameters: Seq[Expression]
+  override def child: Expression = replacement //当前表达式的子表达式是 replacement
+  def parameters: Seq[Expression] //用于获取当前表达式的参数序列
   override def flatArguments: Iterator[Any] = parameters.iterator
   // This method is used to generate a SQL string with transformed inputs. This is necessary as
   // the actual inputs are not the children of this expression.
+  //用于生成 SQL 字符串表示形式。由于实际的输入（即子表达式）并不是当前表达式的直接子表达式，
+  // 因此需要对 replacement 的 SQL 字符串进行转换，并将其格式化为适当的 SQL 语法。
   def makeSQLString(childrenSQL: Seq[String]): String = {
     prettyName + childrenSQL.mkString("(", ", ", ")")
   }
@@ -436,6 +463,10 @@ trait InheritAnalysisRules extends UnaryLike[Expression] { self: RuntimeReplacea
  * with other databases. For example, we use this to support every, any/some aggregates by rewriting
  * them with Min and Max respectively.
  */
+//是 RuntimeReplaceable 的一个扩展，用于处理聚合函数的运行时替换。
+// 它主要通过优化器在运行时将特定的聚合表达式替换为其他聚合表达式，以提供与其他数据库的兼容性
+//RuntimeReplaceableAggregate 继承了 RuntimeReplaceable，同时还要求继承自 AggregateFunction。
+// 这意味着它既具备表达式替换的功能，又具备聚合函数的特性
 trait RuntimeReplaceableAggregate extends RuntimeReplaceable { self: AggregateFunction =>
   override def aggBufferSchema: StructType = {
     throw SparkException.internalError(
@@ -455,6 +486,8 @@ trait RuntimeReplaceableAggregate extends RuntimeReplaceable { self: AggregateFu
  * Expressions that don't have SQL representation should extend this trait.  Examples are
  * `ScalaUDF`, `ScalaUDAF`, and object expressions like `MapObjects` and `Invoke`.
  */
+//用于表示没有 SQL 表达式表示的表达式。这些表达式通常无法直接转换为 SQL 语法，但它们仍然是 Spark 查询执行的一部分。典型的例子包括 ScalaUDF（用户定义的函数）、
+// ScalaUDAF（用户定义的聚合函数）以及像 MapObjects 和 Invoke 这样的对象表达式
 trait NonSQLExpression extends Expression {
   final override def sql: String = {
     transform {
@@ -469,10 +502,11 @@ trait NonSQLExpression extends Expression {
 /**
  * An expression that is nondeterministic.
  */
+//非确定性表达式在不同的计算中可能产生不同的结果，这通常是因为它们依赖于外部因素，如随机数生成器、系统时间等
 trait Nondeterministic extends Expression {
   final override lazy val deterministic: Boolean = false
   final override def foldable: Boolean = false
-
+ //用于跟踪表达式是否已被初始化
   @transient
   private[this] var initialized = false
 
@@ -497,7 +531,7 @@ trait Nondeterministic extends Expression {
       s"Nondeterministic expression ${this.getClass.getName} should be initialized before eval.")
     evalInternal(input)
   }
-
+  //子类需要实现它来执行表达式的计算
   protected def evalInternal(input: InternalRow): Any
 }
 
@@ -505,24 +539,30 @@ trait Nondeterministic extends Expression {
  * An expression that contains conditional expression branches, so not all branches will be hit.
  * All optimization should be careful with the evaluation order.
  */
+//表示包含条件分支的表达式的特质。此特质主要用于那些在执行时根据条件分支的表达式，在某些情况下某些分支可能不会被执行。
+// 一个经典的例子是 if-else 表达式、case 表达式或者其他形式的条件判断语句
 trait ConditionalExpression extends Expression {
+  //如果所有子表达式都是可折叠的（即常量表达式），那么这个表达式也是可折叠的
   final override def foldable: Boolean = children.forall(_.foldable)
 
   /**
    * Return the children expressions which can always be hit at runtime.
    */
+  //一个包含条件分支的表达式来说，有些分支会在运行时必然被执行，而另一些则根据条件决定是否执行。这个方法帮助确定哪些子表达式总是会被评估
   def alwaysEvaluatedInputs: Seq[Expression]
 
   /**
    * Return groups of branches. For each group, at least one branch will be hit at runtime,
    * so that we can eagerly evaluate the common expressions of a group.
    */
+  //每个分支组包含一组条件分支，其中至少一个分支会在运行时被执行。这个方法允许在优化时，针对每个分支组进行“提前计算”优化，将常见的子表达式提前计算，从而避免重复计算
   def branchGroups: Seq[Seq[Expression]]
 }
 
 /**
  * A leaf expression, i.e. one without any child expressions.
  */
+//叶子表达式
 abstract class LeafExpression extends Expression with LeafLike[Expression]
 
 
@@ -530,8 +570,9 @@ abstract class LeafExpression extends Expression with LeafLike[Expression]
  * An expression with one input and one output. The output is by default evaluated to null
  * if the input is evaluated to null.
  */
+ //主要用于处理只有一个子表达式的运算，例如一元操作符（如取反、取绝对值等）
 abstract class UnaryExpression extends Expression with UnaryLike[Expression] {
-
+  //如果子表达式是可折叠的（即它是常量表达式），那么该表达式也会被认为是可折叠的
   override def foldable: Boolean = child.foldable
   override def nullable: Boolean = child.nullable
 
@@ -584,11 +625,14 @@ abstract class UnaryExpression extends Expression with UnaryLike[Expression] {
    * @param f function that accepts the non-null evaluation result name of child and returns Java
    *          code to compute the output.
    */
+    //生成 Java 代码，确保表达式在处理 null 时能够正确返回 null，并在子表达式值非 null 时执行实际的计算
   protected def nullSafeCodeGen(
       ctx: CodegenContext,
       ev: ExprCode,
       f: String => String): ExprCode = {
+    //生成子表达式的代码
     val childGen = child.genCode(ctx)
+    //生成实际的计算代码
     val resultCode = f(childGen.value)
 
     if (nullable) {
@@ -612,13 +656,16 @@ abstract class UnaryExpression extends Expression with UnaryLike[Expression] {
  * An expression with SQL query context. The context string can be serialized from the Driver
  * to executors. It will also be kept after rule transforms.
  */
+//为表达式提供 SQL 查询上下文，在分布式 SQL 执行引擎中非常有用。这个上下文包含了关于 SQL 查询的元数据等信息，
+// 可以从 Driver 端序列化到 Executor 端，并且在规则转换（rule transforms）过程中保持不变
 trait SupportQueryContext extends Expression with Serializable {
+  //保存了一个 SQLQueryContext 类型的可选值
   protected var queryContext: Option[SQLQueryContext] = initQueryContext()
 
   def initQueryContext(): Option[SQLQueryContext]
 
   def getContextOrNull(): SQLQueryContext = queryContext.orNull
-
+  //方法生成代码，在生成的代码中获取 SQL 查询上下文
   def getContextOrNullCode(ctx: CodegenContext, withErrorContext: Boolean = true): String = {
     if (withErrorContext && queryContext.isDefined) {
       ctx.addReferenceObj("errCtx", queryContext.get)

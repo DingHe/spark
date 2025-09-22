@@ -33,7 +33,7 @@ import org.apache.spark.storage.memory.MemoryStore
  */
 private[memory] class StorageMemoryPool(
     lock: Object,
-    memoryMode: MemoryMode
+    memoryMode: MemoryMode //主要是堆内还是堆外内存
   ) extends MemoryPool(lock) with Logging {
 
   private[this] val poolName: String = memoryMode match {
@@ -49,14 +49,14 @@ private[memory] class StorageMemoryPool(
   }
 
   private var _memoryStore: MemoryStore = _
-  def memoryStore: MemoryStore = {
+  def memoryStore: MemoryStore = {   //获取内存存储的对象
     if (_memoryStore == null) {
       throw SparkException.internalError("memory store not initialized yet", category = "MEMORY")
     }
     _memoryStore
   }
 
-  /**
+  /**  设置内存存储的对象
    * Set the [[MemoryStore]] used by this manager to evict cached blocks.
    * This must be set after construction due to initialization ordering constraints.
    */
@@ -64,7 +64,7 @@ private[memory] class StorageMemoryPool(
     _memoryStore = store
   }
 
-  /**
+  /** 获取给定block的内存，如果有必要则驱逐现存的
    * Acquire N bytes of memory to cache the given block, evicting existing ones if necessary.
    *
    * @return whether all N bytes were successfully granted.

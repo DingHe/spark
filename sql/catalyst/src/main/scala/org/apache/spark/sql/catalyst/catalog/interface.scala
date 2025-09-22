@@ -179,10 +179,12 @@ case class CatalogTablePartition(
  * @param bucketColumnNames the names of the columns that used to generate the bucket id.
  * @param sortColumnNames the names of the columns that used to sort data in each bucket.
  */
+// 用于存储与“分桶（Bucketing）”相关的信息。
+// 分桶是一种将数据集分解为更易于管理的部分的技术，通常用于提高查询效率。与动态分区不同，分桶的数量是固定的，并且不会随着数据量的变化而变化
 case class BucketSpec(
-    numBuckets: Int,
-    bucketColumnNames: Seq[String],
-    sortColumnNames: Seq[String]) extends SQLConfHelper {
+    numBuckets: Int, //表示分桶的数量
+    bucketColumnNames: Seq[String],  //用来生成桶 ID 的列名,每个桶的生成依据是这些列的值
+    sortColumnNames: Seq[String]) extends SQLConfHelper { //用来对每个桶内的数据进行排序的列名。排序列是对每个桶内的数据进行排序的依据
 
   if (numBuckets <= 0 || numBuckets > conf.bucketingMaxBuckets) {
     throw QueryCompilationErrors.invalidBucketNumberError(
@@ -794,14 +796,14 @@ case class UnresolvedCatalogRelation(
   assert(tableMeta.identifier.database.isDefined)
 }
 
-/**
+/** 表示 临时视图（Temporary View） 的一个逻辑计划节点。临时视图在 Spark 中类似于 SQL 中的 CREATE TEMPORARY VIEW，用于在会话范围内存储临时的数据视图，且生命周期只存在于当前 Spark Session
  * A wrapper to store the temporary view info, will be kept in `SessionCatalog`
  * and will be transformed to `View` during analysis. If the temporary view is
  * storing an analyzed plan, `plan` is set to the analyzed plan for the view.
  */
 case class TemporaryViewRelation(
-    tableMeta: CatalogTable,
-    plan: Option[LogicalPlan] = None) extends UnresolvedLeafNode {
+    tableMeta: CatalogTable, // 临时视图的元信息
+    plan: Option[LogicalPlan] = None) extends UnresolvedLeafNode {  // 视图的逻辑执行计划（可选）
   require(plan.isEmpty ||
     (plan.get.resolved && tableMeta.properties.contains(VIEW_STORING_ANALYZED_PLAN)))
 }

@@ -35,6 +35,8 @@ import org.apache.spark.sql.connector.metric.CustomTaskMetric;
  *
  * @since 3.0.0
  */
+//是 Spark 3.0.0 引入的 数据分区读取器接口，用于 RDD 分区的数据读取。
+// 它是 分区级别的读取 组件，在 PartitionReaderFactory 生成的 具体 Reader 实现 中负责读取数据
 @Evolving
 public interface PartitionReader<T> extends Closeable {
 
@@ -43,17 +45,20 @@ public interface PartitionReader<T> extends Closeable {
    *
    * @throws IOException if failure happens during disk/network IO like reading files.
    */
+  //读取下一个数据记录，如果还有数据，则返回 true，否则返回 false（即数据读取完毕）
   boolean next() throws IOException;
 
   /**
    * Return the current record. This method should return same value until `next` is called.
    */
+  //获取当前的 数据记录，这个方法 不会移动游标，直到 next() 被调用
   T get();
 
   /**
    * Returns an array of custom task metrics. By default it returns empty array. Note that it is
    * not recommended to put heavy logic in this method as it may affect reading performance.
    */
+  //返回当前分区的 自定义任务指标（如读取行数、I/O 开销等）
   default CustomTaskMetric[] currentMetricsValues() {
     CustomTaskMetric[] NO_METRICS = {};
     return NO_METRICS;

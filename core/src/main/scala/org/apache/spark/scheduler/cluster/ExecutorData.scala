@@ -33,11 +33,12 @@ import org.apache.spark.scheduler.ExecutorResourceInfo
  * @param registrationTs The registration timestamp of this executor
  * @param requestTs What time this executor was most likely requested at
  */
+//表示一个执行器的数据，并且通常由 CoarseGrainedSchedulerBackend 使用
 private[cluster] class ExecutorData(
-    val executorEndpoint: RpcEndpointRef,
-    val executorAddress: RpcAddress,
-    override val executorHost: String,
-    var freeCores: Int,
+    val executorEndpoint: RpcEndpointRef,  //表示执行器的 RpcEndpointRef
+    val executorAddress: RpcAddress,  //执行器的网络地址
+    override val executorHost: String,  //执行器所在的主机名
+    var freeCores: Int, //当前可用的核心数
     override val totalCores: Int,
     override val logUrlMap: Map[String, String],
     override val attributes: Map[String, String],

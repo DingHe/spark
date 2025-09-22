@@ -290,6 +290,7 @@ object DoubleLiteral {
 /**
  * Extractor for retrieving Int literals.
  */
+//作为提取器使用。提取器是 Scala 中用于模式匹配的一种机制，它可以从对象中提取特定的信息
 object IntegerLiteral {
   def unapply(a: Any): Option[Int] = a match {
     case Literal(a: Int, IntegerType) => Some(a)
@@ -300,6 +301,7 @@ object IntegerLiteral {
 /**
  * Extractor for retrieving Long literals.
  */
+//Long常量的提取器
 object LongLiteral {
   def unapply(a: Any): Option[Long] = a match {
     case Literal(a: Long, LongType) => Some(a)

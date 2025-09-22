@@ -21,17 +21,20 @@ import org.apache.spark.sql.types.{DataType, StructType}
 /**
  * Interface for [[DataType]] parsing functionality.
  */
+//提供数据类型解析的功能
 trait DataTypeParserInterface {
   /**
    * Parse a string to a [[StructType]]. The passed SQL string should be a comma separated list
    * of field definitions which will preserve the correct Hive metadata.
    */
+  //将一个 SQL 字符串解析为 StructType，StructType 是 Spark SQL 中用来表示表结构的类型，它包含字段及字段类型的信息
   @throws[ParseException]("Text cannot be parsed to a schema")
   def parseTableSchema(sqlText: String): StructType
 
   /**
    * Parse a string to a [[DataType]].
    */
+  //将一个 SQL 字符串解析为一个 DataType。DataType 是 Spark SQL 中表示数据类型的抽象类，可以是多种不同类型，如 IntegerType、StringType 等
   @throws[ParseException]("Text cannot be parsed to a DataType")
   def parseDataType(sqlText: String): DataType
 }

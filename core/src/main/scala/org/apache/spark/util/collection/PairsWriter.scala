@@ -22,6 +22,8 @@ package org.apache.spark.util.collection
  * persisting partitioned data, either through the shuffle writer plugins
  * or via DiskBlockObjectWriter.
  */
+//核心作用是为 Spark 应用程序中的数据持久化提供一个统一的抽象层
+//
 private[spark] trait PairsWriter {
 
   def write(key: Any, value: Any): Unit

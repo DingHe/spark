@@ -63,6 +63,8 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
  *   current row starts or ends. For instance, given a row based sliding frame with a lower bound
  *   offset of -1 and a upper bound offset of +2. The frame for row with index 5 would range from
  *   index 4 to index 7.
+ *   基于行：基于行的边界是根据行在分区中的位置确定的。偏移量表示当前行上方或下方的行数，框架在当前行的开始或结束位置。
+ *   例如，给定一个基于行的滑动框架，左边界偏移量为 -1，右边界偏移量为 +2。那么，第 5 行的框架范围就是从第 4 行到第 7 行
  * - Range based: A range based boundary is based on the actual value of the ORDER BY
  *   expression(s). An offset is used to alter the value of the ORDER BY expression, for
  *   instance if the current order by expression has a value of 10 and the lower bound offset
@@ -71,6 +73,10 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
  *   expression must have a numerical data type. An exception can be made when the offset is 0,
  *   because no value modification is needed, in this case multiple and non-numeric ORDER BY
  *   expression are allowed.
+ *   基于范围：基于范围的边界是根据 ORDER BY 表达式的实际值来确定的。偏移量用于修改 ORDER BY 表达式的值，
+ *   例如，如果当前的 ORDER BY 表达式值为 10，且左边界偏移量为 -3，则当前行的下边界值为 10 - 3 = 7。
+ *   这种方法对 ORDER BY 表达式有一些限制：只能有一个表达式，并且该表达式必须具有数值数据类型。当偏移量为 0 时，可以例外处理，
+ *   因为不需要修改值，此时可以使用多个非数值的 ORDER BY 表达式。
  *
  * This is quite an expensive operator because every row for a single group must be in the same
  * partition and partitions must be sorted according to the grouping and sort order. The operator
@@ -84,8 +90,10 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
  * Entire Partition, Sliding, Growing & Shrinking. Boundary evaluation is also delegated to a pair
  * of specialized classes: [[RowBoundOrdering]] & [[RangeBoundOrdering]].
  */
+// 窗口函数执行的核心类。它负责计算和输出在单一分区内（按排序后的数据进行窗口计算）的聚合操作。
+// 窗口函数的计算通过特殊的帧处理方式来实现，分为不同的帧类型（如整个分区、滑动帧、增长帧、收缩帧等）
 case class WindowExec(
-    windowExpression: Seq[NamedExpression],
+    windowExpression: Seq[NamedExpression],  //一个包含窗口函数表达式的序列（例如 ROW_NUMBER(), RANK() 等）
     partitionSpec: Seq[Expression],
     orderSpec: Seq[SortOrder],
     child: SparkPlan)

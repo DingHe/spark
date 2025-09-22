@@ -43,11 +43,13 @@ import org.apache.spark.util.random.RandomSampler
  * Rules can pattern-match on this node in order to apply transformations that only take effect
  * at the top of the logical query plan.
  */
+// 表示在查询执行过程中进行 take() 或 collect() 操作时，逻辑计划中的“答案返回”节点
+// child 是 ReturnAnswer 节点的唯一子节点，它表示返回答案前的查询逻辑部分，通常是执行操作的最后阶段
 case class ReturnAnswer(child: LogicalPlan) extends UnaryNode {
   override def maxRows: Option[Long] = child.maxRows
-  override def output: Seq[Attribute] = child.output
+  override def output: Seq[Attribute] = child.output  //获取节点的输出属性
   override protected def withNewChildInternal(newChild: LogicalPlan): ReturnAnswer =
-    copy(child = newChild)
+    copy(child = newChild)  //创建一个新的 ReturnAnswer 节点，替换其子节点
 }
 
 /**
@@ -67,21 +69,21 @@ object Subquery {
   def fromExpression(s: SubqueryExpression): Subquery =
     Subquery(s.plan, SubqueryExpression.hasCorrelatedSubquery(s))
 }
-
-case class Project(projectList: Seq[NamedExpression], child: LogicalPlan)
-    extends OrderPreservingUnaryNode {
+//逻辑计划 (LogicalPlan) 中的一个关键节点，它用于表示 SQL 语句中的 SELECT 操作。这个类负责对输入数据进行列投影（Projection），即选择和转换需要的字段
+case class Project(projectList: Seq[NamedExpression], child: LogicalPlan)  //projectList 是该投影节点的输出字段列表，包含 NamedExpression（即带有名称的表达式）
+    extends OrderPreservingUnaryNode {  //child 是 Project 节点的输入数据源，即 SELECT 操作的来源表或子查询
   override def output: Seq[Attribute] = projectList.map(_.toAttribute)
   override protected def outputExpressions: Seq[NamedExpression] = projectList
   override def maxRows: Option[Long] = child.maxRows
   override def maxRowsPerPartition: Option[Long] = child.maxRowsPerPartition
 
   final override val nodePatterns: Seq[TreePattern] = Seq(PROJECT)
-
+  //判断该 Project 计划是否已经解析完成（所有字段和表达式都已绑定到具体的表或子查询）
   override lazy val resolved: Boolean = {
     val hasSpecialExpressions = projectList.exists ( _.collect {
-        case agg: AggregateExpression => agg
-        case generator: Generator => generator
-        case window: WindowExpression => window
+        case agg: AggregateExpression => agg     //聚合函数，如 SUM(a)
+        case generator: Generator => generator  //用于生成多行数据的函数，如 explode(array_column)
+        case window: WindowExpression => window  //窗口函数，如 RANK() OVER(...)
       }.nonEmpty
     )
 
@@ -93,12 +95,13 @@ case class Project(projectList: Seq[NamedExpression], child: LogicalPlan)
 
   override def metadataOutput: Seq[Attribute] =
     getTagValue(Project.hiddenOutputTag).getOrElse(child.metadataOutput)
-
+  //用于替换 child 逻辑计划，返回一个新的 Project 实例
   override protected def withNewChildInternal(newChild: LogicalPlan): Project =
     copy(child = newChild)
 }
 
 object Project {
+  //用于标记 Project 节点的隐藏输出列
   val hiddenOutputTag: TreeNodeTag[Seq[Attribute]] = TreeNodeTag[Seq[Attribute]]("hidden_output")
 
   def matchSchema(plan: LogicalPlan, schema: StructType, conf: SQLConf): Project = {
@@ -106,18 +109,18 @@ object Project {
     val projectList = reorderFields(plan.output.map(a => (a.name, a)), schema.fields, Nil, conf)
     Project(projectList, plan)
   }
-
+  //主要作用是确保 col（当前列的 Expression）的类型符合 dt（预期的 DataType），并在必要时进行类型转换
   private def reconcileColumnType(
-      col: Expression,
-      columnPath: Seq[String],
-      dt: DataType,
-      nullable: Boolean,
+      col: Expression,            // 当前列的表达式
+      columnPath: Seq[String],    // 记录当前字段路径（用于嵌套结构错误信息）
+      dt: DataType,               // 目标数据类型
+      nullable: Boolean,          // 目标数据类型是否允许 NULL
       conf: SQLConf): Expression = {
     if (col.nullable && !nullable) {
       throw QueryCompilationErrors.nullableColumnOrFieldError(columnPath)
     }
     (col.dataType, dt) match {
-      case (StructType(fields), expected: StructType) =>
+      case (StructType(fields), expected: StructType) =>   //处理 StructType（结构体类型）
         val newFields = reorderFields(
           fields.zipWithIndex.map { case (f, index) =>
             if (col.nullable) {
@@ -135,7 +138,7 @@ object Project {
           CreateStruct(newFields)
         }
 
-      case (ArrayType(et, containsNull), expected: ArrayType) =>
+      case (ArrayType(et, containsNull), expected: ArrayType) =>  //处理 ArrayType（数组类型）
         if (containsNull & !expected.containsNull) {
           throw QueryCompilationErrors.notNullConstraintViolationArrayElementError(columnPath)
         }
@@ -145,7 +148,7 @@ object Project {
         val func = LambdaFunction(reconciledElement, Seq(param))
         ArrayTransform(col, func)
 
-      case (MapType(kt, vt, valueContainsNull), expected: MapType) =>
+      case (MapType(kt, vt, valueContainsNull), expected: MapType) =>   //处理 MapType（映射类型）
         if (valueContainsNull & !expected.valueContainsNull) {
           throw QueryCompilationErrors.notNullConstraintViolationMapValueError(columnPath)
         }
@@ -171,20 +174,20 @@ object Project {
         }
     }
   }
-
+  //主要作用是根据 expected（预期的 StructType 结构）对 fields 进行重新排序，并确保字段的名称、类型和顺序符合 expected
   private def reorderFields(
-      fields: Seq[(String, Expression)],
-      expected: Seq[StructField],
-      columnPath: Seq[String],
+      fields: Seq[(String, Expression)], // (字段名, 对应表达式)
+      expected: Seq[StructField],        // 预期的字段结构（包含字段名、类型、是否可为空等）
+      columnPath: Seq[String],           // 记录当前字段路径（用于错误信息）
       conf: SQLConf): Seq[NamedExpression] = {
     expected.map { f =>
-      val matched = fields.filter(field => conf.resolver(field._1, f.name))
+      val matched = fields.filter(field => conf.resolver(field._1, f.name))  //在 fields 里查找匹配的字段
       if (matched.isEmpty) {
         if (f.nullable) {
-          val columnExpr = Literal.create(null, f.dataType)
+          val columnExpr = Literal.create(null, f.dataType)  //字段允许 NULL，用 NULL 填充
           // Fill nullable missing new column with null value.
           createNewColumn(columnExpr, f.name, f.metadata, Metadata.empty)
-        } else {
+        } else {  //字段不允许 NULL，抛出错误
           if (columnPath.isEmpty) {
             val candidates = fields.map(field => Seq(field._1))
             val orderedCandidates =
@@ -206,7 +209,7 @@ object Project {
         }
 
         val newColumnPath = columnPath :+ matched.head._1
-        val newColumnExpr = reconcileColumnType(
+        val newColumnExpr = reconcileColumnType(  //调整字段类型
           columnExpr, newColumnPath, f.dataType, f.nullable, conf)
         createNewColumn(newColumnExpr, f.name, f.metadata, originalMetadata)
       }
@@ -312,20 +315,23 @@ case class Generate(
   override protected def withNewChildInternal(newChild: LogicalPlan): Generate =
     copy(child = newChild)
 }
-
+//表示 逻辑过滤操作 的节点
+//对数据进行 行级过滤，类似于 SQL 中的 WHERE 和 HAVING 子句，执行条件过滤并保留符合条件的行
+//condition  过滤条件表达式，用于定义数据的过滤逻辑
+// child 子逻辑计划，表示要进行过滤的数据来源（下游节点）
 case class Filter(condition: Expression, child: LogicalPlan)
   extends OrderPreservingUnaryNode with PredicateHelper {
-  override def output: Seq[Attribute] = child.output
+  override def output: Seq[Attribute] = child.output //过滤操作不会改变数据的输出结构，因此输出与子节点 (child) 相同
 
-  override def maxRows: Option[Long] = child.maxRows
+  override def maxRows: Option[Long] = child.maxRows //返回该节点可能产生的最大行数（如果可以推断）
   override def maxRowsPerPartition: Option[Long] = child.maxRowsPerPartition
 
   final override val nodePatterns: Seq[TreePattern] = Seq(FILTER)
-
+  //返回当前节点的 有效约束集合，用于帮助 Spark 优化执行计划
   override protected lazy val validConstraints: ExpressionSet = {
     val predicates = splitConjunctivePredicates(condition)
       .filterNot(SubqueryExpression.hasCorrelatedSubquery)
-    child.constraints.union(ExpressionSet(predicates))
+    child.constraints.union(ExpressionSet(predicates)) //合并当前节点和子节点的约束，形成有效约束集
   }
 
   override protected def withNewChildInternal(newChild: LogicalPlan): Filter =
@@ -707,7 +713,7 @@ case class InsertIntoDir(
  * `CatalogTable.viewText`. Otherwise, the view is a temporary one created from a dataframe and the
  * view description should contain a `VIEW_CREATED_FROM_DATAFRAME` property; in this case, the child
  * must be already resolved.
- *
+ *  表示视图（View）的逻辑节点，封装了视图的定义、是否为临时视图，以及解析后的子逻辑计划。在 Spark 中，视图可以是 SQL 定义的视图，也可以是由 DataFrame 创建的临时视图
  * This operator will be removed at the end of analysis stage.
  *
  * @param desc A view description(CatalogTable) that provides necessary information to resolve the
@@ -717,24 +723,24 @@ case class InsertIntoDir(
  *              be a logical plan parsed from the `CatalogTable.viewText`.
  */
 case class View(
-    desc: CatalogTable,
-    isTempView: Boolean,
-    child: LogicalPlan) extends UnaryNode {
+    desc: CatalogTable,// 视图的元信息
+    isTempView: Boolean,// 是否为临时视图
+    child: LogicalPlan) extends UnaryNode { // 视图的逻辑计划
   require(!isTempViewStoringAnalyzedPlan || child.resolved)
 
   override def output: Seq[Attribute] = child.output
-
+  //视图不输出元数据字段，因此返回空列表
   override def metadataOutput: Seq[Attribute] = Nil
-
+  //生成视图的简要字符串表示，方便调试输出
   override def simpleString(maxFields: Int): String = {
     s"View (${desc.identifier}, ${output.mkString("[", ",", "]")})"
   }
-
+  //生成视图的 规范化形式，用于逻辑计划的比较和缓存
   override def doCanonicalize(): LogicalPlan = child match {
     case p: Project if p.resolved && canRemoveProject(p) => p.child.canonicalized
     case _ => child.canonicalized
   }
-
+  //判断该视图是否是存储解析计划的临时视图
   def isTempViewStoringAnalyzedPlan: Boolean =
     isTempView && desc.properties.contains(VIEW_STORING_ANALYZED_PLAN)
 
@@ -742,9 +748,9 @@ case class View(
   // output schema doesn't change even if the table referenced by the view is changed after view
   // creation. We should remove this extra Project during canonicalize if it does nothing.
   // See more details in `SessionCatalog.fromCatalogTable`.
-  private def canRemoveProject(p: Project): Boolean = {
-    p.output.length == p.child.output.length && p.projectList.zip(p.child.output).forall {
-      case (Alias(cast: Cast, name), childAttr) =>
+  private def canRemoveProject(p: Project): Boolean = { //判断是否可以移除 Project，以简化逻辑计划
+    p.output.length == p.child.output.length && p.projectList.zip(p.child.output).forall { //Project 的输出字段数与子节点一致
+      case (Alias(cast: Cast, name), childAttr) => //每个字段仅执行了无变化的类型转换 (Cast)
         cast.child match {
           case a: AttributeReference =>
             a.dataType == cast.dataType && a.name == name && childAttr.semanticEquals(a)
@@ -758,7 +764,7 @@ case class View(
     copy(child = newChild)
 }
 
-object View {
+object View { //根据视图是否为临时视图，生成适用于视图解析的 SQL 配置
   def effectiveSQLConf(configs: Map[String, String], isTempView: Boolean): SQLConf = {
     val activeConf = SQLConf.get
     // For temporary view, we always use captured sql configs
@@ -1148,12 +1154,13 @@ case class Range(
  * on aggregateExpressions, which could reference an expression in groupingExpressions.
  * For example, see the rule [[org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps]]
  */
+//Apache Spark SQL 逻辑计划中的 "Group By" 逻辑算子，它负责对数据进行分组（grouping）并执行聚合（aggregation）**操作
 case class Aggregate(
-    groupingExpressions: Seq[Expression],
-    aggregateExpressions: Seq[NamedExpression],
-    child: LogicalPlan)
+    groupingExpressions: Seq[Expression],  //表示用于分组的表达式，即 GROUP BY 语句中指定的列或表达式
+    aggregateExpressions: Seq[NamedExpression],  //代表投影列表，即查询 SELECT 子句中包含的表达式，不仅仅包含聚合函数，也可以包含 groupingExpressions 里面的字段
+    child: LogicalPlan)     //子节点，表示在 GROUP BY 之前的数据源（输入逻辑计划）
   extends UnaryNode {
-
+  //检查 Aggregate 是否已解析（即所有表达式的类型、分辨字段都已经确定）
   override lazy val resolved: Boolean = {
     val hasWindowExpressions = aggregateExpressions.exists ( _.collect {
         case window: WindowExpression => window
@@ -1179,11 +1186,12 @@ case class Aggregate(
     val nonAgg = aggregateExpressions.filter(!_.exists(_.isInstanceOf[AggregateExpression]))
     getAllValidConstraints(nonAgg)
   }
-
+  //创建一个新的 Aggregate，但 child 替换为 newChild
   override protected def withNewChildInternal(newChild: LogicalPlan): Aggregate =
     copy(child = newChild)
 
   // Whether this Aggregate operator is group only. For example: SELECT a, a FROM t GROUP BY a
+  //检查 Aggregate 是否仅进行分组，而没有聚合计算
   private[sql] def groupOnly: Boolean = {
     // aggregateExpressions can be empty through Dateset.agg,
     // so we should also check groupingExpressions is non empty
@@ -1195,33 +1203,34 @@ case class Aggregate(
 }
 
 object Aggregate {
+  //如果 schema 里的所有数据类型是否可以本地更新，则返回 true
   def isAggregateBufferMutable(schema: StructType): Boolean = {
     schema.forall(f => UnsafeRow.isMutable(f.dataType))
   }
-
+  //检查是否支持 HashAggregate（基于 Hash 的聚合
   def supportsHashAggregate(aggregateBufferAttributes: Seq[Attribute]): Boolean = {
     val aggregationBufferSchema = DataTypeUtils.fromAttributes(aggregateBufferAttributes)
     isAggregateBufferMutable(aggregationBufferSchema)
   }
-
+  //检查是否支持 ObjectHashAggregate
   def supportsObjectHashAggregate(aggregateExpressions: Seq[AggregateExpression]): Boolean = {
     aggregateExpressions.map(_.aggregateFunction).exists {
-      case _: TypedImperativeAggregate[_] => true
+      case _: TypedImperativeAggregate[_] => true  //如果 aggregateExpressions 里有 TypedImperativeAggregate（对象聚合），返回 true
       case _ => false
     }
   }
 }
-
+//表示 Spark SQL 中的窗口操作 (Window Operation)。窗口操作允许在某些列上计算聚合函数，并根据指定的排序和分区规则进行处理
 case class Window(
-    windowExpressions: Seq[NamedExpression],
-    partitionSpec: Seq[Expression],
-    orderSpec: Seq[SortOrder],
-    child: LogicalPlan) extends UnaryNode {
-  override def maxRows: Option[Long] = child.maxRows
+    windowExpressions: Seq[NamedExpression], //包含窗口函数表达式的序列。窗口函数操作通常用于计算某些聚合或排名函数，如 ROW_NUMBER(), RANK(), SUM(), AVG() 等
+    partitionSpec: Seq[Expression],  //定义了分区的规则，表示如何将数据划分成多个窗口
+    orderSpec: Seq[SortOrder],    //定义了排序规则，决定了窗口内的数据如何排序，以便窗口函数能正确计算
+    child: LogicalPlan) extends UnaryNode { //表示在窗口操作之前的数据计划或查询结果
+  override def maxRows: Option[Long] = child.maxRows  //返回当前节点（即窗口操作）最大行数的限制
   override def output: Seq[Attribute] =
-    child.output ++ windowExpressions.map(_.toAttribute)
+    child.output ++ windowExpressions.map(_.toAttribute) //定义了该节点输出的列（即该窗口操作的结果），由子节点的输出列 (child.output) 和窗口表达式的输出 (windowExpressions.map(_.toAttribute)) 组成的
 
-  override def producedAttributes: AttributeSet = windowOutputSet
+  override def producedAttributes: AttributeSet = windowOutputSet //返回窗口操作所生成的属性集合
 
   final override val nodePatterns: Seq[TreePattern] = Seq(WINDOW)
 
@@ -1385,7 +1394,11 @@ case class Expand(
  * A logical offset, which may removing a specified number of rows from the beginning of the
  * output of child logical plan.
  */
+// 表示对查询结果进行偏移操作。该节点从子节点的输出中移除指定数量的行。
+// Offset 通常用于 SQL 中的 LIMIT 或分页操作，特别是在执行带有 OFFSET 子句的查询时
 case class Offset(offsetExpr: Expression, child: LogicalPlan) extends OrderPreservingUnaryNode {
+  //offsetExpr: 用来计算偏移量的表达式，类型是 Expression。该表达式通常是一个常量或可以计算出偏移量的表达式
+  //child: 表示这个 Offset 节点的子逻辑计划，它是当前节点的输入计划，即要对其输出执行偏移操作的逻辑计划
   override def output: Seq[Attribute] = child.output
   override def maxRows: Option[Long] = {
     import scala.math.max
@@ -1562,10 +1575,11 @@ case class Unpivot(
  * So we introduced LocalLimit and GlobalLimit in the logical plan node for limit pushdown.
  */
 object Limit {
+  //构建一个GlobalLimit
   def apply(limitExpr: Expression, child: LogicalPlan): UnaryNode = {
     GlobalLimit(limitExpr, LocalLimit(limitExpr, child))
   }
-
+  //解构一个GlobalLimit
   def unapply(p: GlobalLimit): Option[(Expression, LogicalPlan)] = {
     p match {
       case GlobalLimit(le1, LocalLimit(le2, child)) if le1 == le2 => Some((le1, child))
@@ -1584,7 +1598,10 @@ object Limit {
  * between the child and global limit, due to the fact that shuffle reader fetches blocks in random
  * order.
  */
+//与局部限制（如分页的 OFFSET）不同，GlobalLimit 是对整个查询结果的限制，通常用于限制查询返回的总行数
 case class GlobalLimit(limitExpr: Expression, child: LogicalPlan) extends UnaryNode {
+  //limitExpr: 用于指定限制的表达式，通常是一个整数字面量，表示最大返回的行数
+  //child: 表示此 GlobalLimit 操作的输入，它是另一个 LogicalPlan，即对其输出进行全局行数限制的查询计划
   override def output: Seq[Attribute] = child.output
   override def maxRows: Option[Long] = {
     limitExpr match {
@@ -1605,6 +1622,7 @@ case class GlobalLimit(limitExpr: Expression, child: LogicalPlan) extends UnaryN
  *
  * See [[Limit]] for more information.
  */
+//每个物理分区limit的条数
 case class LocalLimit(limitExpr: Expression, child: LogicalPlan) extends OrderPreservingUnaryNode {
   override def output: Seq[Attribute] = child.output
 
@@ -1639,7 +1657,7 @@ object LimitAndOffset {
   def unapply(p: Offset): Option[(Int, Int, LogicalPlan)] = {
     p match {
       case Offset(IntegerLiteral(offset), Limit(IntegerLiteral(limit), child)) =>
-        Some((limit, offset, child))
+        Some((limit, offset, child))   //limit的数量,offset的数量和子节点
       case _ => None
     }
   }
@@ -1669,22 +1687,22 @@ case class Tail(limitExpr: Expression, child: LogicalPlan) extends OrderPreservi
 
 /**
  * Aliased subquery.
- *
+ * 逻辑计划节点 (LogicalPlan)，用于表示子查询的别名。子查询别名在 SQL 查询中常见，主要目的是为子查询结果起一个新的名字，便于后续引用
  * @param identifier the alias identifier for this subquery.
  * @param child the logical plan of this subquery.
  */
 case class SubqueryAlias(
-    identifier: AliasIdentifier,
-    child: LogicalPlan)
+    identifier: AliasIdentifier, // 子查询的别名
+    child: LogicalPlan)  // 子查询的逻辑计划
   extends OrderPreservingUnaryNode {
 
-  def alias: String = identifier.name
-
+  def alias: String = identifier.name  //返回子查询的别名（identifier 中的 name）
+  //生成子查询的输出属性，主要是给子查询的每个字段添加新的限定符（即别名）
   override def output: Seq[Attribute] = {
     val qualifierList = identifier.qualifier :+ alias
     child.output.map(_.withQualifier(qualifierList))
   }
-
+  //用于处理子查询的 元数据列，通常是一些隐藏字段（如 row_number、内部字段），只会从叶子节点（LeafNode）或嵌套别名节点（SubqueryAlias）中透传出来
   override def metadataOutput: Seq[Attribute] = {
     // Propagate metadata columns from leaf nodes through a chain of `SubqueryAlias`.
     if (child.isInstanceOf[LeafNode] || child.isInstanceOf[SubqueryAlias]) {

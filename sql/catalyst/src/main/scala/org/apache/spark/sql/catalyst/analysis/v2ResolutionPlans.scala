@@ -103,17 +103,17 @@ case class UnresolvedFieldPosition(position: ColumnPosition) extends FieldPositi
   override lazy val resolved = false
 }
 
-/**
+/** 表示尚未解析的函数名称
  * Holds the name of a function that has yet to be looked up. It will be resolved to
  * [[ResolvedPersistentFunc]] or [[ResolvedNonPersistentFunc]] during analysis of function-related
  * commands such as `DESCRIBE FUNCTION name`.
  */
 case class UnresolvedFunctionName(
-    multipartIdentifier: Seq[String],
-    commandName: String,
-    requirePersistent: Boolean,
-    funcTypeMismatchHint: Option[String],
-    possibleQualifiedName: Option[Seq[String]] = None) extends UnresolvedLeafNode {
+    multipartIdentifier: Seq[String], //表示函数的多部分标识符，通常用于存储函数的完整名称,对于带有数据库限定的函数名：default.sum，则为 Seq("default", "sum")
+    commandName: String, //用于记录当前执行的 SQL 命令的名称，如 "DESCRIBE FUNCTION"、"SHOW FUNCTIONS"
+    requirePersistent: Boolean, //指示是否要求解析的函数必须是持久化函数,true：表示只解析持久化函数
+    funcTypeMismatchHint: Option[String], //如果函数类型不匹配时，提供额外的提示信息，通常用于错误提示
+    possibleQualifiedName: Option[Seq[String]] = None) extends UnresolvedLeafNode {//可能的限定名，表示在解析函数时，系统推测可能匹配的完全限定函数名
   final override val nodePatterns: Seq[TreePattern] = Seq(UNRESOLVED_FUNC)
 }
 

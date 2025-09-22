@@ -44,9 +44,15 @@ import org.apache.spark.util.{SerializableConfiguration, SerializableJobConf, Ut
 import org.apache.spark.util.collection.CompactBuffer
 import org.apache.spark.util.random.StratifiedSamplingUtils
 
-/**
+/** 为 Spark 中的 (key, value) 对的 RDD 提供了一些额外的操作函数
  * Extra functions available on RDDs of (key, value) pairs through an implicit conversion.
  */
+//K：RDD 中的 key 类型
+//V：RDD 中的 value 类型
+//self：表示调用该类方法的原始 RDD
+//kt, vt：分别表示 K 和 V 类型的 ClassTag，用于反射
+//ord：一个可选的 Ordering[K]，用于对 K 类型的 key 进行排序
+//implicit 可以让你在不显式传递参数的情况下，让编译器自动为你填充需要的值或类型转换
 class PairRDDFunctions[K, V](self: RDD[(K, V)])
     (implicit kt: ClassTag[K], vt: ClassTag[V], ord: Ordering[K] = null)
   extends Logging with Serializable {
@@ -63,23 +69,23 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    *
    * In addition, users can control the partitioning of the output RDD, and whether to perform
    * map-side aggregation (if a mapper can produce multiple items with the same key).
-   *
+   *  对每个 key 的值进行自定义聚合操作，生成一个新的 RDD，其中的值是聚合后的类型 C。
    * @note V and C can be different -- for example, one might group an RDD of type
    * (Int, Int) into an RDD of type (Int, Seq[Int]).
    */
   def combineByKeyWithClassTag[C](
-      createCombiner: V => C,
-      mergeValue: (C, V) => C,
-      mergeCombiners: (C, C) => C,
-      partitioner: Partitioner,
-      mapSideCombine: Boolean = true,
+      createCombiner: V => C, //将每个 V 转换为类型 C 的初始聚合值（例如，将 V 转换为一个列表）
+      mergeValue: (C, V) => C,  //将新的 V 合并到已有的聚合值 C 中
+      mergeCombiners: (C, C) => C, //将两个聚合值 C 合并成一个
+      partitioner: Partitioner, //指定分区方式
+      mapSideCombine: Boolean = true, //是否在 map 端进行合并，默认为 true
       serializer: Serializer = null)(implicit ct: ClassTag[C]): RDD[(K, C)] = self.withScope {
     require(mergeCombiners != null, "mergeCombiners must be defined") // required as of Spark 0.9.0
     if (keyClass.isArray) {
-      if (mapSideCombine) {
+      if (mapSideCombine) {  //如果key的类型是数组，则不可以在map size 聚合
         throw SparkCoreErrors.cannotUseMapSideCombiningWithArrayKeyError()
       }
-      if (partitioner.isInstanceOf[HashPartitioner]) {
+      if (partitioner.isInstanceOf[HashPartitioner]) { //HashPartitioner也不支持数据类型的key
         throw SparkCoreErrors.hashPartitionerCannotPartitionArrayKeyError()
       }
     }
@@ -87,12 +93,12 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
       self.context.clean(createCombiner),
       self.context.clean(mergeValue),
       self.context.clean(mergeCombiners))
-    if (self.partitioner == Some(partitioner)) {
+    if (self.partitioner == Some(partitioner)) {  //如果当前 RDD 已经使用了用户提供的分区器（partitioner），则在 mapPartitions 中进行合并。mapPartitions 会遍历每个分区的数据，并使用 combineValuesByKey 函数进行处理
       self.mapPartitions(iter => {
         val context = TaskContext.get()
         new InterruptibleIterator(context, aggregator.combineValuesByKey(iter, context))
       }, preservesPartitioning = true)
-    } else {
+    } else { //如果当前 RDD 使用的分区器与提供的不同，则使用 ShuffledRDD 进行 shuffle 操作，进行跨分区的数据合并
       new ShuffledRDD[K, V, C](self, partitioner)
         .setSerializer(serializer)
         .setAggregator(aggregator)
@@ -104,7 +110,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    * Generic function to combine the elements for each key using a custom set of aggregation
    * functions. This method is here for backward compatibility. It does not provide combiner
    * classtag information to the shuffle.
-   *
+   * 利用combineByKeyWithClassTag实现通用的聚合操作，用于对每个 key 的值执行自定义的聚合逻辑。这个方法是为了向后兼容性而保留的，它并没有提供用于 shuffle 的 combiner 的 ClassTag 信息
    * @see `combineByKeyWithClassTag`
    */
   def combineByKey[C](
@@ -122,7 +128,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    * Simplified version of combineByKeyWithClassTag that hash-partitions the output RDD.
    * This method is here for backward compatibility. It does not provide combiner
    * classtag information to the shuffle.
-   *
+   * 利用combineByKeyWithClassTag实现的简单版本
    * @see `combineByKeyWithClassTag`
    */
   def combineByKey[C](
@@ -133,7 +139,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     combineByKeyWithClassTag(createCombiner, mergeValue, mergeCombiners, numPartitions)(null)
   }
 
-  /**
+  /**简单版本的combineByKeyWithClassTag，使用HashPartitioner
    * Simplified version of combineByKeyWithClassTag that hash-partitions the output RDD.
    */
   def combineByKeyWithClassTag[C](
@@ -156,8 +162,13 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    */
   def aggregateByKey[U: ClassTag](zeroValue: U, partitioner: Partitioner)(seqOp: (U, V) => U,
       combOp: (U, U) => U): RDD[(K, U)] = self.withScope {
+    //zeroValue: U：这是一个零值，用于初始化聚合操作的起始值。它是一个与聚合结果类型 U 相同的初始值（例如，数值 0、空集合等）
+    //seqOp: (U, V) => U：这是一个函数，用于在每个分区内对每个 key 的值进行聚合。它将当前的聚合结果 U 和一个新的值 V 合并，返回更新后的聚合结果
+    //combOp: (U, U) => U：这是一个函数，用于将两个聚合结果 U 合并成一个。在多个分区之间进行聚合时会使用这个操作
     // Serialize the zero value to a byte array so that we can get a new clone of it on each key
     val zeroBuffer = SparkEnv.get.serializer.newInstance().serialize(zeroValue)
+    //zeroValue 是需要在每个分区内初始化的。为了避免每次创建新对象时进行大量内存分配，
+    // 代码首先将 zeroValue 序列化成字节数组。这种做法可以确保在每个任务中正确地创建出新的 zeroValue
     val zeroArray = new Array[Byte](zeroBuffer.limit)
     zeroBuffer.get(zeroArray)
 
@@ -166,6 +177,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
 
     // We will clean the combiner closure later in `combineByKey`
     val cleanedSeqOp = self.context.clean(seqOp)
+    //利用combineByKeyWithClassTag来聚合
     combineByKeyWithClassTag[U]((v: V) => cleanedSeqOp(createZero(), v),
       cleanedSeqOp, combOp, partitioner)
   }
@@ -295,7 +307,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     self.mapPartitionsWithIndex(samplingFunc, preservesPartitioning = true, isOrderSensitive = true)
   }
 
-  /**
+  /** 利用combineByKeyWithClassTag来reduce
    * Merge the values for each key using an associative and commutative reduce function. This will
    * also perform the merging locally on each mapper before sending results to a reducer, similarly
    * to a "combiner" in MapReduce.
@@ -520,7 +532,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     groupByKey(new HashPartitioner(numPartitions))
   }
 
-  /**
+  /** 按照新的Partitioner分区
    * Return a copy of the RDD partitioned using the specified partitioner.
    */
   def partitionBy(partitioner: Partitioner): RDD[(K, V)] = self.withScope {
@@ -788,13 +800,15 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
     }
   }
 
-  /**
+  /** 将两个 RDD 根据键进行合并。对于每个键，它会返回一个包含两个值的元组：一个来自 this RDD，另一个来自 other RDD
    * For each key k in `this` or `other`, return a resulting RDD that contains a tuple with the
    * list of values for that key in `this` as well as `other`.
    */
   def cogroup[W](other: RDD[(K, W)], partitioner: Partitioner)
       : RDD[(K, (Iterable[V], Iterable[W]))] = self.withScope {
-    if (partitioner.isInstanceOf[HashPartitioner] && keyClass.isArray) {
+    //other: RDD[(K, W)]：这是另一个 RDD，它和当前 RDD 共享相同的键类型 K，但值的类型 W 可能不同
+    //partitioner: Partitioner：用于指定输出 RDD 的分区策略，决定如何将数据分配到不同的分区中
+    if (partitioner.isInstanceOf[HashPartitioner] && keyClass.isArray) {  //HashPartitioner不能作用于数组类型的key
       throw SparkCoreErrors.hashPartitionerCannotPartitionArrayKeyError()
     }
     val cg = new CoGroupedRDD[K](Seq(self, other), partitioner)
@@ -1103,7 +1117,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
    */
   def values: RDD[V] = self.map(_._2)
 
-  private[spark] def keyClass: Class[_] = kt.runtimeClass
+  private[spark] def keyClass: Class[_] = kt.runtimeClass   //返回key的类型
 
   private[spark] def valueClass: Class[_] = vt.runtimeClass
 

@@ -80,10 +80,10 @@ import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, Poi
  * for more details on RDD internals.
  */
 abstract class RDD[T: ClassTag](
-    @transient private var _sc: SparkContext,
-    @transient private var deps: Seq[Dependency[_]]
+    @transient private var _sc: SparkContext,  //当前 RDD 关联的 SparkContext 对象
+    @transient private var deps: Seq[Dependency[_]] //一个 RDD 可以依赖于多个其他 RDD，这些依赖描述了 RDD 的计算是如何与其他 RDD 连接的
   ) extends Serializable with Logging {
-
+   //判断元素T是否是RDD的子类，如果是，则告警，不允许嵌套
   if (classOf[RDD[_]].isAssignableFrom(elementClassTag.runtimeClass)) {
     // This is a warning instead of an exception in order to avoid breaking user programs that
     // might have defined nested RDDs without running jobs with them.
@@ -111,7 +111,7 @@ abstract class RDD[T: ClassTag](
    * Implemented by subclasses to compute a given partition.
    */
   @DeveloperApi
-  def compute(split: Partition, context: TaskContext): Iterator[T]
+  def compute(split: Partition, context: TaskContext): Iterator[T]  //每个子类需要实现此方法，用于计算指定分区的结果。split 表示分区
 
   /**
    * Implemented by subclasses to return the set of partitions in this RDD. This method will only
@@ -120,21 +120,21 @@ abstract class RDD[T: ClassTag](
    * The partitions in this array must satisfy the following property:
    *   `rdd.partitions.zipWithIndex.forall { case (partition, index) => partition.index == index }`
    */
-  protected def getPartitions: Array[Partition]
+  protected def getPartitions: Array[Partition] //子类需要实现此方法，返回该 RDD 的分区列表
 
   /**
    * Implemented by subclasses to return how this RDD depends on parent RDDs. This method will only
    * be called once, so it is safe to implement a time-consuming computation in it.
    */
-  protected def getDependencies: Seq[Dependency[_]] = deps
+  protected def getDependencies: Seq[Dependency[_]] = deps  //返回该 RDD 对父 RDD 的依赖关系
 
   /**
    * Optionally overridden by subclasses to specify placement preferences.
    */
-  protected def getPreferredLocations(split: Partition): Seq[String] = Nil
+  protected def getPreferredLocations(split: Partition): Seq[String] = Nil  //返回该分区的计算优选位置（例如 HDFS 的块位置）
 
   /** Optionally overridden by subclasses to specify how they are partitioned. */
-  @transient val partitioner: Option[Partitioner] = None
+  @transient val partitioner: Option[Partitioner] = None  //分区器
 
   // =======================================================================
   // Methods and fields available on all RDDs
@@ -142,12 +142,12 @@ abstract class RDD[T: ClassTag](
 
   /** The SparkContext that created this RDD. */
   def sparkContext: SparkContext = sc
-
+  //rdd的唯一id
   /** A unique ID for this RDD (within its SparkContext). */
-  val id: Int = sc.newRddId()
+  val id: Int = sc.newRddId()   //当前 RDD 的唯一 ID，每个 RDD 在其所属的 SparkContext 中都有一个唯一标识符。
 
   /** A friendly name for this RDD */
-  @transient var name: String = _
+  @transient var name: String = _  //为 RDD 分配的友好名称，可以用于调试等目的
 
   /** Assign a name to this RDD */
   def setName(_name: String): this.type = {
@@ -157,26 +157,28 @@ abstract class RDD[T: ClassTag](
 
   /**
    * Mark this RDD for persisting using the specified level.
-   *
+   * 将当前 RDD 标记为持久化，存储级别可以是 MEMORY_ONLY、DISK_ONLY 等。allowOverride 表示是否允许覆盖已有的存储级别。
    * @param newLevel the target storage level
    * @param allowOverride whether to override any existing level with the new one
    */
   private def persist(newLevel: StorageLevel, allowOverride: Boolean): this.type = {
     // TODO: Handle changes of StorageLevel
+    // 如果当前RDD已经有存储级别并且 allowOverride 为 false，那么方法会抛出异常，阻止修改现有的存储级别
     if (storageLevel != StorageLevel.NONE && newLevel != storageLevel && !allowOverride) {
       throw SparkCoreErrors.cannotChangeStorageLevelError()
     }
     // If this is the first time this RDD is marked for persisting, register it
     // with the SparkContext for cleanups and accounting. Do this only once.
+    //如果当前 RDD 还没有持久化（即 storageLevel == StorageLevel.NONE）
     if (storageLevel == StorageLevel.NONE) {
-      sc.cleaner.foreach(_.registerRDDForCleanup(this))
-      sc.persistRDD(this)
+      sc.cleaner.foreach(_.registerRDDForCleanup(this))  //将当前 RDD 注册到 SparkContext 的清理器中，用于后续清理
+      sc.persistRDD(this)   //实际存储在ConcurrentMap
     }
     storageLevel = newLevel
     this
   }
 
-  /**
+  /** 如果是本地检查点rdd，则可以更改，其他则只能在第一次的时候修改
    * Set this RDD's storage level to persist its values across operations after the first time
    * it is computed. This can only be used to assign a new storage level if the RDD does not
    * have a storage level set yet. Local checkpointing is an exception.
@@ -197,14 +199,14 @@ abstract class RDD[T: ClassTag](
    */
   def persist(): this.type = persist(StorageLevel.MEMORY_ONLY)
 
-  /**
+  /** 跟persist()一样的逻辑
    * Persist this RDD with the default storage level (`MEMORY_ONLY`).
    */
   def cache(): this.type = persist()
 
   /**
    * Mark the RDD as non-persistent, and remove all blocks for it from memory and disk.
-   *
+   *  将当前 RDD 从持久化列表中移除，并删除它占用的内存和磁盘缓存
    * @param blocking Whether to block until all blocks are deleted (default: false)
    * @return This RDD.
    */
@@ -233,15 +235,16 @@ abstract class RDD[T: ClassTag](
    * Executors may reference the shared fields (though they should never mutate them,
    * that only happens on the driver).
    */
-  private[spark] val stateLock = new Serializable {}
+  private[spark] val stateLock = new Serializable {}  //用于保护当前 RDD 状态（如存储级别、分区、依赖关系等）的锁，防止多线程访问时出现并发问题
 
   // Our dependencies and partitions will be gotten by calling subclass's methods below, and will
   // be overwritten when we're checkpointed
+  //当前rdd的依赖
   @volatile private var dependencies_ : Seq[Dependency[_]] = _
   // When we overwrite the dependencies we keep a weak reference to the old dependencies
   // for user controlled cleanup.
   @volatile @transient private var legacyDependencies: WeakReference[Seq[Dependency[_]]] = _
-  @volatile @transient private var partitions_ : Array[Partition] = _
+  @volatile @transient private var partitions_ : Array[Partition] = _  //该rdd的分区数组
 
   /** An Option holding our checkpoint RDD, if we are checkpointed */
   private def checkpointRDD: Option[CheckpointRDD[T]] = checkpointData.flatMap(_.checkpointRDD)
@@ -251,8 +254,10 @@ abstract class RDD[T: ClassTag](
    * RDD is checkpointed or not.
    */
   final def dependencies: Seq[Dependency[_]] = {
+    // 如果 RDD 已经进行了检查点处理，则返回其依赖列表
     checkpointRDD.map(r => List(new OneToOneDependency(r))).getOrElse {
       if (dependencies_ == null) {
+        // 如果 dependencies_ 是 null（第一次访问依赖关系），则会同步进行初始化
         stateLock.synchronized {
           if (dependencies_ == null) {
             dependencies_ = getDependencies
@@ -263,7 +268,7 @@ abstract class RDD[T: ClassTag](
     }
   }
 
-  /**
+  /** 用于获取当前 RDD 的依赖列表，忽略检查点。这个方法返回一个 Option[Seq[Dependency[_]]] 类型，表示依赖关系可能存在，也可能为空
    * Get the list of dependencies of this RDD ignoring checkpointing.
    */
   final private def internalDependencies: Option[Seq[Dependency[_]]] = {
@@ -287,7 +292,9 @@ abstract class RDD[T: ClassTag](
    * RDD is checkpointed or not.
    */
   final def partitions: Array[Partition] = {
+    //如果 RDD 已经进行了检查点处理，则返回其分区数组
     checkpointRDD.map(_.partitions).getOrElse {
+      //// 如果 partitions_ 是 null（第一次访问分区），则会同步进行初始化
       if (partitions_ == null) {
         stateLock.synchronized {
           if (partitions_ == null) {
@@ -314,12 +321,13 @@ abstract class RDD[T: ClassTag](
    * RDD is checkpointed.
    */
   final def preferredLocations(split: Partition): Seq[String] = {
+    // 如果 RDD 有检查点，则调用检查点的 preferredLocations 方法
     checkpointRDD.map(_.getPreferredLocations(split)).getOrElse {
       getPreferredLocations(split)
     }
   }
 
-  /**
+  /** 负责返回当前分区的迭代器。在 Spark 中，iterator 方法是用来返回一个迭代器，使得任务可以遍历分区的数据
    * Internal method to this RDD; will read from cache if applicable, or otherwise compute it.
    * This should ''not'' be called by users directly, but is available for implementers of custom
    * subclasses of RDD.
@@ -332,7 +340,8 @@ abstract class RDD[T: ClassTag](
     }
   }
 
-  /**
+  /** 返回与当前 RDD 相关联的所有祖先 RDD，且这些祖先通过一系列的窄依赖（NarrowDependency）与当前 RDD 相关联
+   * 窄依赖意味着每个父 RDD 的每个分区只会被子 RDD 的一个分区处理，通常这种依赖关系不会引起 shuffle 操作
    * Return the ancestors of the given RDD that are related to it only through a sequence of
    * narrow dependencies. This traverses the given RDD's dependency tree using DFS, but maintains
    * no ordering on the RDDs returned.
@@ -341,12 +350,12 @@ abstract class RDD[T: ClassTag](
     val ancestors = new mutable.HashSet[RDD[_]]
 
     def visit(rdd: RDD[_]): Unit = {
-      val narrowDependencies = rdd.dependencies.filter(_.isInstanceOf[NarrowDependency[_]])
+      val narrowDependencies = rdd.dependencies.filter(_.isInstanceOf[NarrowDependency[_]]) //过滤出窄依赖
       val narrowParents = narrowDependencies.map(_.rdd)
-      val narrowParentsNotVisited = narrowParents.filterNot(ancestors.contains)
+      val narrowParentsNotVisited = narrowParents.filterNot(ancestors.contains)  //判断是否已经包含
       narrowParentsNotVisited.foreach { parent =>
         ancestors.add(parent)
-        visit(parent)
+        visit(parent)  //递归处理
       }
     }
 
@@ -361,10 +370,10 @@ abstract class RDD[T: ClassTag](
    */
   private[spark] def computeOrReadCheckpoint(split: Partition, context: TaskContext): Iterator[T] =
   {
-    if (isCheckpointedAndMaterialized) {
+    if (isCheckpointedAndMaterialized) {  //如果检查点已经完成，此时检查点就是该rdd的父rdd，数据跟该rdd一样
       firstParent[T].iterator(split, context)
     } else {
-      compute(split, context)
+      compute(split, context)  //检查点也没有，则重新计算
     }
   }
 
@@ -372,16 +381,17 @@ abstract class RDD[T: ClassTag](
    * Gets or computes an RDD partition. Used by RDD.iterator() when an RDD is cached.
    */
   private[spark] def getOrCompute(partition: Partition, context: TaskContext): Iterator[T] = {
-    val blockId = RDDBlockId(id, partition.index)
+    val blockId = RDDBlockId(id, partition.index) //// 根据 RDD id 和分区 index 生成块 ID
     var readCachedBlock = true
     // This method is called on executors, so we need call SparkEnv.get instead of sc.env.
     SparkEnv.get.blockManager.getOrElseUpdateRDDBlock(
       context.taskAttemptId(), blockId, storageLevel, elementClassTag, () => {
         readCachedBlock = false
-        computeOrReadCheckpoint(partition, context)
+        computeOrReadCheckpoint(partition, context)  // // 如果缓存未命中，计算该分区的数据
       }
     ) match {
       // Block hit.
+      //// 如果读取的是缓存的块，增加读取的字节数统计
       case Left(blockResult) =>
         if (readCachedBlock) {
           val existingMetrics = context.taskMetrics().inputMetrics
@@ -396,6 +406,7 @@ abstract class RDD[T: ClassTag](
           new InterruptibleIterator(context, blockResult.data.asInstanceOf[Iterator[T]])
         }
       // Need to compute the block.
+      // 如果是计算出来的块，直接返回一个可中断的迭代器
       case Right(iter) =>
         new InterruptibleIterator(context, iter)
     }
@@ -411,15 +422,15 @@ abstract class RDD[T: ClassTag](
 
   // Transformations (return a new RDD)
 
-  /**
+  /** 对 RDD 中的每个元素应用函数 f，返回一个新的 RDD
    * Return a new RDD by applying a function to all elements of this RDD.
    */
   def map[U: ClassTag](f: T => U): RDD[U] = withScope {
-    val cleanF = sc.clean(f)
+    val cleanF = sc.clean(f)  //清理闭包，返回f函数
     new MapPartitionsRDD[U, T](this, (_, _, iter) => iter.map(cleanF))
   }
 
-  /**
+  /** 类似于 map，但是每个元素会被映射成零个或多个元素（因此是扁平化的）
    *  Return a new RDD by first applying a function to all elements of this
    *  RDD, and then flattening the results.
    */
@@ -428,7 +439,7 @@ abstract class RDD[T: ClassTag](
     new MapPartitionsRDD[U, T](this, (_, _, iter) => iter.flatMap(cleanF))
   }
 
-  /**
+  /** 根据给定的条件 f 过滤 RDD 中的元素，返回一个新的 RDD
    * Return a new RDD containing only the elements that satisfy a predicate.
    */
   def filter(f: T => Boolean): RDD[T] = withScope {
@@ -439,13 +450,14 @@ abstract class RDD[T: ClassTag](
       preservesPartitioning = true)
   }
 
-  /**
+  /** 返回一个新的 RDD，其中包含当前 RDD 的所有不重复元素，
+   *  如果numPartitions 跟上游一致，则少了shuffle的过程，会直接在每个分区内去重
    * Return a new RDD containing the distinct elements in this RDD.
    */
   def distinct(numPartitions: Int)(implicit ord: Ordering[T] = null): RDD[T] = withScope {
     def removeDuplicatesInPartition(partition: Iterator[T]): Iterator[T] = {
       // Create an instance of external append only map which ignores values.
-      val map = new ExternalAppendOnlyMap[T, Null, Null](
+      val map = new ExternalAppendOnlyMap[T, Null, Null](  //借助ExternalAppendOnlyMap来去重
         createCombiner = _ => null,
         mergeValue = (a, b) => a,
         mergeCombiners = (a, b) => a)
@@ -453,9 +465,9 @@ abstract class RDD[T: ClassTag](
       map.iterator.map(_._1)
     }
     partitioner match {
-      case Some(_) if numPartitions == partitions.length =>
+      case Some(_) if numPartitions == partitions.length =>  //如果 RDD 已经分区且 numPartitions 与当前 RDD 分区数相同：直接使用 mapPartitions 方法进行去重，每个分区内部去重，保持分区数不变
         mapPartitions(removeDuplicatesInPartition, preservesPartitioning = true)
-      case _ => map(x => (x, null)).reduceByKey((x, _) => x, numPartitions).map(_._1)
+      case _ => map(x => (x, null)).reduceByKey((x, _) => x, numPartitions).map(_._1)  //reduceByKey 会根据键进行聚合，保证每个键只保留一个值
     }
   }
 
@@ -505,9 +517,12 @@ abstract class RDD[T: ClassTag](
                partitionCoalescer: Option[PartitionCoalescer] = Option.empty)
               (implicit ord: Ordering[T] = null)
       : RDD[T] = withScope {
+    //numPartitions  目标分区数量。必须大于 0。如果 numPartitions 比当前分区数少，coalesce 会尝试合并分区
+    //shuffle 如果设置为 true，则会触发一个 shuffle 操作，即使合并分区的数量增加
     require(numPartitions > 0, s"Number of partitions ($numPartitions) must be positive.")
     if (shuffle) {
       /** Distributes elements evenly across output partitions, starting from a random partition. */
+        //把分区的每个元素通过随机的方式分配到其他分区
       val distributePartition = (index: Int, items: Iterator[T]) => {
         var position = new XORShiftRandom(index).nextInt(numPartitions)
         items.map { t =>
@@ -845,7 +860,8 @@ abstract class RDD[T: ClassTag](
 
   /**
    * Return a new RDD by applying a function to each partition of this RDD.
-   *
+   * 将一个给定的函数 f 应用到当前 RDD 的每一个分区上，并返回一个新的 RDD。
+   * 这个方法和 map 方法类似，但是 mapPartitions 是在每个分区上应用函数，而不是在每个元素上应用函数，因此它的效率通常更高，尤其是在需要对分区内的数据进行批量处理时
    * `preservesPartitioning` indicates whether the input function preserves the partitioner, which
    * should be `false` unless this is a pair RDD and the input function doesn't modify the keys.
    */
@@ -885,6 +901,7 @@ abstract class RDD[T: ClassTag](
   /**
    * [performance] Spark's internal mapPartitions method that skips closure cleaning.
    */
+  //spark内部使用的mapPartitions跳过了闭包清除的环节
   private[spark] def mapPartitionsInternal[U: ClassTag](
       f: Iterator[T] => Iterator[U],
       preservesPartitioning: Boolean = false): RDD[U] = withScope {
@@ -920,7 +937,7 @@ abstract class RDD[T: ClassTag](
   @Since("3.5.0")
   def mapPartitionsWithEvaluator[U: ClassTag](
       evaluatorFactory: PartitionEvaluatorFactory[T, U]): RDD[U] = withScope {
-    new MapPartitionsWithEvaluatorRDD(this, evaluatorFactory)
+    new MapPartitionsWithEvaluatorRDD(this, evaluatorFactory) //转为使用代码生成技术处理的RDD
   }
 
   /**
@@ -1551,6 +1568,7 @@ abstract class RDD[T: ClassTag](
    * @param ord the implicit ordering for T
    * @return an array of top elements
    */
+    //返回前num条记录
   def takeOrdered(num: Int)(implicit ord: Ordering[T]): Array[T] = withScope {
     if (num == 0 || this.getNumPartitions == 0) {
       Array.empty
@@ -1846,10 +1864,10 @@ abstract class RDD[T: ClassTag](
   // =======================================================================
   // Other internal methods and fields
   // =======================================================================
-
+  //存储级别
   private var storageLevel: StorageLevel = StorageLevel.NONE
   @transient private var resourceProfile: Option[ResourceProfile] = None
-
+  //创建此rdd的用户代码
   /** User code that created this RDD (e.g. `textFile`, `parallelize`). */
   @transient private[spark] val creationSite = sc.getCallSite()
 
@@ -1866,8 +1884,8 @@ abstract class RDD[T: ClassTag](
 
   private[spark] def getCreationSite: String = Option(creationSite).map(_.shortForm).getOrElse("")
 
-  private[spark] def elementClassTag: ClassTag[T] = classTag[T]
-
+  private[spark] def elementClassTag: ClassTag[T] = classTag[T]  //获取元素T的类型信息
+  //该rdd进行了检查点处理，则非None
   private[spark] var checkpointData: Option[RDDCheckpointData[T]] = None
 
   // Whether to checkpoint all ancestor RDDs that are marked for checkpointing. By default,
@@ -1936,7 +1954,7 @@ abstract class RDD[T: ClassTag](
     }
   }
 
-  /**
+  /** 去掉旧的依赖和分区，新的依赖为检查点rdd
    * Changes the dependencies of this RDD from its original parents to a new RDD (`newRDD`)
    * created from the checkpoint file, and forget its old dependencies and partitions.
    */
@@ -1953,6 +1971,7 @@ abstract class RDD[T: ClassTag](
    * collected. Subclasses of RDD may override this method for implementing their own cleaning
    * logic. See [[org.apache.spark.rdd.UnionRDD]] for an example.
    */
+    //依赖已经标注了弱引用，通过赋值为null关闭了强引用，下次垃圾收集就会回收清理
   protected def clearDependencies(): Unit = stateLock.synchronized {
     dependencies_ = null
   }
@@ -2044,7 +2063,8 @@ abstract class RDD[T: ClassTag](
    * An RDD is in a barrier stage, if at least one of its parent RDD(s), or itself, are mapped from
    * an [[RDDBarrier]]. This function always returns false for a [[ShuffledRDD]], since a
    * [[ShuffledRDD]] indicates start of a new stage.
-   *
+   * Barrier Stage 主要用于 Spark 的 Barriers 机制，它在进行 Shuffle 操作时使用，确保某些任务的执行顺序或者依赖关系的同步。
+   * 在 Barrier Stage 中，所有任务的执行会在某个点上同步，即所有任务必须等到所有前置任务都完成后才可以开始执行
    * A [[MapPartitionsRDD]] can be transformed from an [[RDDBarrier]], under that case the
    * [[MapPartitionsRDD]] shall be marked as barrier.
    */
@@ -2078,7 +2098,7 @@ abstract class RDD[T: ClassTag](
       _outputDeterministicLevel
     }
   }
-
+  //主要用于判断当前 RDD 的输出是否能在不同执行过程中保持一致性，或者是否会因为数据的并发处理、shuffle 操作等原因导致结果不可预测
   @DeveloperApi
   protected def getOutputDeterministicLevel: DeterministicLevel.Value = {
     val deterministicLevelCandidates = dependencies.map {
@@ -2172,10 +2192,10 @@ object RDD {
 /**
  * The deterministic level of RDD's output (i.e. what `RDD#compute` returns). This explains how
  * the output will diff when Spark reruns the tasks for the RDD. There are 3 deterministic levels:
- * 1. DETERMINATE: The RDD output is always the same data set in the same order after a rerun.
+ * 1. DETERMINATE: The RDD output is always the same data set in the same order after a rerun. 数据集一样，顺序一样
  * 2. UNORDERED: The RDD output is always the same data set but the order can be different
- *               after a rerun.
- * 3. INDETERMINATE. The RDD output can be different after a rerun.
+ *               after a rerun. 输出数据集一样，但是顺序可能不一样
+ * 3. INDETERMINATE. The RDD output can be different after a rerun. 重跑可能不一样
  *
  * Note that, the output of an RDD usually relies on the parent RDDs. When the parent RDD's output
  * is INDETERMINATE, it's very likely the RDD's output is also INDETERMINATE.

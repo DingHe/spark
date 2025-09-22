@@ -43,14 +43,16 @@ import org.apache.spark.util.HadoopFSUtils
  * @param userSpecifiedSchema an optional user specified schema that will be use to provide
  *                            types for the discovered partitions
  */
+//主要用于高效地遍历和读取存储在 Hadoop 兼容文件系统（如 HDFS、S3）中的文件。
+// 它支持对文件和分区进行缓存，以减少元数据开销，并提供并行文件扫描功能
 class InMemoryFileIndex(
     sparkSession: SparkSession,
-    rootPathsSpecified: Seq[Path],
-    parameters: Map[String, String],
-    userSpecifiedSchema: Option[StructType],
-    fileStatusCache: FileStatusCache = NoopCache,
-    userSpecifiedPartitionSpec: Option[PartitionSpec] = None,
-    override val metadataOpsTimeNs: Option[Long] = None)
+    rootPathsSpecified: Seq[Path], //需要扫描的根路径列表，可能包含多个目录
+    parameters: Map[String, String],  //用户传递的参数，用于控制发现过程
+    userSpecifiedSchema: Option[StructType], //用户提供的模式（schema），如果未提供，则从数据中推断
+    fileStatusCache: FileStatusCache = NoopCache,  //缓存文件状态信息，默认使用 NoopCache（不缓存）
+    userSpecifiedPartitionSpec: Option[PartitionSpec] = None, //用户提供的分区规范（可选）
+    override val metadataOpsTimeNs: Option[Long] = None) //存储元数据操作的执行时间（可选）
   extends PartitioningAwareFileIndex(
     sparkSession, parameters, userSpecifiedSchema, fileStatusCache) {
 
@@ -58,9 +60,9 @@ class InMemoryFileIndex(
   // or "/.../_spark_metadata/0" (a file in the metadata dir). `rootPathsSpecified` might contain
   // such streaming metadata dir or files, e.g. when after globbing "basePath/*" where "basePath"
   // is the output of a streaming query.
-  override val rootPaths =
+  override val rootPaths =   //如果包含元数据路径，则过滤调
     rootPathsSpecified.filterNot(FileStreamSink.ancestorIsMetadataDirectory(_, hadoopConf))
-
+   //缓存信息
   @volatile private var cachedLeafFiles: mutable.LinkedHashMap[Path, FileStatus] = _
   @volatile private var cachedLeafDirToChildrenFiles: Map[Path, Array[FileStatus]] = _
   @volatile private var cachedPartitionSpec: PartitionSpec = _
@@ -86,12 +88,12 @@ class InMemoryFileIndex(
   override protected def leafDirToChildrenFiles: Map[Path, Array[FileStatus]] = {
     cachedLeafDirToChildrenFiles
   }
-
+  //刷新之前，使缓存数据失效
   override def refresh(): Unit = {
     fileStatusCache.invalidateAll()
     refresh0()
   }
-
+  //刷新元数据
   private def refresh0(): Unit = {
     val files = listLeafFiles(rootPaths)
     cachedLeafFiles =
@@ -114,6 +116,7 @@ class InMemoryFileIndex(
    *
    * This is publicly visible for testing.
    */
+  //列出叶子文件
   def listLeafFiles(paths: Seq[Path]): mutable.LinkedHashSet[FileStatus] = {
     val startTime = System.nanoTime()
     val output = mutable.LinkedHashSet[FileStatus]()
@@ -143,13 +146,13 @@ class InMemoryFileIndex(
 }
 
 object InMemoryFileIndex extends Logging {
-
+  //主要作用是 并行列出 paths 目录下的所有叶子文件，并返回一个包含 路径及其对应文件列表 的 Seq[(Path, Seq[FileStatus])] 结构
   private[sql] def bulkListLeafFiles(
-      paths: Seq[Path],
-      hadoopConf: Configuration,
-      filter: PathFilter,
+      paths: Seq[Path], //需要扫描的根路径列表
+      hadoopConf: Configuration,  //Hadoop 配置，用于文件系统访问
+      filter: PathFilter,  //文件路径过滤器
       sparkSession: SparkSession,
-      parameters: Map[String, String] = Map.empty): Seq[(Path, Seq[FileStatus])] = {
+      parameters: Map[String, String] = Map.empty): Seq[(Path, Seq[FileStatus])] = { //额外的参数（如是否忽略丢失的文件）
     HadoopFSUtils.parallelListLeafFiles(
       sc = sparkSession.sparkContext,
       paths = paths,

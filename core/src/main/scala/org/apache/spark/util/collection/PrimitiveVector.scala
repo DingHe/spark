@@ -19,10 +19,10 @@ package org.apache.spark.util.collection
 
 import scala.reflect.ClassTag
 
-/**
+/** 实现了一个用于存储原始类型（例如 Long、Int 或 Double）的数组，并提供了向量（数组）的基本操作方法。这个类是针对性能优化的，特别是为了避免装箱操作（boxing）和提升原始类型的数据处理效率。
  * An append-only, non-threadsafe, array-backed vector that is optimized for primitive types.
  */
-private[spark]
+private[spark]  //specialized注解告诉编译器为 Long、Int 和 Double 三种基本类型生成特定的代码，这样可以避免装箱和提高性能。V 的类型会根据实际需要替换为 Long、Int 或 Double，从而避免不必要的内存开销
 class PrimitiveVector[@specialized(Long, Int, Double) V: ClassTag](initialSize: Int = 64) {
   private var _numElements = 0
   private var _array: Array[V] = _

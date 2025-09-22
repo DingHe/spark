@@ -30,6 +30,7 @@ import org.apache.spark.sql.types.AbstractDataType
  *
  * Most function expressions (e.g. [[Substring]] should extend [[ImplicitCastInputTypes]]) instead.
  */
+//定义希望输入的数据类型
 trait ExpectsInputTypes extends Expression {
 
   /**

@@ -34,9 +34,9 @@ import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStrea
  * components, including automatic selection of which [[Serializer]] to use for shuffles.
  */
 private[spark] class SerializerManager(
-    defaultSerializer: Serializer,
+    defaultSerializer: Serializer, //默认的序列化器，用于选择默认的序列化策略
     conf: SparkConf,
-    encryptionKey: Option[Array[Byte]]) {
+    encryptionKey: Option[Array[Byte]]) {  //可选的加密密钥。如果提供了密钥，则启用加密
 
   def this(defaultSerializer: Serializer, conf: SparkConf) = this(defaultSerializer, conf, None)
 
@@ -46,8 +46,8 @@ private[spark] class SerializerManager(
     kryoSerializer.setDefaultClassLoader(classLoader)
   }
 
-  private[this] val stringClassTag: ClassTag[String] = implicitly[ClassTag[String]]
-  private[this] val primitiveAndPrimitiveArrayClassTags: Set[ClassTag[_]] = {
+  private[this] val stringClassTag: ClassTag[String] = implicitly[ClassTag[String]] //String 类型的 ClassTag，用于类型判断
+  private[this] val primitiveAndPrimitiveArrayClassTags: Set[ClassTag[_]] = { //包含基本数据类型及其数组类型的 ClassTags
     val primitiveClassTags = Set[ClassTag[_]](
       ClassTag.Boolean,
       ClassTag.Byte,
@@ -64,20 +64,20 @@ private[spark] class SerializerManager(
   }
 
   // Whether to compress broadcast variables that are stored
-  private[this] val compressBroadcast = conf.get(config.BROADCAST_COMPRESS)
+  private[this] val compressBroadcast = conf.get(config.BROADCAST_COMPRESS)   //广播变量是否要压缩
   // Whether to compress shuffle output that are stored
-  private[this] val compressShuffle = conf.get(config.SHUFFLE_COMPRESS)
+  private[this] val compressShuffle = conf.get(config.SHUFFLE_COMPRESS)  //shuffle是否要压缩
   // Whether to compress RDD partitions that are stored serialized
-  private[this] val compressRdds = conf.get(config.RDD_COMPRESS)
+  private[this] val compressRdds = conf.get(config.RDD_COMPRESS) //rdd分区是否要压缩
   // Whether to compress shuffle output temporarily spilled to disk
-  private[this] val compressShuffleSpill = conf.get(config.SHUFFLE_SPILL_COMPRESS)
+  private[this] val compressShuffleSpill = conf.get(config.SHUFFLE_SPILL_COMPRESS)  //shuffle溢写是否要压缩
 
   /* The compression codec to use. Note that the "lazy" val is necessary because we want to delay
    * the initialization of the compression codec until it is first used. The reason is that a Spark
    * program could be using a user-defined codec in a third party jar, which is loaded in
    * Executor.updateDependencies. When the BlockManager is initialized, user level jars hasn't been
    * loaded yet. */
-  private lazy val compressionCodec: CompressionCodec = CompressionCodec.createCodec(conf)
+  private lazy val compressionCodec: CompressionCodec = CompressionCodec.createCodec(conf) //延迟初始化的压缩编解码器
 
   def encryptionEnabled: Boolean = encryptionKey.isDefined
 
@@ -88,7 +88,7 @@ private[spark] class SerializerManager(
   // SPARK-18617: As feature in SPARK-13990 can not be applied to Spark Streaming now. The worst
   // result is streaming job based on `Receiver` mode can not run on Spark 2.x properly. It may be
   // a rational choice to close `kryo auto pick` feature for streaming in the first step.
-  def getSerializer(ct: ClassTag[_], autoPick: Boolean): Serializer = {
+  def getSerializer(ct: ClassTag[_], autoPick: Boolean): Serializer = {  //根据类类型和是否自动选择序列化器来选择序列化器
     if (autoPick && canUseKryo(ct)) {
       kryoSerializer
     } else {
@@ -99,14 +99,14 @@ private[spark] class SerializerManager(
   /**
    * Pick the best serializer for shuffling an RDD of key-value pairs.
    */
-  def getSerializer(keyClassTag: ClassTag[_], valueClassTag: ClassTag[_]): Serializer = {
+  def getSerializer(keyClassTag: ClassTag[_], valueClassTag: ClassTag[_]): Serializer = {  //根据键值对的类类型选择序列化器
     if (canUseKryo(keyClassTag) && canUseKryo(valueClassTag)) {
       kryoSerializer
     } else {
       defaultSerializer
     }
   }
-
+  //根据 BlockId 判断该数据块是否需要进行压缩。不同类型的数据块（如 shuffle 数据块、广播数据块等）可能有不同的压缩策略
   private def shouldCompress(blockId: BlockId): Boolean = {
     blockId match {
       case _: ShuffleBlockId => compressShuffle
@@ -120,21 +120,21 @@ private[spark] class SerializerManager(
     }
   }
 
-  /**
+  /** 对输入流进行包装，首先进行加密（如果启用了加密），然后进行压缩（如果启用了压缩）
    * Wrap an input stream for encryption and compression
    */
   def wrapStream(blockId: BlockId, s: InputStream): InputStream = {
     wrapForCompression(blockId, wrapForEncryption(s))
   }
 
-  /**
+  /** 对输出流进行包装，首先进行加密（如果启用了加密），然后进行压缩（如果启用了压缩）
    * Wrap an output stream for encryption and compression
    */
   def wrapStream(blockId: BlockId, s: OutputStream): OutputStream = {
     wrapForCompression(blockId, wrapForEncryption(s))
   }
 
-  /**
+  /** 如果启用了加密，则将输入流包装为加密流
    * Wrap an input stream for encryption if shuffle encryption is enabled
    */
   def wrapForEncryption(s: InputStream): InputStream = {
@@ -143,7 +143,7 @@ private[spark] class SerializerManager(
       .getOrElse(s)
   }
 
-  /**
+  /** 如果启用了加密，则将输出流包装为加密流
    * Wrap an output stream for encryption if shuffle encryption is enabled
    */
   def wrapForEncryption(s: OutputStream): OutputStream = {
@@ -152,21 +152,21 @@ private[spark] class SerializerManager(
       .getOrElse(s)
   }
 
-  /**
+  /** 如果该类型的数据块需要压缩，则将输出流包装为压缩流
    * Wrap an output stream for compression if block compression is enabled for its block type
    */
   def wrapForCompression(blockId: BlockId, s: OutputStream): OutputStream = {
     if (shouldCompress(blockId)) compressionCodec.compressedOutputStream(s) else s
   }
 
-  /**
+  /** 如果该类型的数据块需要压缩，则将输入流包装为压缩流
    * Wrap an input stream for compression if block compression is enabled for its block type
    */
   def wrapForCompression(blockId: BlockId, s: InputStream): InputStream = {
     if (shouldCompress(blockId)) compressionCodec.compressedInputStream(s) else s
   }
 
-  /** Serializes into a stream. */
+  /** Serializes into a stream.  将数据序列化到输出流中。根据 BlockId 确定是否自动选择序列化器，然后对数据进行序列化并写入输出流*/
   def dataSerializeStream[T: ClassTag](
       blockId: BlockId,
       outputStream: OutputStream,
@@ -177,14 +177,14 @@ private[spark] class SerializerManager(
     ser.serializeStream(wrapForCompression(blockId, byteStream)).writeAll(values).close()
   }
 
-  /** Serializes into a chunked byte buffer. */
+  /** Serializes into a chunked byte buffer. 将数据序列化为分块字节缓冲区。首先确定序列化器，然后将数据序列化为字节缓冲区*/
   def dataSerialize[T: ClassTag](
       blockId: BlockId,
       values: Iterator[T]): ChunkedByteBuffer = {
     dataSerializeWithExplicitClassTag(blockId, values, implicitly[ClassTag[T]])
   }
 
-  /** Serializes into a chunked byte buffer. */
+  /** Serializes into a chunked byte buffer. 但是这里显式传入了 ClassTag，用于处理特定类型的数据*/
   def dataSerializeWithExplicitClassTag(
       blockId: BlockId,
       values: Iterator[_],
@@ -197,7 +197,7 @@ private[spark] class SerializerManager(
     bbos.toChunkedByteBuffer
   }
 
-  /**
+  /** 将输入流中的数据反序列化为一个迭代器。根据 BlockId 确定是否自动选择序列化器，并将输入流反序列化为对应类型的数据
    * Deserializes an InputStream into an iterator of values and disposes of it when the end of
    * the iterator is reached.
    */

@@ -26,7 +26,7 @@ import org.apache.spark.util.Utils
 
 /**
  * StreamManager implementation for serving files from a NettyRpcEnv.
- *
+ * 主要用于通过网络流式传输文件数据
  * Three kinds of resources can be registered in this manager, all backed by actual files:
  *
  * - "/files": a flat list of files; used as the backend for [[SparkContext.addFile]].
@@ -39,9 +39,9 @@ import org.apache.spark.util.Utils
 private[netty] class NettyStreamManager(rpcEnv: NettyRpcEnv)
   extends StreamManager with RpcEnvFileServer {
 
-  private val files = new ConcurrentHashMap[String, File]()
-  private val jars = new ConcurrentHashMap[String, File]()
-  private val dirs = new ConcurrentHashMap[String, File]()
+  private val files = new ConcurrentHashMap[String, File]() //存储通过 addFile 方法添加的文件，键是文件名，值是文件对象
+  private val jars = new ConcurrentHashMap[String, File]() //存储通过 addJar 方法添加的 JAR 文件，键是文件名，值是文件对象
+  private val dirs = new ConcurrentHashMap[String, File]() //存储通过 addDirectory 方法添加的目录，键是目录的 URI，值是目录路径
 
   override def removeFile(key: String): Unit = files.remove(key)
 
@@ -50,7 +50,7 @@ private[netty] class NettyStreamManager(rpcEnv: NettyRpcEnv)
   override def getChunk(streamId: Long, chunkIndex: Int): ManagedBuffer = {
     throw new UnsupportedOperationException()
   }
-
+  //根据 streamId 打开一个流，并返回一个 ManagedBuffer。该方法支持从文件和目录提供流数据
   override def openStream(streamId: String): ManagedBuffer = {
     val Array(ftype, fname) = streamId.stripPrefix("/").split("/", 2)
     val file = ftype match {

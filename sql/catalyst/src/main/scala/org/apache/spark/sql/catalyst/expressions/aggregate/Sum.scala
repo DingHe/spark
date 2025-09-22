@@ -27,6 +27,7 @@ import org.apache.spark.sql.errors.QueryCompilationErrors
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+//代表了 SQL 中的 SUM 聚合操作。Sum 通过表达式（而非命令式方式）来实现聚合的计算，支持多个数据类型以及对溢出的处理
 @ExpressionDescription(
   usage = "_FUNC_(expr) - Returns the sum calculated from values of a group.",
   examples = """
@@ -41,15 +42,16 @@ import org.apache.spark.sql.types._
   group = "agg_funcs",
   since = "1.0.0")
 case class Sum(
-    child: Expression,
-    evalMode: EvalMode.Value = EvalMode.fromSQLConf(SQLConf.get))
+    child: Expression,  //表示聚合操作的输入表达式（即 SUM 聚合的字段）。例如，SUM(col) 中的 col 就是 child
+    evalMode: EvalMode.Value = EvalMode.fromSQLConf(SQLConf.get))  //聚合计算的模式，决定是否使用 ANSI SQL 标准。默认为通过 SQLConf 获取的模式
   extends DeclarativeAggregate
   with ImplicitCastInputTypes
   with UnaryLike[Expression]
   with SupportQueryContext {
 
   def this(child: Expression) = this(child, EvalMode.fromSQLConf(SQLConf.get))
-
+  //根据聚合结果的类型和 evalMode 判断是否需要追踪是否为空（是否有溢出）。
+  // 在处理 DecimalType 或特定数据类型（如 IntegralType）时，需要跟踪溢出情况
   private def shouldTrackIsEmpty: Boolean = resultType match {
     case _: DecimalType => true
     // For try_sum(), the result of following data types can be null on overflow.
@@ -70,7 +72,8 @@ case class Sum(
     TypeUtils.checkForAnsiIntervalOrNumericType(child)
 
   final override val nodePatterns: Seq[TreePattern] = Seq(SUM)
-
+  // 根据 child 的数据类型动态决定聚合结果的数据类型。
+  // 对于 DecimalType 会增加精度，整型使用 LongType，其余类型如间隔类型使用它们的原数据类型
   private lazy val resultType = child.dataType match {
     case DecimalType.Fixed(precision, scale) =>
       DecimalType.bounded(precision + 10, scale)
@@ -80,11 +83,11 @@ case class Sum(
     case _ => DoubleType
   }
 
-  private lazy val sum = AttributeReference("sum", resultType)()
+  private lazy val sum = AttributeReference("sum", resultType)()  //聚合结果（和 sum 相关的字段）
 
-  private lazy val isEmpty = AttributeReference("isEmpty", BooleanType, nullable = false)()
+  private lazy val isEmpty = AttributeReference("isEmpty", BooleanType, nullable = false)() //指示聚合是否为空的标志
 
-  private lazy val zero = Literal.default(resultType)
+  private lazy val zero = Literal.default(resultType) //用于初始化的零值常量，类型为 resultType
 
   private def add(left: Expression, right: Expression): Expression = left.dataType match {
     case _: DecimalType => DecimalAddNoOverflowCheck(left, right, left.dataType)
@@ -109,6 +112,8 @@ case class Sum(
     // unchanged if the input is null, as SUM function ignores null input. The `sum` can only be
     // null if overflow happens under non-ansi mode.
     val sumExpr = if (child.nullable) {
+      //如果 child 为 nullable（可为空），则使用 If 表达式来检查 child 是否为 null。
+      // 如果为 null，则保留当前的 sum 值，否则进行加法运算
       If(child.isNull, sum,
         add(sum, KnownNotNull(child).cast(resultType)))
     } else {
@@ -121,7 +126,7 @@ case class Sum(
       Literal(false, BooleanType)
     }
     Seq(sumExpr, isEmptyExpr)
-  } else {
+  } else { //如果不需要追踪溢出，则使用 coalesce 来处理可能的 null 值
     // If shouldTrackIsEmpty is false, the initial value of `sum` is null, which indicates no value.
     // We need `coalesce(sum, zero)` to start summing values. And we need an outer `coalesce`
     // in case the input is nullable. The `sum` can only be null if there is no value, as

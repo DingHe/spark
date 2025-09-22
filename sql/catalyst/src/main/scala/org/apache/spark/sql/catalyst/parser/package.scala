@@ -26,10 +26,10 @@ package object parser {
      * original plan.
      */
     def optional(ctx: AnyRef)(f: => LogicalPlan): LogicalPlan = {
-      if (ctx != null) {
+      if (ctx != null) {  //如果ctx不为空，则执行f函数
         f
       } else {
-        plan
+        plan   //如果ctx为空，则直接返回隐式转换前的plan
       }
     }
 
@@ -38,10 +38,10 @@ package object parser {
      * passed function. The original plan is returned when the context does not exist.
      */
     def optionalMap[C](ctx: C)(f: (C, LogicalPlan) => LogicalPlan): LogicalPlan = {
-      if (ctx != null) {
+      if (ctx != null) {   //如果ctx不为空，则执行f函数
         f(ctx, plan)
       } else {
-        plan
+        plan               //如果ctx为空，则直接返回隐式转换前的对象plan
       }
     }
   }

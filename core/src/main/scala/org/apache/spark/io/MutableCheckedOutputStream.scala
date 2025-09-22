@@ -24,6 +24,7 @@ import java.util.zip.Checksum
  * A variant of [[java.util.zip.CheckedOutputStream]] which can
  * change the checksum calculator at runtime.
  */
+// 计算校验和
 private[spark] class MutableCheckedOutputStream(out: OutputStream) extends OutputStream {
   private var checksum: Checksum = _
 

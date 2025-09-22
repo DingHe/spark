@@ -53,17 +53,17 @@ import org.apache.spark.network.util.TransportFrameDecoder;
 public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
   private static final Logger logger = LoggerFactory.getLogger(TransportResponseHandler.class);
 
-  private final Channel channel;
+  private final Channel channel; //Netty 中用于数据通信的基本元素
 
-  private final Map<StreamChunkId, ChunkReceivedCallback> outstandingFetches;
+  private final Map<StreamChunkId, ChunkReceivedCallback> outstandingFetches; //用来存储所有尚未完成的数据块请求。StreamChunkId 是每个请求的数据块的标识符，ChunkReceivedCallback 是请求完成时的回调
 
-  private final Map<Long, BaseResponseCallback> outstandingRpcs;
+  private final Map<Long, BaseResponseCallback> outstandingRpcs; //存储所有尚未完成的RPC请求。每个请求通过请求ID（Long 类型）与回调（BaseResponseCallback）关联
 
-  private final Queue<Pair<String, StreamCallback>> streamCallbacks;
-  private volatile boolean streamActive;
+  private final Queue<Pair<String, StreamCallback>> streamCallbacks; //存储所有尚未完成的流请求。Pair<String, StreamCallback> 关联了流 ID 和该流的回调
+  private volatile boolean streamActive; //表示流是否处于活动状态。它用于检查当前是否有活跃的流
 
   /** Records the time (in system nanoseconds) that the last fetch or RPC request was sent. */
-  private final AtomicLong timeOfLastRequestNs;
+  private final AtomicLong timeOfLastRequestNs; //记录上一次请求发送的时间（以纳秒为单位）
 
   public TransportResponseHandler(Channel channel) {
     this.channel = channel;
@@ -72,7 +72,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
     this.streamCallbacks = new ConcurrentLinkedQueue<>();
     this.timeOfLastRequestNs = new AtomicLong(0);
   }
-
+  //当有新的数据块请求时，调用此方法添加请求的标识符及其对应的回调
   public void addFetchRequest(StreamChunkId streamChunkId, ChunkReceivedCallback callback) {
     updateTimeOfLastRequest();
     outstandingFetches.put(streamChunkId, callback);
@@ -81,7 +81,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
   public void removeFetchRequest(StreamChunkId streamChunkId) {
     outstandingFetches.remove(streamChunkId);
   }
-
+  //将请求的 ID 和回调添加到映射中，并更新请求的时间戳
   public void addRpcRequest(long requestId, BaseResponseCallback callback) {
     updateTimeOfLastRequest();
     outstandingRpcs.put(requestId, callback);
@@ -101,7 +101,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
     streamActive = false;
   }
 
-  /**
+  /** 用于在连接中断或出现未捕获异常时，调用所有尚未完成请求的失败回调
    * Fire the failure callback for all outstanding requests. This is called when we have an
    * uncaught exception or pre-mature connection termination.
    */
@@ -137,7 +137,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
   @Override
   public void channelActive() {
   }
-
+  //在 channel 失效时调用。若仍有未完成的请求，会记录错误并触发所有尚未完成请求的失败回调
   @Override
   public void channelInactive() {
     if (hasOutstandingRequests()) {
@@ -157,7 +157,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
       failOutstandingRequests(cause);
     }
   }
-
+  //该方法用于处理不同类型的响应消息。它会根据响应消息的类型（如 ChunkFetchSuccess、RpcResponse、StreamResponse 等）进行相应的处理，对于 ChunkFetchSuccess 和 ChunkFetchFailure，分别触发成功或失败的回调
   @Override
   public void handle(ResponseMessage message) throws Exception {
     if (message instanceof ChunkFetchSuccess) {
@@ -268,7 +268,7 @@ public class TransportResponseHandler extends MessageHandler<ResponseMessage> {
       throw new IllegalStateException("Unknown response type: " + message.type());
     }
   }
-
+  //返回当前所有尚未完成的请求总数
   /** Returns total number of outstanding requests (fetch requests + rpcs) */
   public int numOutstandingRequests() {
     return outstandingFetches.size() + outstandingRpcs.size() + streamCallbacks.size() +

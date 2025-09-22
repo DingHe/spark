@@ -21,7 +21,7 @@ package org.apache.spark
  * An identifier for a partition in an RDD.
  */
 trait Partition extends Serializable {
-  /**
+  /**  获取当前分区在其父 RDD 中的索引值
    * Get the partition's index within its parent RDD
    */
   def index: Int

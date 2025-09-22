@@ -245,7 +245,7 @@ public final class UnsafeKVExternalSorter {
   public void cleanupResources() {
     sorter.cleanupResources();
   }
-
+  //主要应用于键值对（Key-Value）数据的排序
   private static final class KVComparator extends RecordComparator {
     private final BaseOrdering ordering;
     private final UnsafeRow row1;

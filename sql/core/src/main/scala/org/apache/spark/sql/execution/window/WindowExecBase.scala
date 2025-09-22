@@ -32,13 +32,13 @@ import org.apache.spark.util.collection.Utils
  * Holds common logic for window operators
  */
 trait WindowExecBase extends UnaryExecNode {
-  def windowExpression: Seq[NamedExpression]
-  def partitionSpec: Seq[Expression]
-  def orderSpec: Seq[SortOrder]
+  def windowExpression: Seq[NamedExpression]  //窗口表达式序列。每个窗口表达式通常是一个窗口函数（如 ROW_NUMBER()、RANK() 等）
+  def partitionSpec: Seq[Expression]  //窗口操作的分区规范，它定义了将输入数据按哪些列进行分区
+  def orderSpec: Seq[SortOrder]      //窗口操作的排序规范，它定义了在每个分区内数据的排序方式
 
   override def output: Seq[Attribute] =
-    child.output ++ windowExpression.map(_.toAttribute)
-
+    child.output ++ windowExpression.map(_.toAttribute)  //窗口操作的输出列。窗口操作的输出由原始输入数据的输出列（child.output）和计算的窗口表达式（windowExpression）的结果组成
+  //窗口操作要求数据在某些列上进行分区。如果没有定义分区规范，则会将所有数据移动到一个分区，这可能会导致性能下降。否则，它将根据 partitionSpec 使用分区
   override def requiredChildDistribution: Seq[Distribution] = {
     if (partitionSpec.isEmpty) {
       // Only show warning when the number of bytes is larger than 100 MiB?
@@ -49,12 +49,12 @@ trait WindowExecBase extends UnaryExecNode {
       ClusteredDistribution(partitionSpec) :: Nil
     }
   }
-
+  //窗口操作要求数据在分区内根据 partitionSpec 和 orderSpec 排序
   override def requiredChildOrdering: Seq[Seq[SortOrder]] =
     Seq(partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec)
-
+  //通常与输入数据的排序方式（child.outputOrdering）相同
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
-
+  //通常与输入数据的分区方式（child.outputPartitioning）相同
   override def outputPartitioning: Partitioning = child.outputPartitioning
 
   /**
@@ -65,6 +65,7 @@ trait WindowExecBase extends UnaryExecNode {
    * @param expressions unbound ordered function expressions.
    * @return the final resulting projection.
    */
+    //expressions  需要进行计算的窗口函数表达式。
   protected def createResultProjection(expressions: Seq[Expression]): UnsafeProjection = {
     val references = expressions.zipWithIndex.map { case (e, i) =>
       // Results of window expressions will be on the right side of child's output
@@ -88,37 +89,43 @@ trait WindowExecBase extends UnaryExecNode {
    * @param timeZone the session local timezone for time related calculations.
    * @return a bound ordering object.
    */
+    //frame: FrameType，表示窗口的框架类型
+    //bound: Expression，表示窗口的边界条件
+    //BoundOrdering 对象，这个对象表示如何在窗口计算中确定哪些输入行位于输出行的窗口边界内
   private def createBoundOrdering(
       frame: FrameType, bound: Expression, timeZone: String): BoundOrdering = {
     (frame, bound) match {
       case (RowFrame, CurrentRow) =>
-        RowBoundOrdering(0)
+        RowBoundOrdering(0)  //RowBoundOrdering(0) 对象，表示当前行的偏移量为 0
 
       case (RowFrame, IntegerLiteral(offset)) =>
-        RowBoundOrdering(offset)
-
+        RowBoundOrdering(offset)  //如果框架是 RowFrame 且边界是一个整数值（表示行的偏移量），则创建一个 RowBoundOrdering(offset) 对象，表示该偏移量的值
+      //边界类型不符合预期
       case (RowFrame, _) =>
         throw new IllegalStateException(s"Unhandled bound in windows expressions: $bound")
-
+      //框架是 RangeFrame 且边界是 CurrentRow，则创建一个 RangeBoundOrdering 对象。
+      // RangeBoundOrdering 需要一个排序对象 (ordering) 和两个投影（current 和 bound）
       case (RangeFrame, CurrentRow) =>
         val ordering = RowOrdering.create(orderSpec, child.output)
         RangeBoundOrdering(ordering, IdentityProjection, IdentityProjection)
-
-      case (RangeFrame, offset: Expression) if orderSpec.size == 1 =>
+      //如果框架是 RangeFrame 且边界是一个偏移量（offset），并且只有一个排序表达式（orderSpec.size == 1）
+      case (RangeFrame, offset: Expression) if orderSpec.size == 1 =>  //只能一个排序字段
         // Use only the first order expression when the offset is non-null.
         val sortExpr = orderSpec.head
         val expr = sortExpr.child
 
         // Create the projection which returns the current 'value'.
-        val current = MutableProjection.create(expr :: Nil, child.output)
+        val current = MutableProjection.create(expr :: Nil, child.output)  //返回当前排序表达式的值
 
         // Flip the sign of the offset when processing the order is descending
-        val boundOffset = sortExpr.direction match {
+        val boundOffset = sortExpr.direction match { //根据排序的方向（Ascending 或 Descending），对偏移量进行符号反转
           case Descending => UnaryMinus(offset)
           case Ascending => offset
         }
 
         // Create the projection which returns the current 'value' modified by adding the offset.
+        //根据 expr 和 boundOffset 的数据类型匹配创建适当的边界表达式。
+        // 比如，如果 expr 是日期类型且 boundOffset 是整数类型，则使用 DateAdd；如果 expr 是时间戳类型，则使用 TimeAdd 等等
         val boundExpr = (expr.dataType, boundOffset.dataType) match {
           case (DateType, IntegerType) => DateAdd(expr, boundOffset)
           case (DateType, _: YearMonthIntervalType) => DateAddYMInterval(expr, boundOffset)
@@ -131,7 +138,7 @@ trait WindowExecBase extends UnaryExecNode {
           case (d: DecimalType, _: DecimalType) => DecimalAddNoOverflowCheck(expr, boundOffset, d)
           case (a, b) if a == b => Add(expr, boundOffset)
         }
-        val bound = MutableProjection.create(boundExpr :: Nil, child.output)
+        val bound = MutableProjection.create(boundExpr :: Nil, child.output)  //边界行的值
 
         // Construct the ordering. This is used to compare the result of current value projection
         // to the result of bound value projection. This is done manually because we want to use
@@ -150,12 +157,22 @@ trait WindowExecBase extends UnaryExecNode {
    * Collection containing an entry for each window frame to process. Each entry contains a frame's
    * [[WindowExpression]]s and factory function for the [[WindowFunctionFrame]].
    */
+  //将不同的窗口表达式（WindowExpression）与窗口帧工厂（WindowFunctionFrame）进行绑定，最终生成一个集合，存储了每种窗口帧及其对应的处理逻辑
   protected lazy val windowFrameExpressionFactoryPairs = {
     type FrameKey = (String, FrameType, Expression, Expression, Seq[Expression])
+    //String：标识窗口函数的类型（例如 "AGGREGATE"）
+    //FrameType：表示窗口帧的类型，可能是 RowFrame 或 RangeFrame
+    //Expression：表示帧的上下边界
+    //Seq[Expression]：表示窗口函数的参数
     type ExpressionBuffer = mutable.Buffer[Expression]
     val framedFunctions = mutable.Map.empty[FrameKey, (ExpressionBuffer, ExpressionBuffer)]
 
     // Add a function and its function to the map for a given frame.
+    //用于将窗口函数和窗口帧对应起来，并存储在 framedFunctions 字典中
+    //tpe：表示窗口函数的类型，通常是 "AGGREGATE" 等
+    //fr：表示窗口帧的配置（类型为 SpecifiedWindowFrame），包括帧的类型、上下边界等
+    //e：表示一个窗口表达式（WindowExpression），包含了要执行的窗口函数及其相关信息
+    //fn：表示一个窗口函数（Expression），例如 AggregateExpression 等
     def collect(tpe: String, fr: SpecifiedWindowFrame, e: Expression, fn: Expression): Unit = {
       val key = fn match {
         // This branch is used for Lead/Lag to support ignoring null and optimize the performance
@@ -174,6 +191,7 @@ trait WindowExecBase extends UnaryExecNode {
     }
 
     // Collect all valid window functions and group them by their frame.
+    //遍历所有的窗口表达式，并根据帧配置（frameSpecification）对窗口函数进行分类
     windowExpression.foreach { x =>
       x.foreach {
         case e @ WindowExpression(function, spec) =>
@@ -197,6 +215,7 @@ trait WindowExecBase extends UnaryExecNode {
     }
 
     // Map the groups to a (unbound) expression and frame factory pair.
+    //为每个窗口帧创建工厂函数
     var numExpressions = 0
     val timeZone = conf.sessionLocalTimeZone
     framedFunctions.toSeq.map {

@@ -37,10 +37,10 @@ import org.apache.spark.util.BoundedPriorityQueue
 object QueryPlanningTracker {
 
   // Define a list of common phases here.
-  val PARSING = "parsing"
-  val ANALYSIS = "analysis"
-  val OPTIMIZATION = "optimization"
-  val PLANNING = "planning"
+  val PARSING = "parsing"   //解析
+  val ANALYSIS = "analysis"   //分析
+  val OPTIMIZATION = "optimization"   //优化
+  val PLANNING = "planning"         //执行
 
   /**
    * Summary for a rule.
@@ -62,6 +62,7 @@ object QueryPlanningTracker {
   /**
    * Summary of a phase, with start time and end time so we can construct a timeline.
    */
+  //一个阶段执行的开始和结束时间，以及消耗的时间
   class PhaseSummary(val startTimeMs: Long, val endTimeMs: Long) {
 
     def durationMs: Long = endTimeMs - startTimeMs
@@ -83,6 +84,7 @@ object QueryPlanningTracker {
   def get: Option[QueryPlanningTracker] = Option(localTracker.get())
 
   /** Sets the current tracker for the execution of function f. We assume f is single-threaded. */
+  //使用当前的tracker执行代码块f，执行完成后回复原来的tracker
   def withTracker[T](tracker: QueryPlanningTracker)(f: => T): T = {
     val originalTracker = localTracker.get()
     localTracker.set(tracker)
@@ -93,6 +95,7 @@ object QueryPlanningTracker {
 /**
  * Callbacks after planning phase completion.
  */
+//执行计划阶段完成后的回调类
 abstract class QueryPlanningTrackerCallback {
   /**
    * Called when query has been analyzed.
@@ -133,6 +136,7 @@ class QueryPlanningTracker(
    * times for the same phase, the recorded start time will be the start time of the first call,
    * and the recorded end time will be the end time of the last call.
    */
+  //记录每个执行阶段的开始和结束时间
   def measurePhase[T](phase: String)(f: => T): T = {
     val startTime = System.currentTimeMillis()
     val ret = f

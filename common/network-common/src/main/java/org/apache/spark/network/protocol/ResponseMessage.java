@@ -16,7 +16,7 @@
  */
 
 package org.apache.spark.network.protocol;
-
+//客户端接收到服务器的响应消息
 /** Messages from the server to the client. */
 public interface ResponseMessage extends Message {
   // token interface

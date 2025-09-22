@@ -40,7 +40,7 @@ import org.apache.spark.util.{ShutdownHookManager, Utils}
 /**
  * Creates and maintains the logical mapping between logical blocks and physical on-disk
  * locations. One block is mapped to one file with a name given by its BlockId.
- *
+ * 提供了与块存储位置的逻辑映射，并负责管理和创建与块相关的文件
  * Block files are hashed among the directories listed in spark.local.dir (or in
  * SPARK_LOCAL_DIRS, if it's set).
  *
@@ -52,31 +52,31 @@ private[spark] class DiskBlockManager(
     isDriver: Boolean)
   extends Logging {
 
-  private[spark] val subDirsPerLocalDir = conf.get(config.DISKSTORE_SUB_DIRECTORIES)
+  private[spark] val subDirsPerLocalDir = conf.get(config.DISKSTORE_SUB_DIRECTORIES)  //从配置中获取每个本地目录下的子目录数量
 
   /* Create one local directory for each path mentioned in spark.local.dir; then, inside this
    * directory, create multiple subdirectories that we will hash files into, in order to avoid
    * having really large inodes at the top level. */
-  private[spark] val localDirs: Array[File] = createLocalDirs(conf)
+  private[spark] val localDirs: Array[File] = createLocalDirs(conf)  //一个包含本地存储路径的数组，这些路径用于存储块数据
   if (localDirs.isEmpty) {
     logError("Failed to create any local dir.")
     System.exit(ExecutorExitCode.DISK_STORE_FAILED_TO_CREATE_DIR)
   }
 
-  private[spark] val localDirsString: Array[String] = localDirs.map(_.toString)
+  private[spark] val localDirsString: Array[String] = localDirs.map(_.toString) //将 localDirs 中的路径转换为字符串形式的数组
 
   // The content of subDirs is immutable but the content of subDirs(i) is mutable. And the content
   // of subDirs(i) is protected by the lock of subDirs(i)
-  private val subDirs = Array.fill(localDirs.length)(new Array[File](subDirsPerLocalDir))
+  private val subDirs = Array.fill(localDirs.length)(new Array[File](subDirsPerLocalDir)) //一个二维数组，每个本地目录对应一个子目录数组，用于存储各个文件。每个 subDirs(i) 代表一个本地目录的子目录数组，通过同步机制确保并发安全
 
   // Get merge directory name, append attemptId if there is any
   private val mergeDirName =
-    s"$MERGE_DIRECTORY${conf.get(config.APP_ATTEMPT_ID).map(id => s"_$id").getOrElse("")}"
+    s"$MERGE_DIRECTORY${conf.get(config.APP_ATTEMPT_ID).map(id => s"_$id").getOrElse("")}"  //合并目录的名称，包含了应用的尝试 ID
 
   // Create merge directories
   createLocalDirsForMergedShuffleBlocks()
 
-  private val shutdownHook = addShutdownHook()
+  private val shutdownHook = addShutdownHook()  //在 JVM 关闭时执行的钩子，用于清理工作
 
   // If either of these features are enabled, we must change permissions on block manager
   // directories and files to accomodate the shuffle service deleting files in a secure environment.
@@ -84,9 +84,9 @@ private[spark] class DiskBlockManager(
   // or modifying world readable files.
   private val permissionChangingRequired = conf.get(config.SHUFFLE_SERVICE_ENABLED) && (
     conf.get(config.SHUFFLE_SERVICE_REMOVE_SHUFFLE_ENABLED) ||
-    conf.get(config.SHUFFLE_SERVICE_FETCH_RDD_ENABLED)
+    conf.get(config.SHUFFLE_SERVICE_FETCH_RDD_ENABLED) //启用了 Shuffle 服务且需要删除文件或提取 RDD，Spark 会调整文件权限以满足安全要求
   )
-
+  //根据 filename 计算哈希值，确定其存储在 localDirs 的哪个目录和子目录中。创建目录（如果不存在），并返回文件对象
   /** Looks up a file by hashing it into one of our local subdirectories. */
   // This method should be kept in sync with
   // org.apache.spark.network.shuffle.ExecutorDiskUtils#getFilePath().
@@ -125,7 +125,7 @@ private[spark] class DiskBlockManager(
 
   def getFile(blockId: BlockId): File = getFile(blockId.name)
 
-  /**
+  /** 获取合并后的 Shuffle 文件。如果是合并的 BlockId（如 ShuffleMergedDataBlockId、ShuffleMergedIndexBlockId），返回其对应的合并文件
    * This should be in sync with
    * @see [[org.apache.spark.network.shuffle.RemoteBlockPushResolver#getFile(
    *     java.lang.String, java.lang.String)]]
@@ -151,12 +151,12 @@ private[spark] class DiskBlockManager(
     }
     new File(ExecutorDiskUtils.getFilePath(dirs.get, subDirsPerLocalDir, filename))
   }
-
+  //检查指定的 blockId 是否存在。
   /** Check if disk block manager has a block. */
   def containsBlock(blockId: BlockId): Boolean = {
     getFile(blockId.name).exists()
   }
-
+ //获取所有由 DiskBlockManager 管理的文件，包括所有子目录中的文件
   /** List all the files currently stored on disk by the disk manager. */
   def getAllFiles(): Seq[File] = {
     // Get all the files inside the array of array of directories
@@ -170,7 +170,7 @@ private[spark] class DiskBlockManager(
       if (files != null) files.toSeq else Seq.empty
     }
   }
-
+ //获取所有的块 ID（通过文件名转换）。若文件名无法转换为有效的 BlockId，则跳过。
   /** List all the blocks currently stored on disk by the disk manager. */
   def getAllBlocks(): Seq[BlockId] = {
     getAllFiles().flatMap { f =>
@@ -185,7 +185,7 @@ private[spark] class DiskBlockManager(
     }
   }
 
-  /**
+  /** 创建一个可供其他用户读取的文件，并修改文件权限，使文件对所有人可读。
    * SPARK-37618: Makes sure that the file is created as world readable. This is to get
    * around the fact that making the block manager sub dirs group writable removes
    * the setgid bit in secure Yarn environments, which prevents the shuffle service
@@ -201,7 +201,7 @@ private[spark] class DiskBlockManager(
     Files.setPosixFilePermissions(path, currentPerms)
   }
 
-  /**
+  /** 创建一个临时文件，并设置为可供其他用户读取。返回临时文件对象
    * Creates a temporary version of the given file with world readable permissions (if required).
    * Used to create block files that will be renamed to the final version of the file.
    */
@@ -215,7 +215,7 @@ private[spark] class DiskBlockManager(
     }
     tmpFile
   }
-
+  //创建一个临时的本地块文件，并返回一个唯一的 TempLocalBlockId 和文件对象。文件名是唯一的，确保不会与现有文件冲突
   /** Produces a unique block id and File suitable for storing local intermediate results. */
   def createTempLocalBlock(): (TempLocalBlockId, File) = {
     var blockId = TempLocalBlockId(UUID.randomUUID())
@@ -224,7 +224,7 @@ private[spark] class DiskBlockManager(
     }
     (blockId, getFile(blockId))
   }
-
+  //创建一个临时的 Shuffle 块文件，并设置为可供其他用户读取。返回一个唯一的 TempShuffleBlockId 和文件对象
   /** Produces a unique block id and File suitable for storing shuffled intermediate results. */
   def createTempShuffleBlock(): (TempShuffleBlockId, File) = {
     var blockId = TempShuffleBlockId(UUID.randomUUID())
@@ -241,7 +241,7 @@ private[spark] class DiskBlockManager(
     (blockId, tmpFile)
   }
 
-  /**
+  /** 根据配置中的 spark.local.dir 路径创建本地存储目录。如果创建失败，记录错误日志并返回空数组。
    * Create local directories for storing block data. These directories are
    * located inside configured local directories and won't
    * be deleted on JVM exit when using the external shuffle service.
@@ -260,7 +260,7 @@ private[spark] class DiskBlockManager(
     }
   }
 
-  /**
+  /** 如果启用了 Push-based Shuffle，创建用于合并 Shuffle 块的目录。该方法确保 merge_manager 目录存在并且其中有适当的子目录
    * Get the list of configured local dirs storing merged shuffle blocks created by executors
    * if push based shuffle is enabled. Note that the files in this directory will be created
    * by the external shuffle services. We only create the merge_manager directories and
@@ -297,7 +297,7 @@ private[spark] class DiskBlockManager(
     }
   }
 
-  /**
+  /** 创建一个具有770权限（rwxrwx---）的目录，用于存储合并的 Shuffle 数据，确保只有特定用户和 Shuffle 服务可以访问
    * Create a directory that is writable by the group.
    * Grant the permission 770 "rwxrwx---" to the directory so the shuffle server can
    * create subdirs/files within the merge folder.
@@ -327,7 +327,7 @@ private[spark] class DiskBlockManager(
       }
     }
   }
-
+  //获取合并目录路径和应用尝试 ID 的 JSON 字符串，通常用于日志记录和调试。
   def getMergeDirectoryAndAttemptIDJsonString(): String = {
     val mergedMetaMap: HashMap[String, String] = new HashMap[String, String]()
     mergedMetaMap.put(MERGE_DIR_KEY, mergeDirName)
@@ -338,7 +338,7 @@ private[spark] class DiskBlockManager(
     val jsonString = mapper.writeValueAsString(mergedMetaMap)
     jsonString
   }
-
+  //添加 JVM 关闭时执行的钩子，在 Spark 关闭时调用 doStop() 进行清理。
   private def addShutdownHook(): AnyRef = {
     logDebug("Adding shutdown hook") // force eager creation of logger
     ShutdownHookManager.addShutdownHook(ShutdownHookManager.TEMP_DIR_SHUTDOWN_PRIORITY + 1) { () =>
@@ -358,7 +358,7 @@ private[spark] class DiskBlockManager(
     }
     doStop()
   }
-
+  //执行停止操作，删除本地目录（如果 deleteFilesOnStop 为 true）。这会删除临时文件，释放存储资源
   private def doStop(): Unit = {
     if (deleteFilesOnStop) {
       localDirs.foreach { localDir =>

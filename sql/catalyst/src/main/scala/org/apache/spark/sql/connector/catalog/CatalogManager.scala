@@ -44,9 +44,9 @@ class CatalogManager(
     val v1SessionCatalog: SessionCatalog) extends SQLConfHelper with Logging {
   import CatalogManager.SESSION_CATALOG_NAME
   import CatalogV2Util._
-
+  // 存储已注册的目录，以目录名称为键，目录插件实例为值。通过该映射可以访问各个目录
   private val catalogs = mutable.HashMap.empty[String, CatalogPlugin]
-
+  //根据传入的目录名称，返回对应的目录插件
   def catalog(name: String): CatalogPlugin = synchronized {
     if (name.equalsIgnoreCase(SESSION_CATALOG_NAME)) {
       v2SessionCatalog
@@ -54,7 +54,7 @@ class CatalogManager(
       catalogs.getOrElseUpdate(name, Catalogs.load(name, conf))
     }
   }
-
+  //检查指定名称的目录是否已注册。如果目录未找到，则返回 false
   def isCatalogRegistered(name: String): Boolean = {
     try {
       catalog(name)
@@ -63,7 +63,7 @@ class CatalogManager(
       case _: CatalogNotFoundException => false
     }
   }
-
+  //加载 V2 版本的会话目录。如果目录实现为 CatalogExtension，则将其委托给默认的会话目录
   private def loadV2SessionCatalog(): CatalogPlugin = {
     Catalogs.load(SESSION_CATALOG_NAME, conf) match {
       case extension: CatalogExtension =>
@@ -82,14 +82,15 @@ class CatalogManager(
    * This happens when the source implementation extends the v2 TableProvider API and is not listed
    * in the fallback configuration, spark.sql.sources.useV1SourceList
    */
+    //如果配置了 V2_SESSION_CATALOG，则加载并返回用户指定的 V2 会话目录。如果未配置，则返回默认的会话目录
   private[sql] def v2SessionCatalog: CatalogPlugin = {
     conf.getConf(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION).map { _ =>
       catalogs.getOrElseUpdate(SESSION_CATALOG_NAME, loadV2SessionCatalog())
     }.getOrElse(defaultSessionCatalog)
   }
-
+  //获取当前命名空间。如果当前目录是 SESSION_CATALOG_NAME，则使用 v1SessionCatalog 中的当前数据库作为命名空间。否则，返回当前目录的默认命名空间
   private var _currentNamespace: Option[Array[String]] = None
-
+  //获取当前命名空间。如果当前目录是 SESSION_CATALOG_NAME，则使用 v1SessionCatalog 中的当前数据库作为命名空间。否则，返回当前目录的默认命名空间
   def currentNamespace: Array[String] = {
     val defaultNamespace = if (currentCatalog.name() == SESSION_CATALOG_NAME) {
       Array(v1SessionCatalog.getCurrentDatabase)

@@ -23,42 +23,43 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Generic
 import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, FullOuter, InnerLike, JoinType, LeftAnti, LeftOuter, LeftSemi, RightOuter}
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, RowIterator, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetric
-
+//用于创建基于排序合并连接（Sort Merge Join）的评估器（Evaluator）。排序合并连接是一种常见的连接算法，通常用于处理大数据量的连接操作，特别是当两个数据集都已排序时
 class SortMergeJoinEvaluatorFactory(
-    leftKeys: Seq[Expression],
+    leftKeys: Seq[Expression],     //分别表示左侧和右侧数据集用于连接的键列
     rightKeys: Seq[Expression],
     joinType: JoinType,
-    condition: Option[Expression],
-    left: SparkPlan,
+    condition: Option[Expression], //可选的条件表达式，用于过滤连接结果
+    left: SparkPlan,               //两个参数是连接的左侧和右侧数据集
     right: SparkPlan,
-    output: Seq[Attribute],
-    inMemoryThreshold: Int,
-    spillThreshold: Int,
+    output: Seq[Attribute],        //表示连接操作后产生的输出列
+    inMemoryThreshold: Int,        //内存缓存的阈值，当数据量超过这个值时，数据会溢写到磁盘
+    spillThreshold: Int,           //溢写的阈值，决定何时将数据写入磁盘
     numOutputRows: SQLMetric,
     spillSize: SQLMetric,
-    onlyBufferFirstMatchedRow: Boolean)
+    onlyBufferFirstMatchedRow: Boolean)  //指定是否仅缓冲第一次匹配的行（对于某些连接类型，例如左半连接或反连接，可能会用到）
     extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
   override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
     new SortMergeJoinEvaluator
 
   private class SortMergeJoinEvaluator extends PartitionEvaluator[InternalRow, InternalRow] {
-
+    //用于清理资源，特别是当连接完成时
     private def cleanupResources(): Unit = {
       IndexedSeq(left, right).foreach(_.cleanupResources())
     }
+    //分别创建用于生成左侧和右侧连接键的投影（Projection）
     private def createLeftKeyGenerator(): Projection =
       UnsafeProjection.create(leftKeys, left.output)
 
     private def createRightKeyGenerator(): Projection =
       UnsafeProjection.create(rightKeys, right.output)
-
+    //接受分区索引和两个迭代器（leftIter 和 rightIter），分别表示左侧和右侧数据集的行。它返回一个迭代器，生成连接后的行
     override def eval(
         partitionIndex: Int,
         inputs: Iterator[InternalRow]*): Iterator[InternalRow] = {
       assert(inputs.length == 2)
       val leftIter = inputs(0)
       val rightIter = inputs(1)
-
+      //处理连接条件。如果有提供条件表达式，它会将条件绑定到左侧和右侧输出的列上。否则，返回 true，表示没有条件过滤
       val boundCondition: InternalRow => Boolean = {
         condition.map { cond =>
           Predicate.create(cond, left.output ++ right.output).eval _
@@ -68,36 +69,38 @@ class SortMergeJoinEvaluatorFactory(
       }
 
       // An ordering that can be used to compare keys from both sides.
+      //如何比较连接键（即左侧和右侧的排序），这里使用的是自然升序排序
       val keyOrdering = RowOrdering.createNaturalAscendingOrdering(leftKeys.map(_.dataType))
+
       val resultProj: InternalRow => InternalRow = UnsafeProjection.create(output, output)
 
       joinType match {
-        case _: InnerLike =>
+        case _: InnerLike =>  //该连接类型返回两边都匹配的行
           new RowIterator {
-            private[this] var currentLeftRow: InternalRow = _
-            private[this] var currentRightMatches: ExternalAppendOnlyUnsafeRowArray = _
-            private[this] var rightMatchesIterator: Iterator[UnsafeRow] = null
-            private[this] val smjScanner = new SortMergeJoinScanner(
-              createLeftKeyGenerator(),
+            private[this] var currentLeftRow: InternalRow = _   //保存当前处理的左侧数据行
+            private[this] var currentRightMatches: ExternalAppendOnlyUnsafeRowArray = _  //保存当前与左侧行匹配的右侧行数组
+            private[this] var rightMatchesIterator: Iterator[UnsafeRow] = null  //保存右侧匹配行的迭代器，用于遍历右侧的匹配项
+            private[this] val smjScanner = new SortMergeJoinScanner(  //执行排序合并连接核心逻辑的类，它负责扫描左侧和右侧的数据行并找出符合连接条件的匹配行
+              createLeftKeyGenerator(),   //生成左侧和右侧连接键的投影（Projection）
               createRightKeyGenerator(),
-              keyOrdering,
-              RowIterator.fromScala(leftIter),
+              keyOrdering,  //指定连接键的排序规则
+              RowIterator.fromScala(leftIter),  //将 Scala 的迭代器转换为 RowIterator，用于遍历左侧和右侧的行
               RowIterator.fromScala(rightIter),
-              inMemoryThreshold,
+              inMemoryThreshold, //这些参数控制内存溢写的阈值
               spillThreshold,
               spillSize,
               cleanupResources)
-            private[this] val joinRow = new JoinedRow
+            private[this] val joinRow = new JoinedRow   //用来存储左侧和右侧匹配的连接行
 
-            if (smjScanner.findNextInnerJoinRows()) {
-              currentRightMatches = smjScanner.getBufferedMatches
-              currentLeftRow = smjScanner.getStreamedRow
-              rightMatchesIterator = currentRightMatches.generateIterator()
+            if (smjScanner.findNextInnerJoinRows()) { //查找下一组内连接匹配行
+              currentRightMatches = smjScanner.getBufferedMatches  //返回右侧匹配的行
+              currentLeftRow = smjScanner.getStreamedRow  //返回左侧的当前行
+              rightMatchesIterator = currentRightMatches.generateIterator()  //生成右侧匹配行的迭代器
             }
 
             override def advanceNext(): Boolean = {
-              while (rightMatchesIterator != null) {
-                if (!rightMatchesIterator.hasNext) {
+              while (rightMatchesIterator != null) {  //只要右侧匹配行迭代器不为空
+                if (!rightMatchesIterator.hasNext) { //如果右侧匹配行已经没有剩余的行
                   if (smjScanner.findNextInnerJoinRows()) {
                     currentRightMatches = smjScanner.getBufferedMatches
                     currentLeftRow = smjScanner.getStreamedRow

@@ -25,6 +25,7 @@ import org.apache.spark.sql.execution.joins.ShuffledJoin
 /**
  * A simple implementation of [[Cost]], which takes a number of [[Long]] as the cost value.
  */
+//简单成本表示，使用一个LONG类型的数字表示
 case class SimpleCost(value: Long) extends Cost {
 
   override def compare(that: Cost): Int = that match {

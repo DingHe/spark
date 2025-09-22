@@ -26,9 +26,11 @@ import org.apache.spark.shuffle.api.metadata.MapOutputCommitMessage;
  * :: Private ::
  * A top-level writer that returns child writers for persisting the output of a map task,
  * and then commits all of the writes as one atomic operation.
- *
  * @since 3.0.0
  */
+// 处理 Map 任务输出 的顶级写入器接口
+// 1、针对特定 reduce 分区持久化 Map 输出
+// 2、原子性地提交所有分区的输出数据 3、在出现问题时，可以中止所有写入操作
 @Private
 public interface ShuffleMapOutputWriter {
 
@@ -48,6 +50,7 @@ public interface ShuffleMapOutputWriter {
    * guaranteed to be called for every partition id in the above described range. In particular,
    * no guarantees are made as to whether or not this method will be called for empty partitions.
    */
+  //用于为指定的 reduce 分区打开输出流并持久化数据，reducePartitionId：要写入数据的 reduce 分区的 ID
   ShufflePartitionWriter getPartitionWriter(int reducePartitionId) throws IOException;
 
   /**
@@ -72,10 +75,10 @@ public interface ShuffleMapOutputWriter {
    *    for that partition id.
    * <p>
    * 2) An optional metadata blob that can be used by shuffle readers.
-   *
    * @param checksums The checksum values for each partition (where checksum index is equivalent to
    *                  partition id) if shuffle checksum enabled. Otherwise, it's empty.
    */
+  // 提交通过 getPartitionWriter(int) 创建的所有分区写入器写入的输出数据，并返回每个分区写入的字节数。
   MapOutputCommitMessage commitAllPartitions(long[] checksums) throws IOException;
 
   /**

@@ -33,25 +33,26 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BooleanType
 import org.apache.spark.util.collection.BitSet
 
-/**
+/** 执行 Sort-Merge Join 操作的执行计划类，通常用于大数据量的连接操作
  * Performs a sort merge join of two child relations.
  */
 case class SortMergeJoinExec(
-    leftKeys: Seq[Expression],
-    rightKeys: Seq[Expression],
+    leftKeys: Seq[Expression],  //左侧表的连接键
+    rightKeys: Seq[Expression], //右侧表的连接键
     joinType: JoinType,
-    condition: Option[Expression],
-    left: SparkPlan,
+    condition: Option[Expression],  //表示是否有额外的过滤条件
+    left: SparkPlan, //左侧子查询的执行计划
     right: SparkPlan,
-    isSkewJoin: Boolean = false) extends ShuffledJoin {
-
+    isSkewJoin: Boolean = false) extends ShuffledJoin { //是否为倾斜连接，默认为 false
+  //"numOutputRows"：记录输出行的数量
+  //"spillSize"：记录溢写的大小
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"))
-
+  //表示输出的排序规则
   override def outputOrdering: Seq[SortOrder] = joinType match {
     // For inner join, orders of both sides keys should be kept.
-    case _: InnerLike =>
+    case _: InnerLike => //左侧和右侧的连接键的排序都应该保留
       val leftKeyOrdering = getKeyOrdering(leftKeys, left.outputOrdering)
       val rightKeyOrdering = getKeyOrdering(rightKeys, right.outputOrdering)
       leftKeyOrdering.zip(rightKeyOrdering).map { case (lKey, rKey) =>
@@ -60,11 +61,11 @@ case class SortMergeJoinExec(
         SortOrder(lKey.child, Ascending, sameOrderExpressions.toSeq)
       }
     // For left and right outer joins, the output is ordered by the streamed input's join keys.
-    case LeftOuter => getKeyOrdering(leftKeys, left.outputOrdering)
-    case RightOuter => getKeyOrdering(rightKeys, right.outputOrdering)
+    case LeftOuter => getKeyOrdering(leftKeys, left.outputOrdering)  //输出排序是基于左侧连接键的排序
+    case RightOuter => getKeyOrdering(rightKeys, right.outputOrdering)  //输出排序是基于右侧连接键的排序
     // There are null rows in both streams, so there is no order.
-    case FullOuter => Nil
-    case LeftExistence(_) => getKeyOrdering(leftKeys, left.outputOrdering)
+    case FullOuter => Nil //输出不需要排序，因为在全外连接中，两边的连接键可能会有 NULL 行，因此无法确定特定的排序顺序
+    case LeftExistence(_) => getKeyOrdering(leftKeys, left.outputOrdering)  //左存在性连接，输出排序是基于左侧连接键的排序
     case x =>
       throw new IllegalArgumentException(
         s"${getClass.getSimpleName} should not take $x as the JoinType")
@@ -78,12 +79,15 @@ case class SortMergeJoinExec(
    * again, returns the required ordering for this child with extra "sameOrderExpressions" from
    * the child's outputOrdering.
    */
+  //用于生成所需的排序规则（SortOrder），以保证左侧和右侧连接子查询的排序满足连接操作的要求
+  //keys: Seq[Expression] 表示连接操作的连接键
+  //childOutputOrdering: Seq[SortOrder] 子查询输出的排序顺序
   private def getKeyOrdering(keys: Seq[Expression], childOutputOrdering: Seq[SortOrder])
     : Seq[SortOrder] = {
-    val requiredOrdering = requiredOrders(keys)
-    if (SortOrder.orderingSatisfies(childOutputOrdering, requiredOrdering)) {
+    val requiredOrdering = requiredOrders(keys)  //根据连接键（keys）所需要的排序规则
+    if (SortOrder.orderingSatisfies(childOutputOrdering, requiredOrdering)) { //检查 childOutputOrdering 是否已经满足 requiredOrdering，即子查询的排序是否已经满足连接所需的顺序
       keys.zip(childOutputOrdering).map { case (key, childOrder) =>
-        val sameOrderExpressionsSet = ExpressionSet(childOrder.children) - key
+        val sameOrderExpressionsSet = ExpressionSet(childOrder.children) - key //将子查询排序中与连接键相同的表达式移除，目的是在连接键已经正确排序的情况下，保留子查询中其他相关的排序信息
         SortOrder(key, Ascending, sameOrderExpressionsSet.toSeq)
       }
     } else {
@@ -93,22 +97,23 @@ case class SortMergeJoinExec(
 
   override def requiredChildOrdering: Seq[Seq[SortOrder]] =
     requiredOrders(leftKeys) :: requiredOrders(rightKeys) :: Nil
-
+  //按连接键升序排序
   private def requiredOrders(keys: Seq[Expression]): Seq[SortOrder] = {
     // This must be ascending in order to agree with the `keyOrdering` defined in `doExecute()`.
     keys.map(SortOrder(_, Ascending))
   }
-
+  //获取数据溢写阈值，用于控制在内存不足时是否将数据写入磁盘
   private def getSpillThreshold: Int = {
     conf.sortMergeJoinExecBufferSpillThreshold
   }
 
   // Flag to only buffer first matched row, to avoid buffering unnecessary rows.
+  //决定是否仅缓冲第一个匹配的行。对于左存在连接（LeftExistence）且没有连接条件时，只有第一个匹配的行会被缓冲
   private val onlyBufferFirstMatchedRow = (joinType, condition) match {
     case (LeftExistence(_), None) => true
     case _ => false
   }
-
+  //返回内存阈值。若只缓冲第一个匹配的行，则内存阈值为 1，否则返回配置中的内存阈值
   private def getInMemoryThreshold: Int = {
     if (onlyBufferFirstMatchedRow) {
       1
@@ -116,7 +121,7 @@ case class SortMergeJoinExec(
       conf.sortMergeJoinExecBufferInMemoryThreshold
     }
   }
-
+  //执行连接操作
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     val spillSize = longMetric("spillSize")
@@ -1031,29 +1036,30 @@ case class SortMergeJoinExec(
  * @param eagerCleanupResources the eager cleanup function to be invoked when no join row found
  * @param onlyBufferFirstMatch [[bufferMatchingRows]] should buffer only the first matching row
  */
+//实现排序合并连接（Sort-Merge Join）算法的一个辅助类。它处理左侧流数据（streamed input）和右侧缓冲数据（buffered input）之间的连接逻辑，主要通过对连接键进行排序和比较来找到匹配的行
 private[joins] class SortMergeJoinScanner(
-    streamedKeyGenerator: Projection,
-    bufferedKeyGenerator: Projection,
-    keyOrdering: Ordering[InternalRow],
-    streamedIter: RowIterator,
-    bufferedIter: RowIterator,
-    inMemoryThreshold: Int,
-    spillThreshold: Int,
-    spillSize: SQLMetric,
-    eagerCleanupResources: () => Unit,
-    onlyBufferFirstMatch: Boolean = false) {
-  private[this] var streamedRow: InternalRow = _
-  private[this] var streamedRowKey: InternalRow = _
-  private[this] var bufferedRow: InternalRow = _
+    streamedKeyGenerator: Projection, //用于从流数据（左侧）中生成连接键
+    bufferedKeyGenerator: Projection,  //用于从缓冲数据（右侧）中生成连接键
+    keyOrdering: Ordering[InternalRow],  //用于比较连接键的排序规则，通常是根据连接键的字段定义的顺序来排序
+    streamedIter: RowIterator, //左侧输入的数据迭代器（streamed iterator），它逐行提供流数据
+    bufferedIter: RowIterator, //右侧输入的数据迭代器（buffered iterator），它逐行提供缓冲数据
+    inMemoryThreshold: Int, //缓冲数据在内存中的最大数量阈值，当达到此阈值时，数据可能会溢写到磁盘
+    spillThreshold: Int, //缓冲数据溢写的阈值，当缓冲区达到此阈值时，数据将被溢写到外部存储（例如磁盘）
+    spillSize: SQLMetric, //记录缓冲区溢写的大小，通常用于性能统计
+    eagerCleanupResources: () => Unit, //如果没有找到匹配的连接行，将调用此清理函数来释放资源
+    onlyBufferFirstMatch: Boolean = false) { //：决定是否仅缓冲第一次匹配的行。如果设置为 true，则只会缓存第一个匹配的行
+  private[this] var streamedRow: InternalRow = _   //当前从流输入（左侧）获取的行
+  private[this] var streamedRowKey: InternalRow = _  //当前流行的连接键
+  private[this] var bufferedRow: InternalRow = _   //当前从缓冲输入（右侧）获取的行
   // Note: this is guaranteed to never have any null columns:
-  private[this] var bufferedRowKey: InternalRow = _
+  private[this] var bufferedRowKey: InternalRow = _   //当前缓冲行的连接键
   /**
    * The join key for the rows buffered in `bufferedMatches`, or null if `bufferedMatches` is empty
    */
-  private[this] var matchJoinKey: InternalRow = _
+  private[this] var matchJoinKey: InternalRow = _  //当前连接的匹配键。如果没有匹配，值为 null
   /** Buffered rows from the buffered side of the join. This is empty if there are no matches. */
   private[this] val bufferedMatches: ExternalAppendOnlyUnsafeRowArray =
-    new ExternalAppendOnlyUnsafeRowArray(inMemoryThreshold, spillThreshold)
+    new ExternalAppendOnlyUnsafeRowArray(inMemoryThreshold, spillThreshold)  //存储当前匹配的右侧行（缓冲行）
 
   // At the end of the task, update the task's spill size for buffered side.
   TaskContext.get().addTaskCompletionListener[Unit](_ => {
@@ -1061,13 +1067,14 @@ private[joins] class SortMergeJoinScanner(
   })
 
   // Initialization (note: do _not_ want to advance streamed here).
+  //预先初始化缓冲区
   advancedBufferedToRowWithNullFreeJoinKey()
 
   // --- Public methods ---------------------------------------------------------------------------
 
-  def getStreamedRow: InternalRow = streamedRow
+  def getStreamedRow: InternalRow = streamedRow  //返回当前从流输入（左侧）中获取的行
 
-  def getBufferedMatches: ExternalAppendOnlyUnsafeRowArray = bufferedMatches
+  def getBufferedMatches: ExternalAppendOnlyUnsafeRowArray = bufferedMatches  //返回当前缓冲区中所有匹配的右侧行
 
   /**
    * Advances both input iterators, stopping when we have found rows with matching join keys. If no
@@ -1076,20 +1083,27 @@ private[joins] class SortMergeJoinScanner(
    *         [[getStreamedRow]] and [[getBufferedMatches]] can be called to construct the join
    *         results.
    */
+  //用于在两个输入迭代器（流式输入和缓冲输入）中查找匹配的行，主要用于实现内连接（Inner Join）操作。该方法会推进两个输入迭代器，
+  // 直到找到具有相同连接键（join key）的行。如果找到匹配的行，则返回 true，并允许调用 getStreamedRow 和 getBufferedMatches 来获取连接结果。
+  // 如果没有找到匹配的行，则返回 false，并尝试执行资源清理
   final def findNextInnerJoinRows(): Boolean = {
+    //推进流式输入迭代器（streamedIter），直到找到一个连接键不包含 null 的行
     while (advancedStreamed() && streamedRowKey.anyNull) {
       // Advance the streamed side of the join until we find the next row whose join key contains
       // no nulls or we hit the end of the streamed iterator.
     }
+    //判断流式输入迭代器是否已耗尽
     val found = if (streamedRow == null) {
       // We have consumed the entire streamed iterator, so there can be no more matches.
       matchJoinKey = null
       bufferedMatches.clear()
       false
     } else if (matchJoinKey != null && keyOrdering.compare(streamedRowKey, matchJoinKey) == 0) {
+      //如果当前流式行的连接键与上一个匹配的连接键相同（matchJoinKey），则不需要重新匹配缓冲区中的行，直接返回 true
       // The new streamed row has the same join key as the previous row, so return the same matches.
       true
     } else if (bufferedRow == null) {
+      //如果缓冲区（bufferedRow）为空，表示没有更多的匹配行可以从缓冲区中读取，并返回 false
       // The streamed row's join key does not match the current batch of buffered rows and there are
       // no more rows to read from the buffered iterator, so there can be no more matches.
       matchJoinKey = null
@@ -1104,8 +1118,8 @@ private[joins] class SortMergeJoinScanner(
         } else {
           assert(!bufferedRowKey.anyNull)
           comp = keyOrdering.compare(streamedRowKey, bufferedRowKey)
-          if (comp > 0) advancedBufferedToRowWithNullFreeJoinKey()
-          else if (comp < 0) advancedStreamed()
+          if (comp > 0) advancedBufferedToRowWithNullFreeJoinKey()  //如果流式输入的连接键大于缓冲区的连接键，则推进缓冲区迭代器
+          else if (comp < 0) advancedStreamed() //如果流式输入的连接键小于缓冲区的连接键，则推进流式输入迭代器
         }
       } while (streamedRow != null && bufferedRow != null && comp != 0)
       if (streamedRow == null || bufferedRow == null) {
@@ -1173,6 +1187,7 @@ private[joins] class SortMergeJoinScanner(
    * Advance the streamed iterator and compute the new row's join key.
    * @return true if the streamed iterator returned a row and false otherwise.
    */
+  //推进流输入迭代器（bufferedIter），直到找到一个连接键不包含 null 的行
   private def advancedStreamed(): Boolean = {
     if (streamedIter.advanceNext()) {
       streamedRow = streamedIter.getRow
@@ -1189,8 +1204,9 @@ private[joins] class SortMergeJoinScanner(
    * Advance the buffered iterator until we find a row with join key that does not contain nulls.
    * @return true if the buffered iterator returned a row and false otherwise.
    */
+  //推进缓冲输入迭代器（bufferedIter），直到找到一个连接键不包含 null 的行
   private def advancedBufferedToRowWithNullFreeJoinKey(): Boolean = {
-    var foundRow: Boolean = false
+    var foundRow: Boolean = false  //false，表示尚未找到符合条件的行
     while (!foundRow && bufferedIter.advanceNext()) {
       bufferedRow = bufferedIter.getRow
       bufferedRowKey = bufferedKeyGenerator(bufferedRow)

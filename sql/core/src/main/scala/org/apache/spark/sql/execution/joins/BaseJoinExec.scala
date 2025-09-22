@@ -23,12 +23,12 @@ import org.apache.spark.sql.execution.{BinaryExecNode, ExplainUtils}
 
 /**
  * Holds common logic for join operators
- */
+ */  //join操作的公共逻辑
 trait BaseJoinExec extends BinaryExecNode {
-  def joinType: JoinType
-  def condition: Option[Expression]
-  def leftKeys: Seq[Expression]
-  def rightKeys: Seq[Expression]
+  def joinType: JoinType  //连接类型
+  def condition: Option[Expression]  //条件
+  def leftKeys: Seq[Expression]   //左侧的key
+  def rightKeys: Seq[Expression]  //右侧的key
 
   override def simpleStringWithNodeId(): String = {
     val opId = ExplainUtils.getOpId(this)

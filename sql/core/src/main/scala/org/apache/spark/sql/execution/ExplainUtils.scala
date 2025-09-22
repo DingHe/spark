@@ -294,7 +294,7 @@ object ExplainUtils extends AdaptiveSparkPlanHelper {
     }
   }
 
-  /**
+  /** 格式化values的值，转为字符串
    * Generate detailed field string with different format based on type of input value
    */
   def generateFieldString(fieldName: String, values: Any): String = values match {

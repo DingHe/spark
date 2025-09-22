@@ -34,19 +34,21 @@ import org.apache.spark.util.CallSite
  * For such stages, the ActiveJobs that submitted them are tracked in `mapStageJobs`. Note that
  * there can be multiple ActiveJobs trying to compute the same shuffle map stage.
  */
+//表示一个 Map 阶段，该阶段进行 Shuffle 操作前的数据处理。
+// 它主要负责生成 Shuffle 操作的中间结果，并将其保存为 Map 输出文件，供后续的 Reduce 阶段使用
 private[spark] class ShuffleMapStage(
-    id: Int,
-    rdd: RDD[_],
-    numTasks: Int,
-    parents: List[Stage],
-    firstJobId: Int,
+    id: Int, //是 ShuffleMapStage 的唯一标识符。每个阶段都有一个唯一的 ID，用于区分不同的阶段
+    rdd: RDD[_], //表示当前 ShuffleMapStage 操作的底层 RDD
+    numTasks: Int, //表示该阶段的任务数量
+    parents: List[Stage], //当前阶段依赖的前置阶段列表
+    firstJobId: Int, //表示提交当前阶段的第一个作业的 ID
     callSite: CallSite,
-    val shuffleDep: ShuffleDependency[_, _, _],
-    mapOutputTrackerMaster: MapOutputTrackerMaster,
+    val shuffleDep: ShuffleDependency[_, _, _], //描述了当前阶段的 Shuffle 操作依赖关系
+    mapOutputTrackerMaster: MapOutputTrackerMaster, //管理当前阶段的 Shuffle 输出。它跟踪该阶段的 Map 输出是否可用，并协调不同执行器之间的数据获取。
     resourceProfileId: Int)
   extends Stage(id, rdd, numTasks, parents, firstJobId, callSite, resourceProfileId) {
 
-  private[this] var _mapStageJobs: List[ActiveJob] = Nil
+  private[this] var _mapStageJobs: List[ActiveJob] = Nil  //表示与当前 ShuffleMapStage 相关的所有活跃作业的列表
 
   /**
    * Partitions that either haven't yet been computed, or that were computed on an executor
@@ -57,7 +59,7 @@ private[spark] class ShuffleMapStage(
    * tasks in the TaskSetManager for the active attempt for the stage (the partitions stored here
    * will always be a subset of the partitions that the TaskSetManager thinks are pending).
    */
-  val pendingPartitions = new HashSet[Int]
+  val pendingPartitions = new HashSet[Int] //录的是当前 ShuffleMapStage 中尚未计算的分区 ID，或者曾经计算过但由于执行器丢失等原因需要重新计算的分区
 
   override def toString: String = "ShuffleMapStage " + id
 
@@ -77,7 +79,7 @@ private[spark] class ShuffleMapStage(
     _mapStageJobs = _mapStageJobs.filter(_ != job)
   }
 
-  /**
+  /** 已经输出结果的分区数
    * Number of partitions that have shuffle outputs.
    * When this reaches [[numPartitions]], this map stage is ready.
    */

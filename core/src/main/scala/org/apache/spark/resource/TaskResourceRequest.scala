@@ -32,11 +32,13 @@ import org.apache.spark.annotation.{Evolving, Since}
  *               lets you configure X number of tasks to run on a single resource,
  *               ie amount equals 0.5 translates into 2 tasks per resource address.
  */
+//指定每个任务（task）所需的资源
 @Evolving
 @Since("3.1.0")
 class TaskResourceRequest(val resourceName: String, val amount: Double)
   extends Serializable {
-
+  //resourceName 指定资源的名称，例如 "gpu" 或 "memory" 等
+  //amount   指定请求的资源数量
   assert(amount <= 0.5 || amount % 1 == 0,
     s"The resource amount ${amount} must be either <= 0.5, or a whole number.")
 

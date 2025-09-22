@@ -20,7 +20,7 @@ import org.apache.spark.sql.catalyst.FileSourceOptions.{IGNORE_CORRUPT_FILES, IG
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.internal.SQLConf
 
-/**
+/** 公共的文件数据源配置参数
  * Common options for the file-based data source.
  */
 class FileSourceOptions(

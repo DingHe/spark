@@ -50,6 +50,7 @@ trait TreePatternBits {
    * @param patterns, a sequence of tree pattern enums to be tested.
    * @return true if at least one bit for `patterns` is set; false otherwise.
    */
+  //判断是否包含指定类型的节点
   final def containsAnyPattern(patterns: TreePattern*): Boolean = {
     val iterator = patterns.iterator
     while (iterator.hasNext) {

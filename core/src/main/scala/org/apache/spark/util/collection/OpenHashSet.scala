@@ -26,7 +26,7 @@ import org.apache.spark.annotation.Private
 /**
  * A simple, fast hash set optimized for non-null insertion-only use case, where keys are never
  * removed.
- *
+ * 一个比java hashset更快的hash set
  * The underlying implementation uses Scala compiler's specialization to generate optimized
  * storage for four primitive types (Long, Int, Double, and Float). It is much faster than Java's
  * standard HashSet while incurring much less memory overhead. This can serve as building blocks

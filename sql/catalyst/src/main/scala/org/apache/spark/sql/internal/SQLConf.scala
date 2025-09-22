@@ -140,12 +140,13 @@ object SQLConf {
    * Default config. Only used when there is no active SparkSession for the thread.
    * See [[get]] for more information.
    */
+    //默认的Sql配置
   private lazy val fallbackConf = new ThreadLocal[SQLConf] {
     override def initialValue: SQLConf = new SQLConf
   }
 
   /** See [[get]] for more information. */
-  def getFallbackConf: SQLConf = fallbackConf.get()
+  def getFallbackConf: SQLConf = fallbackConf.get()   //返回sql的默认配置
 
   private lazy val existingConf = new ThreadLocal[SQLConf] {
     override def initialValue: SQLConf = null
@@ -517,7 +518,7 @@ object SQLConf {
       .version("2.3.0")
       .booleanConf
       .createWithDefault(false)
-
+  //默认优先选择SortMergeJoin
   val PREFER_SORTMERGEJOIN = buildConf("spark.sql.join.preferSortMergeJoin")
     .internal()
     .doc("When true, prefer sort merge join over shuffled hash join. " +
@@ -566,7 +567,7 @@ object SQLConf {
     .version("2.0.0")
     .booleanConf
     .createWithDefault(true)
-
+  //自动广播的阀值，默认10M
   val AUTO_BROADCASTJOIN_THRESHOLD = buildConf("spark.sql.autoBroadcastJoinThreshold")
     .doc("Configures the maximum size in bytes for a table that will be broadcast to all worker " +
       "nodes when performing a join.  By setting this value to -1 broadcasting can be disabled. " +
@@ -629,7 +630,7 @@ object SQLConf {
     .version("1.1.0")
     .intConf
     .checkValue(_ > 0, "The value of spark.sql.shuffle.partitions must be positive")
-    .createWithDefault(200)
+    .createWithDefault(200)  //指定在执行join 或 aggregation操作时，shuffle 数据时使用的默认分区数
 
   val SHUFFLE_TARGET_POSTSHUFFLE_INPUT_SIZE =
     buildConf("spark.sql.adaptive.shuffle.targetPostShuffleInputSize")
@@ -645,7 +646,7 @@ object SQLConf {
       "middle of query execution, based on accurate runtime statistics.")
     .version("1.6.0")
     .booleanConf
-    .createWithDefault(true)
+    .createWithDefault(true) //默认启动sql自适应查询
 
   val ADAPTIVE_EXECUTION_FORCE_APPLY = buildConf("spark.sql.adaptive.forceApply")
     .internal()
@@ -691,7 +692,7 @@ object SQLConf {
         s"'${ADVISORY_PARTITION_SIZE_IN_BYTES.key}'), to avoid too many small tasks.")
       .version("3.0.0")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(true)  //是否启用自适应执行中的分区合并功能
 
   val COALESCE_PARTITIONS_PARALLELISM_FIRST =
     buildConf("spark.sql.adaptive.coalescePartitions.parallelismFirst")
@@ -737,7 +738,7 @@ object SQLConf {
       .version("3.0.0")
       .intConf
       .checkValue(_ > 0, "The initial number of partitions must be positive.")
-      .createOptional
+      .createOptional  //控制在启用自适应执行时，进行分区合并（coalescing）之前的初始 shuffle 分区数
 
   val FETCH_SHUFFLE_BLOCKS_IN_BATCH =
     buildConf("spark.sql.adaptive.fetchShuffleBlocksInBatch")
@@ -1739,7 +1740,7 @@ object SQLConf {
     .intConf
     .checkValue(threshold => threshold > 0, "The threshold must be a positive integer.")
     .createWithDefault(1024)
-
+  //默认每个物理操作生成一个私有的方法
   val WHOLESTAGE_SPLIT_CONSUME_FUNC_BY_OPERATOR =
     buildConf("spark.sql.codegen.splitConsumeFuncByOperator")
       .internal()
@@ -3097,7 +3098,7 @@ object SQLConf {
       .version("2.3.0")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefault(100)
-
+  //指定使用V1数据源的格式
   val USE_V1_SOURCE_LIST = buildConf("spark.sql.sources.useV1SourceList")
     .internal()
     .doc("A comma-separated list of data source short names or fully qualified data source " +
@@ -4133,7 +4134,7 @@ object SQLConf {
       .version("3.1.0")
       .booleanConf
       .createWithDefault(false)
-
+  //如果设置为true，如果传递了单一的路径参数（即一个字符串路径），则会覆盖原本的 "path" 选项，如果传递了多个路径参数（即多个路径字符串），那么 "path" 选项会被添加到所有路径的集合中，false 则不覆盖或修改路径选项，默认行为按传递的路径参数执行
   val LEGACY_PATH_OPTION_BEHAVIOR =
     buildConf("spark.sql.legacy.pathOptionBehavior.enabled")
       .internal()

@@ -38,6 +38,8 @@ trait PartitionCoalescer {
    * `Partition`s and represents a partition after coalescing is performed.
    */
   def coalesce(maxPartitions: Int, parent: RDD[_]): Array[PartitionGroup]
+  //maxPartitions：表示合并后最多的分区数
+  //parent：表示需要合并的父 RDD
 }
 
 /**
@@ -47,6 +49,7 @@ trait PartitionCoalescer {
  */
 @DeveloperApi
 class PartitionGroup(val prefLoc: Option[String] = None) {
-  val partitions = mutable.ArrayBuffer[Partition]()
+  //prefLoc表示分区组的首选位置
+  val partitions = mutable.ArrayBuffer[Partition]()  //partitions 存储属于该分区组的所有 Partition
   def numPartitions: Int = partitions.size
 }

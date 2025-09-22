@@ -81,16 +81,16 @@ object TypedAggregateExpression {
   }
 }
 
-/**
+/**  用于将 Aggregator（聚合器）集成到 Spark 的聚合系统中
  * A helper class to hook [[Aggregator]] into the aggregation system.
  */
 trait TypedAggregateExpression extends AggregateFunction {
 
   def aggregator: Aggregator[Any, Any, Any]
 
-  def inputDeserializer: Option[Expression]
-  def inputClass: Option[Class[_]]
-  def inputSchema: Option[StructType]
+  def inputDeserializer: Option[Expression]  //聚合函数的输入可能是原始数据，需要通过某种方式进行反序列化或转换为合适的类型供聚合操作使用
+  def inputClass: Option[Class[_]]   //表示输入数据的类型
+  def inputSchema: Option[StructType]  //表示输入数据的 schema
 
   def withInputInfo(deser: Expression, cls: Class[_], schema: StructType): TypedAggregateExpression
 
@@ -210,27 +210,27 @@ case class SimpleTypedAggregateExpression(
 }
 
 case class ComplexTypedAggregateExpression(
-    aggregator: Aggregator[Any, Any, Any],
-    inputDeserializer: Option[Expression],
-    inputClass: Option[Class[_]],
-    inputSchema: Option[StructType],
-    bufferSerializer: Seq[Expression],
+    aggregator: Aggregator[Any, Any, Any],  //表示聚合器（Aggregator）
+    inputDeserializer: Option[Expression],  //表示输入数据的反序列化表达式
+    inputClass: Option[Class[_]],           //表示输入数据的类信息
+    inputSchema: Option[StructType],        //表示输入数据的 schema
+    bufferSerializer: Seq[Expression],      //表示用于将数据序列化到聚合缓冲区中的表达式序列
     bufferDeserializer: Expression,
     outputSerializer: Expression,
-    dataType: DataType,
-    nullable: Boolean,
+    dataType: DataType,                     //表示聚合表达式的结果数据类型
+    nullable: Boolean,                      //表示结果是否可以为空
     mutableAggBufferOffset: Int = 0,
     inputAggBufferOffset: Int = 0)
   extends TypedImperativeAggregate[Any] with TypedAggregateExpression with NonSQLExpression {
 
   override lazy val deterministic: Boolean = true
-
+  //返回当前聚合表达式的所有子表达式
   override def children: Seq[Expression] = {
     inputDeserializer.toSeq ++ bufferSerializer :+ bufferDeserializer :+ outputSerializer
   }
 
   override lazy val resolved: Boolean = inputDeserializer.isDefined && childrenResolved
-
+  //表示该聚合表达式依赖的输入数据的属性
   override def references: AttributeSet = AttributeSet(inputDeserializer.toSeq)
 
   override def createAggregationBuffer(): Any = aggregator.zero

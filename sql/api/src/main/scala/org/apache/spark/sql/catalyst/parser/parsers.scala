@@ -35,8 +35,10 @@ import org.apache.spark.sql.types.{DataType, StructType}
 /**
  * Base SQL parsing infrastructure.
  */
+//涉及到 SQL 语句的解析、错误处理、语法检查等多个方面
 abstract class AbstractParser extends DataTypeParserInterface with Logging {
   /** Creates/Resolves DataType for a given SQL string. */
+    //解析 SQL 字符串并生成 DataType 对象。DataType 是 Spark SQL 中表示数据类型的类
   override def parseDataType(sqlText: String): DataType = parse(sqlText) { parser =>
     astBuilder.visitSingleDataType(parser.singleDataType())
   }
@@ -45,6 +47,7 @@ abstract class AbstractParser extends DataTypeParserInterface with Logging {
    * Creates StructType for a given SQL string, which is a comma separated list of field
    * definitions which will preserve the correct Hive metadata.
    */
+    //解析 SQL 字符串并生成 StructType 对象。StructType 是 Spark SQL 中表示表结构的类，通常用来描述一个表的列和类型
   override def parseTableSchema(sqlText: String): StructType = parse(sqlText) { parser =>
     astBuilder.visitSingleTableSchema(parser.singleTableSchema())
   }
@@ -53,16 +56,25 @@ abstract class AbstractParser extends DataTypeParserInterface with Logging {
   protected def astBuilder: DataTypeAstBuilder
 
   protected def parse[T](command: String)(toResult: SqlBaseParser => T): T = {
+    //command: String：待解析的 SQL 命令
+    //toResult: SqlBaseParser => T：一个高阶函数，接受 SqlBaseParser 类型的解析器并返回一个结果 T，即解析完成后的结果
     logDebug(s"Parsing command: $command")
-
+    //SqlBaseLexer 是通过 ANTLR 自动生成的词法分析器，用于将 SQL 命令转换为一个个的词法单元（tokens）
+    //通过 UpperCaseCharStream 将 SQL 命令转换为大写流，确保词法分析不区分大小写
+    //移除默认的错误监听器，并添加自定义的 ParseErrorListener 来捕捉解析错误
     val lexer = new SqlBaseLexer(new UpperCaseCharStream(CharStreams.fromString(command)))
     lexer.removeErrorListeners()
     lexer.addErrorListener(ParseErrorListener)
-
+    //词法分析器 lexer 生成的词法单元（tokens）会被 CommonTokenStream 包装，这样可以传递给语法解析器使用
     val tokenStream = new CommonTokenStream(lexer)
+
+    //创建一个语法解析器 SqlBaseParser，它基于词法单元流（tokenStream）进行语法分析
     val parser = new SqlBaseParser(tokenStream)
+    //将一个 ParseTreeListener 添加到解析器中，以便在解析过程中进行回调操作。
+    // 这个方法允许你在语法树的构建过程中插入自定义的监听器，监听特定的规则匹配事件，并在相应的事件发生时执行特定的操作
     parser.addParseListener(PostProcessor)
     parser.addParseListener(UnclosedCommentProcessor(command, tokenStream))
+
     parser.removeErrorListeners()
     parser.addErrorListener(ParseErrorListener)
     parser.legacy_setops_precedence_enabled = conf.setOpsPrecedenceEnforced
@@ -75,7 +87,11 @@ abstract class AbstractParser extends DataTypeParserInterface with Logging {
     try {
       try {
         // first, try parsing with potentially faster SLL mode w/ SparkParserBailErrorStrategy
+        //设置 SparkParserBailErrorStrategy 作为错误处理器，如果发生解析错误，则立即退出并抛出异常
         parser.setErrorHandler(new SparkParserBailErrorStrategy())
+        //使用 SLL（Singly Lookahead） 模式进行解析。这个模式通常比 LL（Lookahead） 模式快
+        //Singly Lookahead 模式（也叫 1-Token Lookahead）是一种语法分析策略，指的是在分析某个输入符号时，
+        // 分析器只查看下一个输入符号（即一个 token）来决定如何进行解析
         parser.getInterpreter.setPredictionMode(PredictionMode.SLL)
         toResult(parser)
       }
@@ -86,6 +102,12 @@ abstract class AbstractParser extends DataTypeParserInterface with Logging {
           parser.reset()
 
           // Try Again.
+          //LL(k) 语法分析是指一种通过从左到右扫描输入符号（Left-to-right），
+          // 并进行最左推导（Leftmost derivation）来进行解析的技术，k 表示 Lookahead 的符号数，
+          // 即在做决策时，解析器查看的输入符号的个数。
+          //
+          //LL(1): 这是最常见的形式，解析器在每次决策时查看一个符号。
+          //LL(k): 解析器在每次决策时查看 k 个符号
           parser.setErrorHandler(new SparkParserErrorStrategy())
           parser.getInterpreter.setPredictionMode(PredictionMode.LL)
           toResult(parser)
@@ -130,36 +152,51 @@ abstract class AbstractParser extends DataTypeParserInterface with Logging {
  * only accept capitalized tokens in case it is run from other tools like antlrworks which do not
  * have the UpperCaseCharStream implementation.
  */
-
+//CodePointCharStream 是一个实现了 CharStream 接口的类，通常用于处理 Unicode 字符流，
+// 它比传统的 ANTLRInputStream 更加适用于处理多字节字符集，如 UTF-8 或 UTF-16 编码。
+// CodePointCharStream 允许你处理 Unicode 代码点而不是字节流，这对于支持多语言的解析器非常重要
+//CodePointCharStream 可以通过 CharStreams.fromString() 或 CharStreams.fromFileName() 等方法来初始化
 private[parser] class UpperCaseCharStream(wrapped: CodePointCharStream) extends CharStream {
+  //消费当前字符并将流指针移至下一个字符
   override def consume(): Unit = wrapped.consume
+  //获取被包装流的源名称
   override def getSourceName(): String = wrapped.getSourceName
+  //获取当前流的位置（索引）
   override def index(): Int = wrapped.index
+  //标记当前流的位置
   override def mark(): Int = wrapped.mark
+  //释放先前标记的位置
   override def release(marker: Int): Unit = wrapped.release(marker)
+  //移动流指针到指定位置
   override def seek(where: Int): Unit = wrapped.seek(where)
+  //返回流的大小
   override def size(): Int = wrapped.size
-
+  //返回指定区间内的文本
   override def getText(interval: Interval): String = wrapped.getText(interval)
 
   override def LA(i: Int): Int = {
+    ////查看指定位置的字符（Unicode 代码点）
     val la = wrapped.LA(i)
     if (la == 0 || la == IntStream.EOF) la
-    else Character.toUpperCase(la)
+    else Character.toUpperCase(la)   //转为大写
   }
 }
 
 /**
  * The ParseErrorListener converts parse errors into ParseExceptions.
  */
+//BaseErrorListener主要用于在解析过程中捕获错误，并根据需要执行自定义操作。它并不会自动处理错误，而是为你提供了一个钩子，
+// 使你能够根据自己的需求处理错误（例如打印错误消息、记录日志、抛出异常等）
+
 case object ParseErrorListener extends BaseErrorListener {
+  //这是最常用的错误监听方法，用来处理语法错误
   override def syntaxError(
-      recognizer: Recognizer[_, _],
-      offendingSymbol: scala.Any,
-      line: Int,
-      charPositionInLine: Int,
-      msg: String,
-      e: RecognitionException): Unit = {
+      recognizer: Recognizer[_, _], //触发错误的解析器实例（Parser 或 Lexer）
+      offendingSymbol: scala.Any, //引起错误的符号（通常是某个 token）
+      line: Int, //发生错误的行号
+      charPositionInLine: Int,  //发生错误的字符位置
+      msg: String, //错误消息
+      e: RecognitionException): Unit = { //RecognitionException 异常，包含关于错误的更多信息
     val (start, stop) = offendingSymbol match {
       case token: CommonToken =>
         val start = Origin(Some(line), Some(token.getCharPositionInLine))

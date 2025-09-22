@@ -102,11 +102,15 @@ trait ExtractValue extends Expression with NullIntolerant {
  * Note that we can pass in the field name directly to keep case preserving in `toString`.
  * For example, when get field `yEAr` from `<year: int, month: int>`, we should pass in `yEAr`.
  */
+//用于获取 Struct 类型字段值的表达式 (Expression)
+//child: Expression —— Struct 类型的子表达式（即 Struct 本身）
+//ordinal: Int —— 目标字段的索引（第几个字段）
+//name: Option[String] —— 可选的字段名，用于保持 SQL 查询中的大小写不变
 case class GetStructField(child: Expression, ordinal: Int, name: Option[String] = None)
   extends UnaryExpression with ExtractValue {
 
-  lazy val childSchema = child.dataType.asInstanceOf[StructType]
-
+  lazy val childSchema = child.dataType.asInstanceOf[StructType] //获取它的 Schema 以便后续字段提取
+  //去除 name，只保留 ordinal 作为标识，这样 Spark 可以识别相同字段但大小写不同的情况
   override lazy val canonicalized: Expression = {
     copy(child = child.canonicalized, name = None)
   }
@@ -118,7 +122,7 @@ case class GetStructField(child: Expression, ordinal: Int, name: Option[String] 
     val fieldName = if (resolved) childSchema(ordinal).name else s"_$ordinal"
     s"$child.${name.getOrElse(fieldName)}"
   }
-
+  //提取字段名称
   def extractFieldName: String = name.getOrElse(childSchema(ordinal).name)
 
   override def sql: String =

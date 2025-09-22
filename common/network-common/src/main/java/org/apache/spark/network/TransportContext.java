@@ -57,7 +57,7 @@ import org.apache.spark.network.util.TransportFrameDecoder;
  * data-plane "chunk fetching". The handling of the RPCs is performed outside of the scope of the
  * TransportContext (i.e., by a user-provided handler), and it is responsible for setting up streams
  * which can be streamed through the data plane in chunks using zero-copy IO.
- *
+ * 过 Netty 实现了客户端和服务器的消息传输。它主要用于管理传输层的配置和初始化，并创建和管理客户端、服务器的相关组件
  * The TransportServer and TransportClientFactory both create a TransportChannelHandler for each
  * channel. As each TransportChannelHandler contains a TransportClient, this enables server
  * processes to send messages back to the client on an existing channel.
@@ -66,11 +66,11 @@ public class TransportContext implements Closeable {
   private static final Logger logger = LoggerFactory.getLogger(TransportContext.class);
 
   private static final NettyLogger nettyLogger = new NettyLogger();
-  private final TransportConf conf;
+  private final TransportConf conf; //配置对象包含了很多网络通信的参数，例如超时设置、线程数等
   private final RpcHandler rpcHandler;
   private final boolean closeIdleConnections;
   // Number of registered connections to the shuffle service
-  private Counter registeredConnections = new Counter();
+  private Counter registeredConnections = new Counter(); //当前已注册连接的数量
 
   /**
    * Force to create MessageEncoder and MessageDecoder so that we can make sure they will be created
@@ -84,13 +84,13 @@ public class TransportContext implements Closeable {
    * RPC to load it and cause to load the non-exist matcher class again. JVM will report
    * `ClassCircularityError` to prevent such infinite recursion. (See SPARK-17714)
    */
-  private static final MessageEncoder ENCODER = MessageEncoder.INSTANCE;
-  private static final MessageDecoder DECODER = MessageDecoder.INSTANCE;
+  private static final MessageEncoder ENCODER = MessageEncoder.INSTANCE;  //服务端编码器，编码服务端到客户端的消息
+  private static final MessageDecoder DECODER = MessageDecoder.INSTANCE;  //客户侧解码器，解码服务端到客户端的响应
 
   // Separate thread pool for handling ChunkFetchRequest. This helps to enable throttling
   // max number of TransportServer worker threads that are blocked on writing response
   // of ChunkFetchRequest message back to the client via the underlying channel.
-  private final EventLoopGroup chunkFetchWorkers;
+  private final EventLoopGroup chunkFetchWorkers; //处理“块获取请求”（ChunkFetchRequest）的专用线程池
 
   public TransportContext(TransportConf conf, RpcHandler rpcHandler) {
     this(conf, rpcHandler, false, false);
@@ -114,7 +114,7 @@ public class TransportContext implements Closeable {
    *                     It stops creating extra event loop and subsequent thread pool
    *                     for shuffle clients to handle chunked fetch requests.
    */
-  public TransportContext(
+  public TransportContext( //上面基础上添加了 isClientOnly 参数。如果设置为 true，则表示当前 TransportContext 仅用于客户端，不需要创建额外的线程池来处理“块获取请求”
       TransportConf conf,
       RpcHandler rpcHandler,
       boolean closeIdleConnections,
@@ -126,7 +126,7 @@ public class TransportContext implements Closeable {
     if (conf.getModuleName() != null &&
         conf.getModuleName().equalsIgnoreCase("shuffle") &&
         !isClientOnly && conf.separateChunkFetchRequest()) {
-      chunkFetchWorkers = NettyUtils.createEventLoop(
+      chunkFetchWorkers = NettyUtils.createEventLoop(   //专门用于shuffle的块请求线程池
           IOMode.valueOf(conf.ioMode()),
           conf.chunkFetchHandlerThreads(),
           "shuffle-chunk-fetch-handler");
@@ -179,7 +179,7 @@ public class TransportContext implements Closeable {
    *
    * @param channel The channel to initialize.
    * @param channelRpcHandler The RPC handler to use for the channel.
-   *
+   * 作用是为 SocketChannel 配置一个 Netty 管道，管道中包含了消息的编码、解码、空闲状态处理器、日志记录处理器以及处理请求的处理器
    * @return Returns the created TransportChannelHandler, which includes a TransportClient that can
    * be used to communicate on this channel. The TransportClient is directly associated with a
    * ChannelHandler to ensure all users of the same channel get the same TransportClient object.
@@ -191,19 +191,19 @@ public class TransportContext implements Closeable {
       TransportChannelHandler channelHandler = createChannelHandler(channel, channelRpcHandler);
       ChannelPipeline pipeline = channel.pipeline();
       if (nettyLogger.getLoggingHandler() != null) {
-        pipeline.addLast("loggingHandler", nettyLogger.getLoggingHandler());
+        pipeline.addLast("loggingHandler", nettyLogger.getLoggingHandler()); //添加日志处理器，用于记录 Netty 的网络操作日志
       }
       pipeline
-        .addLast("encoder", ENCODER)
-        .addLast(TransportFrameDecoder.HANDLER_NAME, NettyUtils.createFrameDecoder())
-        .addLast("decoder", DECODER)
-        .addLast("idleStateHandler",
+        .addLast("encoder", ENCODER) //添加消息编码器，用于将传输的消息进行编码
+        .addLast(TransportFrameDecoder.HANDLER_NAME, NettyUtils.createFrameDecoder()) //添加帧解码器，负责解码接收到的网络数据帧
+        .addLast("decoder", DECODER) //添加消息解码器，将网络接收到的数据流解码成实际的消息
+        .addLast("idleStateHandler", //添加空闲状态处理器，用于检测连接的空闲状态
           new IdleStateHandler(0, 0, conf.connectionTimeoutMs() / 1000))
         // NOTE: Chunks are currently guaranteed to be returned in the order of request, but this
         // would require more logic to guarantee if this were not part of the same event loop.
-        .addLast("handler", channelHandler);
+        .addLast("handler", channelHandler); //最后添加消息处理器，它负责处理实际的请求和响应消息
       // Use a separate EventLoopGroup to handle ChunkFetchRequest messages for shuffle rpcs.
-      if (chunkFetchWorkers != null) {
+      if (chunkFetchWorkers != null) { //专门用于处理“块获取请求”的线程池。这个线程池使得处理数据块的请求不会和常规的请求处理混合，从而避免阻塞
         ChunkFetchRequestHandler chunkFetchHandler = new ChunkFetchRequestHandler(
           channelHandler.getClient(), rpcHandler.getStreamManager(),
           conf.maxChunksBeingTransferred(), true /* syncModeEnabled */);
@@ -224,7 +224,7 @@ public class TransportContext implements Closeable {
   private TransportChannelHandler createChannelHandler(Channel channel, RpcHandler rpcHandler) {
     TransportResponseHandler responseHandler = new TransportResponseHandler(channel);
     TransportClient client = new TransportClient(channel, responseHandler);
-    boolean separateChunkFetchRequest = conf.separateChunkFetchRequest();
+    boolean separateChunkFetchRequest = conf.separateChunkFetchRequest(); //是否专门的线程池处理块请求信息
     ChunkFetchRequestHandler chunkFetchRequestHandler = null;
     if (!separateChunkFetchRequest) {
       chunkFetchRequestHandler = new ChunkFetchRequestHandler(

@@ -67,7 +67,7 @@ import org.apache.spark.unsafe.array.ByteArrayMethods
 import org.apache.spark.util.Utils
 
 private[sql] object Dataset {
-  val curId = new java.util.concurrent.atomic.AtomicLong()
+  val curId = new java.util.concurrent.atomic.AtomicLong()   //dataset的唯一id
   val DATASET_ID_KEY = "__dataset_id"
   val COL_POS_KEY = "__col_position"
   val DATASET_ID_TAG = TreeNodeTag[HashSet[Long]]("dataset_id")
@@ -84,11 +84,11 @@ private[sql] object Dataset {
     }
     dataset
   }
-
+  //DataFrame = Dataset[Row]
   def ofRows(sparkSession: SparkSession, logicalPlan: LogicalPlan): DataFrame =
     sparkSession.withActive {
-      val qe = sparkSession.sessionState.executePlan(logicalPlan)
-      qe.assertAnalyzed()
+      val qe = sparkSession.sessionState.executePlan(logicalPlan) //executePlan实际就是创建QueryExecution
+      qe.assertAnalyzed()   //这里确定lazy函数被调用，也就是逻辑计划已经做了分析
       new Dataset[Row](qe, ExpressionEncoder(qe.analyzed.schema))
   }
 
@@ -187,12 +187,13 @@ private[sql] object Dataset {
  *
  * @since 1.6.0
  */
+//Dataset是一个强类型的集合，包含了特定领域的对象，可以使用函数式或者关系型操作并行转换数据
 @Stable
 class Dataset[T] private[sql](
-    @DeveloperApi @Unstable @transient val queryExecution: QueryExecution,
-    @DeveloperApi @Unstable @transient val encoder: Encoder[T])
+    @DeveloperApi @Unstable @transient val queryExecution: QueryExecution,  //表示查询的执行计划。它包含了如何执行Dataset相关的逻辑计算。QueryExecution负责优化查询并生成物理执行计划
+    @DeveloperApi @Unstable @transient val encoder: Encoder[T])  //将特定类型的对象（T）转换为Spark内部使用的类型格式。Encoder是Dataset的核心，用于进行对象的序列化和反序列化
   extends Serializable {
-
+  //使用queryExecution.sparkSession来获取对应的SparkSession
   @transient lazy val sparkSession: SparkSession = {
     if (queryExecution == null || queryExecution.sparkSession == null) {
       throw QueryExecutionErrors.transformationsAndActionsNotInvokedByDriverError()
@@ -201,13 +202,13 @@ class Dataset[T] private[sql](
   }
 
   // A globally unique id of this Dataset.
-  private val id = Dataset.curId.getAndIncrement()
-
+  private val id = Dataset.curId.getAndIncrement()  //Dataset的唯一标识符
+  //再此确认逻辑计划被分析过
   queryExecution.assertAnalyzed()
 
   // Note for Spark contributors: if adding or updating any action in `Dataset`, please make sure
   // you wrap it with `withNewExecutionId` if this actions doesn't call other action.
-
+  //这个构造函数使用sessionState中的函数构建QueryExecution
   def this(sparkSession: SparkSession, logicalPlan: LogicalPlan, encoder: Encoder[T]) = {
     this(sparkSession.sessionState.executePlan(logicalPlan), encoder)
   }
@@ -215,12 +216,12 @@ class Dataset[T] private[sql](
   def this(sqlContext: SQLContext, logicalPlan: LogicalPlan, encoder: Encoder[T]) = {
     this(sqlContext.sparkSession, logicalPlan, encoder)
   }
-
+  //代表了当前Dataset的逻辑执行计划，如果是Command,则在commandExecuted里面执行返回了结果，查询直接返回逻辑计划
   @transient private[sql] val logicalPlan: LogicalPlan = {
-    val plan = queryExecution.commandExecuted
+    val plan = queryExecution.commandExecuted  //获取当前执行计划（LogicalPlan）
     if (sparkSession.conf.get(SQLConf.FAIL_AMBIGUOUS_SELF_JOIN_ENABLED)) {
       val dsIds = plan.getTagValue(Dataset.DATASET_ID_TAG).getOrElse(new HashSet[Long])
-      dsIds.add(id)
+      dsIds.add(id)  //设置逻辑计划的id
       plan.setTagValue(Dataset.DATASET_ID_TAG, dsIds)
     }
     plan
@@ -232,10 +233,12 @@ class Dataset[T] private[sql](
    * it when constructing new Dataset objects that have the same object type (that will be
    * possibly resolved to a different schema).
    */
+  //Encoder表达式
   private[sql] implicit val exprEnc: ExpressionEncoder[T] = encoderFor(encoder)
 
   // The resolved `ExpressionEncoder` which can be used to turn rows to objects of type T, after
   // collecting rows to the driver side.
+  //根据当前 logicalPlan 的输出列（即查询计划的结果列）解析和绑定编码器
   private lazy val resolvedEnc = {
     exprEnc.resolveAndBind(logicalPlan.output, sparkSession.sessionState.analyzer)
   }
@@ -244,13 +247,14 @@ class Dataset[T] private[sql](
 
   // sqlContext must be val because a stable identifier is expected when you import implicits
   @transient lazy val sqlContext: SQLContext = sparkSession.sqlContext
-
+  //解析列名，并返回与之对应的NamedExpression。如果列名无效，则抛出异常
   private[sql] def resolve(colName: String): NamedExpression = {
+    //Resolver的定义为type Resolver = (String, String) => Boolean
     val resolver = sparkSession.sessionState.analyzer.resolver
     queryExecution.analyzed.resolveQuoted(colName, resolver)
       .getOrElse(throw QueryCompilationErrors.resolveException(colName, schema.fieldNames))
   }
-
+  //返回所有数值类型的列。这些列在查询中可以进行数值运算
   private[sql] def numericColumns: Seq[Expression] = {
     schema.fields.filter(_.dataType.isInstanceOf[NumericType]).map { n =>
       queryExecution.analyzed.resolveQuoted(n.name, sparkSession.sessionState.analyzer.resolver).get
@@ -267,21 +271,25 @@ class Dataset[T] private[sql](
   private[sql] def getRows(
       numRows: Int,
       truncate: Int): Seq[Seq[String]] = {
+    //numRows：表示要返回的行数，返回的行数不会超过 numRows
+    //truncate：如果设置为大于0，它会对每个字符串进行截断，确保字符串不超过指定的长度
     val newDf = logicalPlan match {
-      case c: CommandResult =>
+      case c: CommandResult =>   //非查询命令，会返回结果
         // Convert to `LocalRelation` and let `ConvertToLocalRelation` do the casting locally to
         // avoid triggering a job
         Dataset.ofRows(sparkSession, LocalRelation(c.output, c.rows))
       case _ => toDF()
     }
     val castCols = newDf.logicalPlan.output.map { col =>
-      Column(ToPrettyString(col))
+      Column(ToPrettyString(col))  //ToPrettyString 会将列转换成字符串形式，保证输出能够更加易于阅读
     }
+    //选择经过格式化处理的列,ake(numRows + 1) 获取前 numRows + 1 行数据
     val data = newDf.select(castCols: _*).take(numRows + 1)
 
     // For array values, replace Seq and Array with square brackets
     // For cells that are beyond `truncate` characters, replace it with the
     // first `truncate-3` and "..."
+    //处理每个单元格的内容
     schema.fieldNames.map(SchemaUtils.escapeMetaCharacters).toSeq +: data.map { row =>
       row.toSeq.map { cell =>
         assert(cell != null, "ToPrettyString is not nullable and should not return null value")
@@ -307,12 +315,12 @@ class Dataset[T] private[sql](
    * @param vertical If set to true, prints output rows vertically (one line per column value).
    */
   private[sql] def showString(
-      _numRows: Int,
-      truncate: Int = 20,
-      vertical: Boolean = false): String = {
+      _numRows: Int,  //要显示的行数
+      truncate: Int = 20, //如果设置为大于0，则截断字符串以截断字符，所有单元格都将对齐
+      vertical: Boolean = false): String = { //如果设置为true，则垂直打印输出行（每列值一行）
     val numRows = _numRows.max(0).min(ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH - 1)
     // Get rows represented by Seq[Seq[String]], we may get one more line if it has more data.
-    val tmpRows = getRows(numRows, truncate)
+    val tmpRows = getRows(numRows, truncate)   //获取要显示的行
 
     val hasMoreData = tmpRows.length - 1 > numRows
     val rows = tmpRows.take(numRows + 1)
@@ -545,6 +553,7 @@ class Dataset[T] private[sql](
    * @group basic
    * @since 1.6.0
    */
+  //返回Dataset的schema
   def schema: StructType = sparkSession.withActive {
     queryExecution.analyzed.schema
   }
@@ -1526,7 +1535,7 @@ class Dataset[T] private[sql](
       case typedCol: TypedColumn[_, _] =>
         // Checks if a `TypedColumn` has been inserted with
         // specific input type and schema by `withInputType`.
-        val needInputType = typedCol.expr.exists {
+        val needInputType = typedCol.expr.exists {  //如果 TypedColumn 的表达式是 TypedAggregateExpression，且没有提供输入的解码器（inputDeserializer），则会抛出异常
           case ta: TypedAggregateExpression if ta.inputDeserializer.isEmpty => true
           case _ => false
         }
@@ -4315,21 +4324,21 @@ class Dataset[T] private[sql](
    * Wrap a Dataset action to track the QueryExecution and time cost, then report to the
    * user-registered callback functions, and also to convert asserts/NPE to
    * the internal error exception.
-   */
+   */ //主要用于确保在执行操作时，能够正确地报告和处理异常，重置执行计划的指标，并确保操作的执行过程能够追踪
   private def withAction[U](name: String, qe: QueryExecution)(action: SparkPlan => U) = {
     SQLExecution.withNewExecutionId(qe, Some(name)) {
       QueryExecution.withInternalError(s"""The "$name" action failed.""") {
         qe.executedPlan.resetMetrics()
-        action(qe.executedPlan)
+        action(qe.executedPlan)   //把QueryExecution的执行计划传入action函数执行
       }
     }
   }
 
-  /**
+  /** 从spark物理计划收集结果
    * Collect all elements from a spark plan.
    */
   private def collectFromPlan(plan: SparkPlan): Array[T] = {
-    val fromRow = resolvedEnc.createDeserializer()
+    val fromRow = resolvedEnc.createDeserializer()  //创建反序列化器，负责将row转为spark sql 对象
     plan.executeCollect().map(fromRow)
   }
 
@@ -4348,6 +4357,7 @@ class Dataset[T] private[sql](
   }
 
   /** A convenient function to wrap a logical plan and produce a DataFrame. */
+  //用于包装逻辑计划的方便函数
   @inline private def withPlan(logicalPlan: LogicalPlan): DataFrame = {
     Dataset.ofRows(sparkSession, logicalPlan)
   }

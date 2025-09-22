@@ -32,9 +32,9 @@ import org.apache.spark.unsafe.UnsafeAlignedOffset;
  */
 public final class VariableLengthRowBasedKeyValueBatch extends RowBasedKeyValueBatch {
   // full addresses for key rows and value rows
-  private final long[] keyOffsets;
+  private final long[] keyOffsets; //保存每个记录的键的偏移量。用于在访问特定行时快速定位键的位置
 
-  /**
+  /** 将一对键值对追加到当前批次中，kbase、vbase：键和值的基础内存对象，koff、voff：键和值在内存中的偏移量，klen、vlen：键和值的长度
    * Append a key value pair.
    * It copies data into the backing MemoryBlock.
    * Returns an UnsafeRow pointing to the value if succeeds, otherwise returns null.

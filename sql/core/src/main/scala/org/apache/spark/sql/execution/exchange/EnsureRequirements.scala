@@ -47,24 +47,26 @@ import org.apache.spark.sql.internal.SQLConf
  *                             in AQE in case we change final stage output partitioning.
  */
 case class EnsureRequirements(
-    optimizeOutRepartition: Boolean = true,
-    requiredDistribution: Option[Distribution] = None)
+    optimizeOutRepartition: Boolean = true, //如果设置为 true，在某些情况下，Spark 会移除不必要的 ShuffleExchangeExec，提高执行效率
+    requiredDistribution: Option[Distribution] = None) //主要用于自适应查询执行（AQE），确保在最后的执行阶段输出符合特定分布要求
   extends Rule[SparkPlan] {
-
+  //主要功能是确保 SparkPlan 中的每个子节点满足分布 (Distribution) 和排序 (Ordering) 要求
   private def ensureDistributionAndOrdering(
-      parent: Option[SparkPlan],
-      originalChildren: Seq[SparkPlan],
-      requiredChildDistributions: Seq[Distribution],
-      requiredChildOrderings: Seq[Seq[SortOrder]],
-      shuffleOrigin: ShuffleOrigin): Seq[SparkPlan] = {
+      parent: Option[SparkPlan], //当前节点的父节点，若无父节点则为 None，主要用于特殊情况 (如 KeyGroupedPartitioning 兼容性检查)
+      originalChildren: Seq[SparkPlan], //当前节点的所有子计划，表示需要处理的物理执行计划
+      requiredChildDistributions: Seq[Distribution], //每个子节点需要满足的分布要求，如 ClusteredDistribution、BroadcastDistribution、UnspecifiedDistribution 等
+      requiredChildOrderings: Seq[Seq[SortOrder]],//每个子节点需要满足的排序要求，主要用于确保输出数据的排序符合需求
+      shuffleOrigin: ShuffleOrigin): Seq[SparkPlan] = { //表示 Shuffle 操作的来源，可能来自于显式的 Repartition 操作或隐式的 EnsureRequirements
     assert(requiredChildDistributions.length == originalChildren.length)
     assert(requiredChildOrderings.length == originalChildren.length)
     // Ensure that the operator's children satisfy their output distribution requirements.
     var children = originalChildren.zip(requiredChildDistributions).map {
       case (child, distribution) if child.outputPartitioning.satisfies(distribution) =>
         child
+      //如果分布要求是 BroadcastDistribution，插入 BroadcastExchangeExec 进行广播
       case (child, BroadcastDistribution(mode)) =>
         BroadcastExchangeExec(mode, child)
+      //不满足分布要求，插入 ShuffleExchangeExec 节点，按指定的分布要求进行 Shuffle
       case (child, distribution) =>
         val numPartitions = distribution.requiredNumPartitions
           .getOrElse(conf.numShufflePartitions)
@@ -73,6 +75,7 @@ case class EnsureRequirements(
 
     // Get the indexes of children which have specified distribution requirements and need to be
     // co-partitioned.
+    //只处理 ClusteredDistribution 类型的分布要求，获取需要进行 Shuffle 的子节点索引
     val childrenIndexes = requiredChildDistributions.zipWithIndex.filter {
       case (_: ClusteredDistribution, _) => true
       case _ => false
@@ -80,6 +83,7 @@ case class EnsureRequirements(
 
     // Special case: if all sides of the join are single partition and it's physical size less than
     // or equal spark.sql.maxSinglePartitionBytes.
+    //如果所有子节点都满足以下条件，则优先使用 SinglePartition
     val preferSinglePartition = childrenIndexes.forall { i =>
       children(i).outputPartitioning == SinglePartition &&
         children(i).logicalLink
@@ -89,6 +93,7 @@ case class EnsureRequirements(
     // If there are more than one children, we'll need to check partitioning & distribution of them
     // and see if extra shuffles are necessary.
     if (childrenIndexes.length > 1 && !preferSinglePartition) {
+      //对每个需要 ClusteredDistribution 的子节点，生成其对应的 ShuffleSpec，用于描述如何进行 Shuffle
       val specs = childrenIndexes.map(i => {
         val requiredDist = requiredChildDistributions(i)
         assert(requiredDist.isInstanceOf[ClusteredDistribution],
@@ -142,6 +147,7 @@ case class EnsureRequirements(
         val candidateSpecsWithoutShuffle = candidateSpecs.filter { case (k, _) =>
           !children(k).isInstanceOf[ShuffleExchangeLike]
         }
+        //在所有候选 ShuffleSpec 中，选择并行度最高的方案，尽可能提高计算效率
         val finalCandidateSpecs = if (candidateSpecsWithoutShuffle.nonEmpty) {
           candidateSpecsWithoutShuffle
         } else {

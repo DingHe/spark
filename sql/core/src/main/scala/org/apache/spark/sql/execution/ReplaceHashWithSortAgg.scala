@@ -52,6 +52,7 @@ import org.apache.spark.sql.internal.SQLConf
  * corresponding sort aggregate. Sort aggregate is faster in the sense that
  * it does not have hashing overhead of hash aggregate.
  */
+//将基于哈希的聚合（HashAggregateExec、ObjectHashAggregateExec）替换为基于排序的聚合（SortAggregateExec），以减少哈希操作的开销，提升执行效率
 object ReplaceHashWithSortAgg extends Rule[SparkPlan] {
   def apply(plan: SparkPlan): SparkPlan = {
     if (!conf.getConf(SQLConf.REPLACE_HASH_WITH_SORT_AGG_ENABLED)) {

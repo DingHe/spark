@@ -65,26 +65,26 @@ import org.apache.spark.util.{DependencyUtils, Utils}
  * @param createClone Function used to create clones of the session state.
  */
 private[sql] class SessionState(
-    sharedState: SharedState,
+    sharedState: SharedState,      //表示在多个会话间共享的状态，通常包括全局视图管理器、外部目录等。这个属性有助于多个 SparkSession 实例之间共享一些公共资源
     val conf: SQLConf,
-    val experimentalMethods: ExperimentalMethods,
-    val functionRegistry: FunctionRegistry,
-    val tableFunctionRegistry: TableFunctionRegistry,
-    val udfRegistration: UDFRegistration,
-    val udtfRegistration: UDTFRegistration,
-    catalogBuilder: () => SessionCatalog,
-    val sqlParser: ParserInterface,
-    analyzerBuilder: () => Analyzer,
-    optimizerBuilder: () => Optimizer,
-    val planner: SparkPlanner,
-    val streamingQueryManagerBuilder: () => StreamingQueryManager,
+    val experimentalMethods: ExperimentalMethods,  //提供了一些接口，用于用户自定义查询规划策略和优化器
+    val functionRegistry: FunctionRegistry,    //内部函数注册表，用于管理用户注册的函数
+    val tableFunctionRegistry: TableFunctionRegistry,   //用于注册用户定义的表函数
+    val udfRegistration: UDFRegistration,   //用户自定义函数（UDF）的注册接口，允许用户注册自己的函数
+    val udtfRegistration: UDTFRegistration,  //用户自定义表函数（UDTF）的注册接口，类似于 udfRegistration，用于注册可以返回表的自定义函数
+    catalogBuilder: () => SessionCatalog, //创建一个内部目录（catalog）管理表和数据库的状态
+    val sqlParser: ParserInterface,  //SQL 解析器，用于从 SQL 文本中提取表达式、查询计划、表标识符等信息
+    analyzerBuilder: () => Analyzer,  //创建用于解析未解析的属性和关系的逻辑查询分析器
+    optimizerBuilder: () => Optimizer,  //创建用于优化逻辑查询计划的优化器
+    val planner: SparkPlanner,   //将优化后的逻辑计划转换为物理计划
+    val streamingQueryManagerBuilder: () => StreamingQueryManager,  //创建流式查询管理器，用于启动和停止流式查询
     val listenerManager: ExecutionListenerManager,
-    resourceLoaderBuilder: () => SessionResourceLoader,
-    createQueryExecution: (LogicalPlan, CommandExecutionMode.Value) => QueryExecution,
+    resourceLoaderBuilder: () => SessionResourceLoader,  //创建一个共享的资源加载器，用于加载 JAR 文件、外部文件等
+    createQueryExecution: (LogicalPlan, CommandExecutionMode.Value) => QueryExecution,  //用于创建一个 QueryExecution 对象，用于执行逻辑查询计划
     createClone: (SparkSession, SessionState) => SessionState,
-    val columnarRules: Seq[ColumnarRule],
-    val adaptiveRulesHolder: AdaptiveRulesHolder,
-    val planNormalizationRules: Seq[Rule[LogicalPlan]]) {
+    val columnarRules: Seq[ColumnarRule],  //列式处理的规则序列，用于优化列式存储格式的执行
+    val adaptiveRulesHolder: AdaptiveRulesHolder, //保存自适应查询执行的规则，可能用于在执行时动态调整查询执行计划
+    val planNormalizationRules: Seq[Rule[LogicalPlan]]) { //查询计划标准化的规则，用于将查询计划转换为统一的标准形式
 
   // The following fields are lazy to avoid creating the Hive client when creating SessionState.
   lazy val catalog: SessionCatalog = catalogBuilder()
@@ -123,11 +123,11 @@ private[sql] class SessionState(
   // ------------------------------------------------------
   //  Helper methods, partially leftover from pre-2.0 days
   // ------------------------------------------------------
-
+  //创建QueryExecution对象
   def executePlan(
       plan: LogicalPlan,
       mode: CommandExecutionMode.Value = CommandExecutionMode.ALL): QueryExecution =
-    createQueryExecution(plan, mode)
+    createQueryExecution(plan, mode)   //createQueryExecution实际在BaseSessionStateBuilder里面构建，就是直接new
 }
 
 private[sql] object SessionState {

@@ -63,12 +63,15 @@ object ExprId {
 /**
  * An [[Expression]] that is named.
  */
+//表达式（Expression）是计算结果的基本单元，而 NamedExpression 则是那些有名字的表达式，通常用于表示带有别名的列或字段
 trait NamedExpression extends Expression {
 
   /** We should never fold named expressions in order to not remove the alias. */
+    //表示该表达式是否是可以折叠的（即是否可以在查询规划阶段计算出常量值）
   override def foldable: Boolean = false
-
+  //返回表达式的名称，通常用于获取该表达式的别名
   def name: String
+  //表达式的唯一标识符 ExprId。每个表达式都有一个唯一的 ExprId，用于标识不同的表达式
   def exprId: ExprId
 
   /**
@@ -76,6 +79,7 @@ trait NamedExpression extends Expression {
    * contains `dots`, it is quoted to avoid confusion.  Given that there can be multiple qualifiers,
    * it is possible that there are other possible way to refer to this attribute.
    */
+    //返回该表达式的完全限定名（fully qualified name），它由多个部分组成，通常用于唯一标识表中的列
   def qualifiedName: String = (qualifier :+ name).map(quoteIfNeeded).mkString(".")
 
   /**
@@ -92,14 +96,17 @@ trait NamedExpression extends Expression {
    * 3. Seq with 2 elements: database name and table name
    * 4. Seq with 3 elements: catalog name, database name and table name
    */
+  //表示表达式的可选限定符（qualifier）。限定符通常用于指明表达式所属的表或数据库
   def qualifier: Seq[String]
-
+  //返回该 NamedExpression 对应的 Attribute 对象。Attribute 是 Spark SQL 中的一个类型，表示查询计划中的具体列
   def toAttribute: Attribute
 
   /** Returns the metadata when an expression is a reference to another expression with metadata. */
+    //返回与该表达式相关的元数据（Metadata）。如果该表达式是对另一个表达式的引用，并且带有元数据，则可以通过此方法返回相关的元数据
   def metadata: Metadata = Metadata.empty
 
   /** Returns a copy of this expression with a new `exprId`. */
+  //返回该表达式的一个副本，但具有一个新的 exprId。这是在复制表达式时更新 exprId 的方法
   def newInstance(): NamedExpression
 }
 
@@ -142,9 +149,11 @@ abstract class Attribute extends LeafExpression with NamedExpression with NullIn
  * @param nonInheritableMetadataKeys Keys of metadata entries that are supposed to be removed when
  *                                   inheriting the metadata from the child.
  */
+//child：表示正在进行的计算或表达式，即 Alias 所包装的表达式
+//name：表示给计算结果分配的名字，即 SQL 表达式中的别名。在 SQL 中就是 AS a 后面的 a
 case class Alias(child: Expression, name: String)(
     val exprId: ExprId = NamedExpression.newExprId,
-    val qualifier: Seq[String] = Seq.empty,
+    val qualifier: Seq[String] = Seq.empty,  //用于完全限定该属性的引用
     val explicitMetadata: Option[Metadata] = None,
     val nonInheritableMetadataKeys: Seq[String] = Seq.empty)
   extends UnaryExpression with NamedExpression {
@@ -152,9 +161,10 @@ case class Alias(child: Expression, name: String)(
   final override val nodePatterns: Seq[TreePattern] = Seq(ALIAS)
 
   // Alias(Generator, xx) need to be transformed into Generate(generator, ...)
+  //表示该别名是否已经解析。只有当所有输入表达式都已解析且数据类型检查通过时，resolved 才为 true
   override lazy val resolved =
     childrenResolved && checkInputDataTypes().isSuccess && !child.isInstanceOf[Generator]
-
+  //计算并返回 child 表达式的值
   override def eval(input: InternalRow): Any = child.eval(input)
 
   /** Just a simple passthrough for code generation. */
@@ -163,8 +173,9 @@ case class Alias(child: Expression, name: String)(
     throw new IllegalStateException("Alias.doGenCode should not be called.")
   }
 
-  override def dataType: DataType = child.dataType
+  override def dataType: DataType = child.dataType  //返回 child 表达式的类型
   override def nullable: Boolean = child.nullable
+  //返回该别名的元数据。如果显式的元数据为空，则根据 child 的元数据生成。还会根据 nonInheritableMetadataKeys 删除某些元数据
   override def metadata: Metadata = {
     explicitMetadata.getOrElse {
       child match {
@@ -174,7 +185,7 @@ case class Alias(child: Expression, name: String)(
       }
     }
   }
-
+  //返回一个新的 Alias 实例，使用新的名称
   def withName(newName: String): NamedExpression = {
     Alias(child, newName)(
       exprId = exprId,
@@ -182,13 +193,13 @@ case class Alias(child: Expression, name: String)(
       explicitMetadata = explicitMetadata,
       nonInheritableMetadataKeys = nonInheritableMetadataKeys)
   }
-
+  //返回一个新的 Alias 实例，名称保持不变，但可能会使用新的元数据等
   def newInstance(): NamedExpression =
     Alias(child, name)(
       qualifier = qualifier,
       explicitMetadata = explicitMetadata,
       nonInheritableMetadataKeys = nonInheritableMetadataKeys)
-
+  //将 Alias 转换为 Attribute。如果已解析，它会返回一个 AttributeReference，否则返回 UnresolvedAttribute，表示未解析的属性
   override def toAttribute: Attribute = {
     if (resolved) {
       AttributeReference(name, child.dataType, child.nullable, metadata)(exprId, qualifier)
@@ -196,14 +207,14 @@ case class Alias(child: Expression, name: String)(
       UnresolvedAttribute.quoted(name)
     }
   }
-
+  //用于添加与事件时间水印（EventTimeWatermark）相关的延迟信息（如果存在的话）
   /** Used to signal the column used to calculate an eventTime watermark (e.g. a#1-T{delayMs}) */
   private def delaySuffix = if (metadata.contains(EventTimeWatermark.delayKey)) {
     s"-T${metadata.getLong(EventTimeWatermark.delayKey)}ms"
   } else {
     ""
   }
-
+ //从元数据中删除不需要继承的项
   private def removeNonInheritableMetadata(metadata: Metadata): Metadata = {
     val builder = new MetadataBuilder().withMetadata(metadata)
     nonInheritableMetadataKeys.foreach(builder.remove)
@@ -234,7 +245,7 @@ case class Alias(child: Expression, name: String)(
       if (qualifier.nonEmpty) qualifier.map(quoteIfNeeded).mkString(".") + "." else ""
     s"${child.sql} AS $qualifierPrefix${quoteIfNeeded(name)}"
   }
-
+  //创建一个新的 Alias 实例，使用新的子表达式
   override protected def withNewChildInternal(newChild: Expression): Alias =
     copy(child = newChild)(exprId, qualifier, explicitMetadata, nonInheritableMetadataKeys)
 }
@@ -257,13 +268,16 @@ object AttributeReferenceTreeBits {
  *                  qualified way. Consider the examples tableName.name, subQueryAlias.name.
  *                  tableName and subQueryAlias are possible qualifiers.
  */
+// AttributeReference 用于标识查询中的列，尤其是涉及到引用已经计算或生成的字段时。
+// AttributeReference 是不可计算的（Unevaluable），
+// 它通常用于查询计划中的“属性”层面，表示数据表中的列或表达式中的字段
 case class AttributeReference(
-    name: String,
-    dataType: DataType,
+    name: String,  //标识该属性在查询中的名称
+    dataType: DataType,  //表示列的数据类型，如 IntegerType、StringType 等
     nullable: Boolean = true,
-    override val metadata: Metadata = Metadata.empty)(
-    val exprId: ExprId = NamedExpression.newExprId,
-    val qualifier: Seq[String] = Seq.empty[String])
+    override val metadata: Metadata = Metadata.empty)(  //通常包含关于属性的附加信息，例如描述、注释等
+    val exprId: ExprId = NamedExpression.newExprId,  //唯一标识符。ExprId 用于确保在查询计划中，具有相同 exprId 的 AttributeReference 被视为相同的属性引用
+    val qualifier: Seq[String] = Seq.empty[String])  //属性的限定符，表示该属性的完全限定名称
   extends Attribute with Unevaluable {
 
   override lazy val treePatternBits: BitSet = AttributeReferenceTreeBits.bits
@@ -271,6 +285,7 @@ case class AttributeReference(
   /**
    * Returns true iff the expression id is the same for both attributes.
    */
+    //判断当前的 AttributeReference 是否与另一个 AttributeReference 表示同一个属性，依据是它们的 exprId 是否相同
   def sameRef(other: AttributeReference): Boolean = this.exprId == other.exprId
 
   override def equals(other: Any): Boolean = other match {
@@ -295,17 +310,18 @@ case class AttributeReference(
     h = h * 37 + qualifier.hashCode()
     h
   }
-
+  //名称为 "none"，数据类型为当前属性的数据类型，exprId 保持不变
   override lazy val canonicalized: Expression = {
     AttributeReference("none", dataType)(exprId)
   }
-
+  //返回一个新的 AttributeReference 实例，保持原有的属性值
   override def newInstance(): AttributeReference =
     AttributeReference(name, dataType, nullable, metadata)(qualifier = qualifier)
 
   /**
    * Returns a copy of this [[AttributeReference]] with changed nullability.
    */
+    //返回一个新的 AttributeReference，该实例的 nullable 属性已更改为 newNullability
   override def withNullability(newNullability: Boolean): AttributeReference = {
     if (nullable == newNullability) {
       this
@@ -313,7 +329,7 @@ case class AttributeReference(
       AttributeReference(name, dataType, newNullability, metadata)(exprId, qualifier)
     }
   }
-
+  //返回一个新的 AttributeReference，该实例的 name 已更改为 newName
   override def withName(newName: String): AttributeReference = {
     if (name == newName) {
       this
@@ -325,6 +341,7 @@ case class AttributeReference(
   /**
    * Returns a copy of this [[AttributeReference]] with new qualifier.
    */
+    //返回一个新的 AttributeReference，该实例的 qualifier 已更改为 newQualifier
   override def withQualifier(newQualifier: Seq[String]): AttributeReference = {
     if (newQualifier == qualifier) {
       this
@@ -332,7 +349,7 @@ case class AttributeReference(
       AttributeReference(name, dataType, nullable, metadata)(exprId, newQualifier)
     }
   }
-
+  //返回一个新的 AttributeReference，该实例的 exprId 已更改为 newExprId
   override def withExprId(newExprId: ExprId): AttributeReference = {
     if (exprId == newExprId) {
       this
@@ -340,15 +357,15 @@ case class AttributeReference(
       AttributeReference(name, dataType, nullable, metadata)(newExprId, qualifier)
     }
   }
-
+  //返回一个新的 AttributeReference，该实例的 metadata 已更改为 newMetadata
   override def withMetadata(newMetadata: Metadata): AttributeReference = {
     AttributeReference(name, dataType, nullable, newMetadata)(exprId, qualifier)
   }
-
+  //返回一个新的 AttributeReference，该实例的 dataType 已更改为 newType
   override def withDataType(newType: DataType): AttributeReference = {
     AttributeReference(name, newType, nullable, metadata)(exprId, qualifier)
   }
-
+  //返回一个包含该 AttributeReference 对象中不包含在构造函数中的参数的序列
   override protected final def otherCopyArgs: Seq[AnyRef] = {
     exprId :: qualifier :: Nil
   }
@@ -367,7 +384,7 @@ case class AttributeReference(
   override def simpleString(maxFields: Int): String = {
     s"$name#${exprId.id}: ${dataType.simpleString(maxFields)}"
   }
-
+  //返回该 AttributeReference 对应的 SQL 字符串表示
   override def sql: String = {
     val qualifierPrefix =
       if (qualifier.nonEmpty) qualifier.map(quoteIfNeeded).mkString(".") + "." else ""
@@ -444,10 +461,14 @@ case class OuterReference(e: NamedExpression)
  * @param a the attribute of referenced lateral column alias. Used to match alias when unwrapping
  *          and resolving lateral column aliases and rewriting the query plan.
  */
+//用于表示“横向列别名引用”（lateral column alias reference）的类，它在 SQL 查询的分析过程中用于暂时保存被解析为列别名的表达式
 case class LateralColumnAliasReference(ne: NamedExpression, nameParts: Seq[String], a: Attribute)
   extends LeafExpression with NamedExpression with Unevaluable {
+  //ne 表示一个名为“列别名”的表达式，可能是一个 UnresolvedAttribute（未解析的属性）
+  //nameParts 存储原始 UnresolvedAttribute 的名称部分。当横向列别名引用无法解析时，可以通过 nameParts 恢复为 UnresolvedAttribute
+  // a 代表横向列别名引用的属性
   assert(ne.resolved || ne.isInstanceOf[UnresolvedAttribute])
-  override def name: String = ne.name
+  override def name: String = ne.name        //该列别名引用的名称
   override def exprId: ExprId = ne.exprId
   override def qualifier: Seq[String] = ne.qualifier
   override def toAttribute: Attribute = ne.toAttribute

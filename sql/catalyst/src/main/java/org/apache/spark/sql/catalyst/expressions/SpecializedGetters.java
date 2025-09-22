@@ -24,7 +24,7 @@ import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.catalyst.util.MapData;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
-
+//主要是一些数据获取的方法
 public interface SpecializedGetters {
 
   boolean isNullAt(int ordinal);

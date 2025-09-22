@@ -43,9 +43,11 @@ import org.apache.spark.util.Utils
 /**
  * An interface for those physical operators that support codegen.
  */
+//用于支持生成代码的物理执行计划节点
 trait CodegenSupport extends SparkPlan {
 
   /** Prefix used in the current operator's variable names. */
+  //该属性根据执行计划节点的类型返回不同的变量名前缀。用于生成代码时，帮助区分不同的操作符或执行计划节点
   private def variablePrefix: String = this match {
     case _: HashAggregateExec => "hashAgg"
     case _: SortAggregateExec => "sortAgg"
@@ -57,7 +59,7 @@ trait CodegenSupport extends SparkPlan {
     case _: DataSourceScanExec => "scan"
     case _: InMemoryTableScanExec => "memoryScan"
     case _: WholeStageCodegenExec => "wholestagecodegen"
-    case _ => nodeName.toLowerCase(Locale.ROOT)
+    case _ => nodeName.toLowerCase(Locale.ROOT)  //默认的实现为simpleClassName.replaceAll("Exec$", "")
   }
 
   /**
@@ -65,6 +67,7 @@ trait CodegenSupport extends SparkPlan {
    *
    * @return name of the variable representing the metric
    */
+    //生成度量相关的代码，并把度量项注册到代码上下文中
   def metricTerm(ctx: CodegenContext, name: String): String = {
     ctx.addReferenceObj(name, longMetric(name))
   }
@@ -72,11 +75,13 @@ trait CodegenSupport extends SparkPlan {
   /**
    * Whether this SparkPlan supports whole stage codegen or not.
    */
+    //表明当前 SparkPlan 是否支持代码生成
   def supportCodegen: Boolean = true
 
   /**
    * Which SparkPlan is calling produce() of this one. It's itself for the first SparkPlan.
    */
+    //在代码生成时，父节点决定当前节点的生成逻辑，确保代码流的正确性
   protected var parent: CodegenSupport = null
 
   /**
@@ -84,14 +89,16 @@ trait CodegenSupport extends SparkPlan {
    *
    * @note Right now we support up to two RDDs
    */
+  //返回所有的输入 RDD，生成输入数据
   def inputRDDs(): Seq[RDD[InternalRow]]
 
   /**
    * Returns Java source code to process the rows from input RDD.
    */
+    //生成 Java 源代码，用来处理输入 RDD 中的每一行数据。它调用 doProduce() 方法来实现实际的代码生成逻辑
   final def produce(ctx: CodegenContext, parent: CodegenSupport): String = executeQuery {
-    this.parent = parent
-    ctx.freshNamePrefix = variablePrefix
+    this.parent = parent  //记录父节点
+    ctx.freshNamePrefix = variablePrefix  //变量前缀
     s"""
        |${ctx.registerComment(s"PRODUCE: ${this.simpleString(conf.maxToStringFields)}")}
        |${doProduce(ctx)}
@@ -116,10 +123,13 @@ trait CodegenSupport extends SparkPlan {
    *      if (shouldStop()) return;
    *   }
    */
+  //子类需要实现它来生成 Java 代码。通常这个方法会生成操作框架，比如聚合操作会生成一个哈希表的创建和处理逻辑
   protected def doProduce(ctx: CodegenContext): String
-
+  //根据需要的列生成 UnsafeRow，并为每个列创建相应的代码表示
   private def prepareRowVar(ctx: CodegenContext, row: String, colVars: Seq[ExprCode]): ExprCode = {
-    if (row != null) {
+    //row: String：表示输入的 UnsafeRow 变量名，可能为空（null）
+    //colVars: Seq[ExprCode]：列变量的序列，这些列可能是表达式或其他数据的中间表示
+    if (row != null) { //如果传入的 row 变量不为空（即已有一个 UnsafeRow 变量），则直接返回该变量
       ExprCode.forNonNullValue(JavaCode.variable(row, classOf[UnsafeRow]))
     } else {
       if (colVars.nonEmpty) {
@@ -148,35 +158,39 @@ trait CodegenSupport extends SparkPlan {
    *
    * Note that `outputVars` and `row` can't both be null.
    */
+    //作用是处理当前 SparkPlan 生成的列或行数据，并将这些数据传递给父级 SparkPlan 的 doConsume 方法。
+  // 它主要用于生成代码，在代码生成过程中将计算结果传递给上游的处理逻辑，outputVars为上一个节点的输出变量    row为上一个节点的行遍历变量
   final def consume(ctx: CodegenContext, outputVars: Seq[ExprCode], row: String = null): String = {
+    // outputVars 输出变量的序列，每个变量对应一列的生成代码
+    // row: String：表示一个 UnsafeRow 的变量名，默认值为 null，表示没有显式提供行数据
     val inputVarsCandidate =
-      if (outputVars != null) {
+      if (outputVars != null) {  //不为空，代表上一个节点直接返回来输出变量
         assert(outputVars.length == output.length)
         // outputVars will be used to generate the code for UnsafeRow, so we should copy them
         outputVars.map(_.copy())
-      } else {
+      } else { //上一个节点没有输出变量，则按行来遍历代码
         assert(row != null, "outputVars and row cannot both be null.")
         ctx.currentVars = null
-        ctx.INPUT_ROW = row
+        ctx.INPUT_ROW = row   //row为当前行的输入变量
         output.zipWithIndex.map { case (attr, i) =>
-          BoundReference(i, attr.dataType, attr.nullable).genCode(ctx)
+          BoundReference(i, attr.dataType, attr.nullable).genCode(ctx)  //生成输出的代码
         }
       }
-
+    //row按位置取值后变成输入变量，Stream 中的元素不是立即计算的，而是在需要时才计算
     val inputVars = inputVarsCandidate match {
-      case stream: Stream[ExprCode] => stream.force
+      case stream: Stream[ExprCode] => stream.force //orce 方法用于强制求值整个流中的所有元素，生成一个完全求值的流（即所有惰性计算都会被执行）
       case other => other
     }
-
+    //用来生成一个 UnsafeRow 的变量，表示当前操作的输入行，如果row不为空，变量名跟row一样
     val rowVar = prepareRowVar(ctx, row, outputVars)
 
     // Set up the `currentVars` in the codegen context, as we generate the code of `inputVars`
     // before calling `parent.doConsume`. We can't set up `INPUT_ROW`, because parent needs to
     // generate code of `rowVar` manually.
-    ctx.currentVars = inputVars
+    ctx.currentVars = inputVars   //当前操作列引用变量变成currentVars
     ctx.INPUT_ROW = null
-    ctx.freshNamePrefix = parent.variablePrefix
-    val evaluated = evaluateRequiredVariables(output, inputVars, parent.usedInputs)
+    ctx.freshNamePrefix = parent.variablePrefix  //获取父节点的变量前缀
+    val evaluated = evaluateRequiredVariables(output, inputVars, parent.usedInputs) //计算父节点引用的输入变量的代码
 
     // Under certain conditions, we can put the logic to consume the rows of this operator into
     // another function. So we can prevent a generated function too long to be optimized by JIT.
@@ -188,9 +202,9 @@ trait CodegenSupport extends SparkPlan {
     //    declaration.
     val confEnabled = conf.wholeStageSplitConsumeFuncByOperator
     val requireAllOutput = output.forall(parent.usedInputs.contains(_))
-    val paramLength = CodeGenerator.calculateParamLength(output) + (if (row != null) 1 else 0)
+    val paramLength = CodeGenerator.calculateParamLength(output) + (if (row != null) 1 else 0)  //计算每个物理节点代码生成的方法需要多少个参数
     val consumeFunc = if (confEnabled && requireAllOutput
-        && CodeGenerator.isValidParamLength(paramLength)) {
+        && CodeGenerator.isValidParamLength(paramLength)) {  //如果父节点有引用本节点的输出，则生成函数
       constructDoConsumeFunction(ctx, inputVars, row)
     } else {
       parent.doConsume(ctx, inputVars, rowVar)
@@ -278,19 +292,19 @@ trait CodegenSupport extends SparkPlan {
     evaluate
   }
 
-  /**
+  /** 主要用于生成 计算所需属性（required attributes）的代码，并清除已生成的代码，避免重复计算
    * Returns source code to evaluate the variables for required attributes, and clear the code
    * of evaluated variables, to prevent them to be evaluated twice.
-   */
+   *///生成的计算代码，以字符串形式返回，最终会嵌入到 Codegen 的主逻辑中
   protected def evaluateRequiredVariables(
-      attributes: Seq[Attribute],
-      variables: Seq[ExprCode],
-      required: AttributeSet): String = {
+      attributes: Seq[Attribute], // 属性列表，对应当前节点输出的字段
+      variables: Seq[ExprCode], // 生成的表达式代码，表示各个属性的计算代码
+      required: AttributeSet): String = {// 需要计算的属性集合
     val evaluateVars = new StringBuilder
     variables.zipWithIndex.foreach { case (ev, i) =>
-      if (ev.code.nonEmpty && required.contains(attributes(i))) {
+      if (ev.code.nonEmpty && required.contains(attributes(i))) { //属性是必需的：required.contains(attributes(i))
         evaluateVars.append(ev.code.toString + "\n")
-        ev.code = EmptyBlock
+        ev.code = EmptyBlock //清空已生成的代码，避免重复计算
       }
     }
     evaluateVars.toString()
@@ -379,7 +393,7 @@ trait CodegenSupport extends SparkPlan {
     "// shouldStop check is eliminated"
   }
 
-  /**
+  /**  主要用于 生成检查是否达到 LIMIT 条件的逻辑,每个 LIMIT 对应一个检查条件，形如 "count < limit"
    * A sequence of checks which evaluate to true if the downstream Limit operators have not received
    * enough records and reached the limit. If current node is a data producing node, it can leverage
    * this information to stop producing data and complete the data flow earlier. Common data
@@ -388,17 +402,17 @@ trait CodegenSupport extends SparkPlan {
    */
   def limitNotReachedChecks: Seq[String] = parent.limitNotReachedChecks
 
-  /**
+  /** 因为只有叶子节点（如 Scan、LocalTableScan）直接输出数据，能实时追踪生成的行数 ， 中间节点（如 Filter、Project）处理的是来自子节点的数据，不能精确控制行数
    * Check if the node is supposed to produce limit not reached checks.
    */
-  protected def canCheckLimitNotReached: Boolean = children.isEmpty
+  protected def canCheckLimitNotReached: Boolean = children.isEmpty  //只有叶子节点可以检查输出行数是否达到限制
 
-  /**
+  /** final 表示子节点不能重写此类
    * A helper method to generate the data producing loop condition according to the
    * limit-not-reached checks.
    */
   final def limitNotReachedCond: String = {
-    if (!canCheckLimitNotReached) {
+    if (!canCheckLimitNotReached) { //只有叶子节点或阻塞节点（如 Sort、Aggregate）可以执行该检查，若不满足条件，则抛出异常或记录警告
       val errMsg = "Only leaf nodes and blocking nodes need to call 'limitNotReachedCond' " +
         "in its data producing loop."
       if (Utils.isTesting) {
@@ -441,27 +455,28 @@ trait BlockingOperatorWithCodegen extends CodegenSupport {
   override protected def canCheckLimitNotReached: Boolean = true
 }
 
-/**
+/**  用于生成代码以读取来自一个单一 RDD 的数据。它主要用于 Spark 的代码生成优化，特别是在执行计划的 WholeStageCodegen 中，通过内联生成字节码来提高性能。
  * Leaf codegen node reading from a single RDD.
  */
 trait InputRDDCodegen extends CodegenSupport {
 
-  def inputRDD: RDD[InternalRow]
+  def inputRDD: RDD[InternalRow]  //存储要处理的输入数据，后续操作会从这个 RDD 中读取每一行数据
 
   // If the input can be InternalRows, an UnsafeProjection needs to be created.
-  protected val createUnsafeProjection: Boolean
+  protected val createUnsafeProjection: Boolean  //指示是否需要创建一个 UnsafeProjection
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     inputRDD :: Nil
   }
-
+  //用于为InputAdapter生成输入代码
   override def doProduce(ctx: CodegenContext): String = {
     // Inline mutable state since an InputRDDCodegen is used once in a task for WholeStageCodegen
+    //在ctx中添加变量 scala.collection.Iterator input = inputs[0],返回input的变量名
     val input = ctx.addMutableState("scala.collection.Iterator", "input", v => s"$v = inputs[0];",
       forceInline = true)
     val row = ctx.freshName("row")
 
-    val outputVars = if (createUnsafeProjection) {
+    val outputVars = if (createUnsafeProjection) {  //是否需要把输入转为UnsafeProject
       // creating the vars will make the parent consume add an unsafe projection.
       ctx.INPUT_ROW = row
       ctx.currentVars = null
@@ -485,7 +500,7 @@ trait InputRDDCodegen extends CodegenSupport {
        |   ${consume(ctx, outputVars, if (createUnsafeProjection) null else row).trim}
        |   ${shouldStopCheckCode}
        | }
-     """.stripMargin
+     """.stripMargin  //如果createUnsafeProjection为true,意味着已经创建了输出变量outputVars，否则需要把row传入
   }
 }
 
@@ -495,6 +510,7 @@ trait InputRDDCodegen extends CodegenSupport {
  * This is the leaf node of a tree with WholeStageCodegen that is used to generate code
  * that consumes an RDD iterator of InternalRow.
  */
+//简单封装子节点child，原来不支持代码生成的节点，把执行结果传递给inputRDD，然后利用InputRDDCodegen支持代码生成
 case class InputAdapter(child: SparkPlan) extends UnaryExecNode with InputRDDCodegen {
 
   override def output: Seq[Attribute] = child.output
@@ -524,11 +540,11 @@ case class InputAdapter(child: SparkPlan) extends UnaryExecNode with InputRDDCod
   // `InputAdapter` can only generate code to process the rows from its child. If the child produces
   // columnar batches, there must be a `ColumnarToRowExec` above `InputAdapter` to handle it by
   // overriding `inputRDDs` and calling `InputAdapter#executeColumnar` directly.
-  override def inputRDD: RDD[InternalRow] = child.execute()
+  override def inputRDD: RDD[InternalRow] = child.execute()  //从子节点获取读取数据的RDD
 
   // This is a leaf node so the node can produce limit not reached checks.
   override protected def canCheckLimitNotReached: Boolean = true
-
+  //默认不用UnsafeProjection
   // InputAdapter does not need UnsafeProjection.
   protected val createUnsafeProjection: Boolean = false
 
@@ -624,25 +640,28 @@ object WholeStageCodegenExec {
  * `doCodeGen()` will create a `CodeGenContext`, which will hold a list of variables for input,
  * used to generated code for [[BoundReference]].
  */
+//通过将支持代码生成的查询子树编译成单一的 Java 函数来提高性能
+//child: SparkPlan 执行的是一个子查询，通常是某个操作的输入
+//codegenStageId: Int 唯一标识代码生成阶段的 ID，用于调试和跟踪生成的代码
 case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
     extends UnaryExecNode with CodegenSupport {
 
-  override def output: Seq[Attribute] = child.output
+  override def output: Seq[Attribute] = child.output  //获取该执行节点的输出列（属性），即它从 child 继承过来的输出
 
-  override def outputPartitioning: Partitioning = child.outputPartitioning
+  override def outputPartitioning: Partitioning = child.outputPartitioning  //获取输出的分区方式，这里同样继承自子节点
 
-  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+  override def outputOrdering: Seq[SortOrder] = child.outputOrdering  //获取输出数据的排序方式，继承自子节点
 
   // This is not strictly needed because the codegen transformation happens after the columnar
   // transformation but just for consistency
-  override def supportsColumnar: Boolean = child.supportsColumnar
-
+  override def supportsColumnar: Boolean = child.supportsColumnar  //表示当前节点是否支持列式存储（Columnar）
+  //属性创建了一个映射，其中包含了一个计时器指标，用来记录代码生成和执行阶段的时间
   override lazy val metrics = Map(
     "pipelineTime" -> SQLMetrics.createTimingMetric(sparkContext,
       WholeStageCodegenExec.PIPELINE_DURATION_METRIC))
-
+  //获取节点的名称，格式为 WholeStageCodegen (codegenStageId)，便于日志和调试时查看
   override def nodeName: String = s"WholeStageCodegen (${codegenStageId})"
-
+  //生成代码生成的 Java 类的名称
   def generatedClassName(): String = if (conf.wholeStageUseIdInClassName) {
     s"GeneratedIteratorForCodegenStage$codegenStageId"
   } else {
@@ -651,13 +670,13 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
 
   /**
    * Generates code for this subtree.
-   *
+   * 负责生成整个执行计划子树的代码。该方法通过调用子节点的代码生成接口，生成计算的 Java 代码并进行一些必要的初始化操作，最终返回生成的代码和代码生成的上下文
    * @return the tuple of the codegen context and the actual generated source.
    */
   def doCodeGen(): (CodegenContext, CodeAndComment) = {
     val startTime = System.nanoTime()
     val ctx = new CodegenContext
-    val code = child.asInstanceOf[CodegenSupport].produce(ctx, this)
+    val code = child.asInstanceOf[CodegenSupport].produce(ctx, this) //产生子节点的代码
 
     // main next function.
     ctx.addNewFunction("processNext",
@@ -667,7 +686,7 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
         }
        """, inlineToOuterClass = true)
 
-    val className = generatedClassName()
+    val className = generatedClassName() //生成当前代码生成类的类名
 
     val source = s"""
       public Object generate(Object[] references) {
@@ -712,7 +731,7 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
     logDebug(s"\n${CodeFormatter.format(cleanedSource)}")
     (ctx, cleanedSource)
   }
-
+  //用于执行列式存储的数据（Columnar），目前 Spark 对列式输出的代码生成不完全支持，因此这个方法通常会回退到解释执行路径，直接调用子节点的 executeColumnar() 方法
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     // Code generation is not currently supported for columnar output, so just fall back to
     // the interpreted path
@@ -720,9 +739,9 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
   }
 
   override def doExecute(): RDD[InternalRow] = {
-    val (ctx, cleanedSource) = doCodeGen()
+    val (ctx, cleanedSource) = doCodeGen()  //生成代码
     // try to compile and fallback if it failed
-    val (_, compiledCodeStats) = try {
+    val (_, compiledCodeStats) = try {   //尝试编译生成的代码
       CodeGenerator.compile(cleanedSource)
     } catch {
       case NonFatal(_) if !Utils.isTesting && conf.codegenFallback =>
@@ -730,7 +749,7 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
         logWarning(s"Whole-stage codegen disabled for plan (id=$codegenStageId):\n $treeString")
         return child.execute()
     }
-
+    //如果编译后的方法过大（超过了 conf.hugeMethodLimit 的配置），则会禁用代码生成，并回退到原始执行路径（child.execute()）
     // Check if compiled code has a too large function
     if (compiledCodeStats.maxMethodCodeSize > conf.hugeMethodLimit) {
       logInfo(s"Found too long generated codes and JIT optimization might not work: " +
@@ -740,19 +759,19 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
         s"`${SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.key}`:\n$treeString")
       return child.execute()
     }
-
+    //获取所有生成代码中使用的引用（即变量或常量），并将其转换为数组形式，以便后续使用
     val references = ctx.references.toArray
-
+    //记录了代码生成后执行阶段的时间，用于性能监控
     val durationMs = longMetric("pipelineTime")
 
     // Even though rdds is an RDD[InternalRow] it may actually be an RDD[ColumnarBatch] with
     // type erasure hiding that. This allows for the input to a code gen stage to be columnar,
     // but the output must be rows.
-    val rdds = child.asInstanceOf[CodegenSupport].inputRDDs()
-    assert(rdds.size <= 2, "Up to two input RDDs can be supported")
+    val rdds = child.asInstanceOf[CodegenSupport].inputRDDs()  //获取子节点输入的RDD，转换节点不断调用子节点的inputRDDs,直到数据源节点才有RDD
+    assert(rdds.size <= 2, "Up to two input RDDs can be supported")  //支持最多两个输入 RDD（这限制了在代码生成过程中可以并行处理的数据源数量
     val evaluatorFactory = new WholeStageCodegenEvaluatorFactory(
-      cleanedSource, durationMs, references)
-    if (rdds.length == 1) {
+      cleanedSource, durationMs, references)  //生成处理每个分区的代码
+    if (rdds.length == 1) {  //按照生成的分区代码处理RDD的逻辑
       if (conf.usePartitionEvaluator) {
         rdds.head.mapPartitionsWithEvaluator(evaluatorFactory)
       } else {
@@ -777,7 +796,7 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
       }
     }
   }
-
+  //输入 RDD 的获取是通过代码生成的，不直接通过此方法
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     throw new UnsupportedOperationException
   }
@@ -785,7 +804,7 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
   override def doProduce(ctx: CodegenContext): String = {
     throw new UnsupportedOperationException
   }
-
+  //生成代码，用于消费输入的数据行
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
     val doCopy = if (needCopyResult) {
       ".copy()"
@@ -871,30 +890,33 @@ case class WholeStageCodegenExec(child: SparkPlan)(val codegenStageId: Int)
  * is created, e.g. for special fallback handling when an existing WholeStageCodegenExec
  * failed to generate/compile code.
  */
+//作用是将支持代码生成（codegen）的查询执行计划（SparkPlan）进行合并，形成一个包含代码生成的整体执行节点（WholeStageCodegenExec）。
+//这个优化的目标是通过代码生成来提高执行效率，减少运行时的解析和计算开销
+//codegenStageCounter 是一个 AtomicInteger，用来生成代码生成阶段的唯一标识符（ID），每次调用时会自增，用于区分不同的代码生成阶段
 case class CollapseCodegenStages(
     codegenStageCounter: AtomicInteger = new AtomicInteger(0))
   extends Rule[SparkPlan] {
-
+  //检查一个表达式是否支持代码生成。支持代码生成的表达式包括叶子表达式（LeafExpression）以及其他非 CodegenFallback 类型的表达式
   private def supportCodegen(e: Expression): Boolean = e match {
     case e: LeafExpression => true
     // CodegenFallback requires the input to be an InternalRow
-    case e: CodegenFallback => false
+    case e: CodegenFallback => false //不支持代码生成的表达式类型
     case _ => true
   }
-
+  //检查一个 SparkPlan 是否支持代码生成
   private def supportCodegen(plan: SparkPlan): Boolean = plan match {
     case plan: CodegenSupport if plan.supportCodegen =>
-      val willFallback = plan.expressions.exists(_.exists(e => !supportCodegen(e)))
+      val willFallback = plan.expressions.exists(_.exists(e => !supportCodegen(e)))  //如果该节点的表达式中存在不支持代码生成的子表达式，则不支持代码生成
       // the generated code will be huge if there are too many columns
       val hasTooManyOutputFields =
-        WholeStageCodegenExec.isTooManyFields(conf, plan.schema)
+        WholeStageCodegenExec.isTooManyFields(conf, plan.schema)  //如果输出或输入字段过多，则认为不适合进行代码生成
       val hasTooManyInputFields =
         plan.children.exists(p => WholeStageCodegenExec.isTooManyFields(conf, p.schema))
       !willFallback && !hasTooManyOutputFields && !hasTooManyInputFields
     case _ => false
   }
 
-  /**
+  /** 在不支持代码生成的计划节点上方插入一个 InputAdapter，将不支持代码生成的部分转换为支持代码生成的部分
    * Inserts an InputAdapter on top of those that do not support codegen.
    */
   private def insertInputAdapter(plan: SparkPlan): SparkPlan = {
@@ -914,28 +936,29 @@ case class CollapseCodegenStages(
     }
   }
 
-  /**
+  /** 支持代码生成的节点上方插入 WholeStageCodegenExec，将整个子树转换为使用代码生成的形式
    * Inserts a WholeStageCodegen on top of those that support codegen.
    */
   private def insertWholeStageCodegen(plan: SparkPlan): SparkPlan = {
     plan match {
       // For operators that will output domain object, do not insert WholeStageCodegen for it as
       // domain object can not be written into unsafe row.
+      //如果节点的输出字段是 ObjectType，则不进行代码生成，因为对象类型无法直接写入 UnsafeRow
       case plan if plan.output.length == 1 && plan.output.head.dataType.isInstanceOf[ObjectType] =>
         plan.withNewChildren(plan.children.map(insertWholeStageCodegen))
       case plan: LocalTableScanExec =>
         // Do not make LogicalTableScanExec the root of WholeStageCodegen
         // to support the fast driver-local collect/take paths.
-        plan
+        plan   //不支持代码生成
       case plan: CommandResultExec =>
         // Do not make CommandResultExec the root of WholeStageCodegen
         // to support the fast driver-local collect/take paths.
-        plan
+        plan   //不支持代码生成
       case plan: CodegenSupport if supportCodegen(plan) =>
         // The whole-stage-codegen framework is row-based. If a plan supports columnar execution,
         // it can't support whole-stage-codegen at the same time.
-        assert(!plan.supportsColumnar)
-        WholeStageCodegenExec(insertInputAdapter(plan))(codegenStageCounter.incrementAndGet())
+        assert(!plan.supportsColumnar)  //没有启用列式处理
+        WholeStageCodegenExec(insertInputAdapter(plan))(codegenStageCounter.incrementAndGet())  //将其包装在 WholeStageCodegenExec 中
       case other =>
         other.withNewChildren(other.children.map(insertWholeStageCodegen))
     }
@@ -943,7 +966,7 @@ case class CollapseCodegenStages(
 
   def apply(plan: SparkPlan): SparkPlan = {
     if (conf.wholeStageEnabled && CodegenObjectFactoryMode.withName(conf.codegenFactoryMode)
-      != CodegenObjectFactoryMode.NO_CODEGEN) {
+      != CodegenObjectFactoryMode.NO_CODEGEN) { //codegenFactoryMode的值为FALLBACK, CODEGEN_ONLY, NO_CODEGEN，默认为FALLBACK
       insertWholeStageCodegen(plan)
     } else {
       plan

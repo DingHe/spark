@@ -54,15 +54,16 @@ import org.apache.spark.util.NextIterator
  * @param fileSize The length of the input file (not the block), in bytes.
  * @param otherConstantMetadataColumnValues The values of any additional constant metadata columns.
  */
+//表示一个 文件块（或称为分区块），并包含了读取该文件块所需的各种信息。它可以视为一个逻辑单元，代表 Spark 任务处理中的一个文件分片
 case class PartitionedFile(
-    partitionValues: InternalRow,
-    filePath: SparkPath,
-    start: Long,
-    length: Long,
-    @transient locations: Array[String] = Array.empty,
-    modificationTime: Long = 0L,
-    fileSize: Long = 0L,
-    otherConstantMetadataColumnValues: Map[String, Any] = Map.empty) {
+    partitionValues: InternalRow, //分区列的值，这些值将被附加到每一行数据的开头
+    filePath: SparkPath, //文件的路径
+    start: Long, //文件块的起始位置
+    length: Long, //文件块的长度
+    @transient locations: Array[String] = Array.empty, //文件块所在的主机位置
+    modificationTime: Long = 0L, //文件的最后修改时间
+    fileSize: Long = 0L,  //文件的总大小（以字节为单位）
+    otherConstantMetadataColumnValues: Map[String, Any] = Map.empty) { //任何附加的常量元数据列的值
 
   def pathUri: URI = filePath.toUri
   def toPath: Path = filePath.toPath

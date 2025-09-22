@@ -52,10 +52,10 @@ import org.apache.spark.annotation.{Evolving, Since}
 @Evolving
 @Since("3.1.0")
 class ExecutorResourceRequest(
-    val resourceName: String,
-    val amount: Long,
-    val discoveryScript: String = "",
-    val vendor: String = "") extends Serializable {
+    val resourceName: String,   //指定资源的名称（例如 "gpu"、"memory"）
+    val amount: Long,           //指定请求的资源数量（例如，GPU 的数量或内存的大小）
+    val discoveryScript: String = "", //一个在执行器启动时运行的脚本，用于帮助发现可用的资源
+    val vendor: String = "") extends Serializable { //指定资源的供应商，某些集群管理器（如 Kubernetes）需要此字段来区分基于供应商的资源。
 
   override def equals(obj: Any): Boolean = {
     obj match {

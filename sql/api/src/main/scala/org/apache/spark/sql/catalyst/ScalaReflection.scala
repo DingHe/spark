@@ -44,6 +44,7 @@ object ScalaReflection extends ScalaReflection {
   // Since we are creating a runtime mirror using the class loader of current thread,
   // we need to use def at here. So, every time we call mirror, it is using the
   // class loader of the current thread.
+  // 使用当前线程的类加载器创建运行时镜像
   override def mirror: universe.Mirror = {
     universe.runtimeMirror(Thread.currentThread().getContextClassLoader)
   }
@@ -63,13 +64,13 @@ object ScalaReflection extends ScalaReflection {
    */
   private[catalyst] def isSubtype(tpe1: `Type`, tpe2: `Type`): Boolean = {
     ScalaSubtypeLock.synchronized {
-      tpe1 <:< tpe2
+      tpe1 <:< tpe2 //<:<是Scala中的类型比较运算符，判断tpe1是否是tpe2的子类
     }
   }
-
+  //在 Scala 中，类型可能会被标注（例如带有注解），而这个方法的作用就是在遇到带有注解的类型时，返回该类型去除注解后的原始类型
   private def baseType(tpe: `Type`): `Type` = {
     tpe.dealias match {
-      case annotatedType: AnnotatedType => annotatedType.underlying
+      case annotatedType: AnnotatedType => annotatedType.underlying  //类型去除注解后的原始类型。AnnotatedType 是 Scala 反射中表示带有注解的类型的类型
       case other => other
     }
   }
@@ -81,6 +82,7 @@ object ScalaReflection extends ScalaReflection {
    * parameter names, however there are some weird scala reflection problems and this method is a
    * workaround to avoid getting parameter types.
    */
+  //返回指定类构造函数的参数名称
   def getConstructorParameterNames(cls: Class[_]): Seq[String] = {
     val m = runtimeMirror(cls.getClassLoader)
     val classSymbol = m.staticClass(cls.getName)
@@ -97,6 +99,7 @@ object ScalaReflection extends ScalaReflection {
    * we keep retrying until we exhaust our retry threshold. Default threshold is set to 5
    * to allow for a few level of cyclic references.
    */
+  //处理类的自引用类型
   @tailrec
   private def selfType(clsSymbol: ClassSymbol, tries: Int = 5): Type = {
     scala.util.Try {
@@ -115,7 +118,7 @@ object ScalaReflection extends ScalaReflection {
       case Failure(e) => throw e
     }
   }
-
+  //获取类型的擦除类型（即去除泛型的类型），用于与Java类进行互操作。对于AnyVal类型（Scala的基本值类型），避免擦除类型
   private def erasure(tpe: Type): Type = {
     // For user-defined AnyVal classes, we should not erasure it. Otherwise, it will
     // resolve to underlying type which wrapped by this class, e.g erasure
@@ -140,6 +143,7 @@ object ScalaReflection extends ScalaReflection {
    * or nested classes in package objects, it uses the dollar sign ($) to create
    * synthetic classes, emulating behaviour in Java bytecode.
    */
+    //获取类型的全类名，通过反射处理类型的“擦除”类型并获取类的名称
   def getClassNameFromType(tpe: `Type`): String = {
     erasure(tpe).dealias.typeSymbol.asClass.fullName
   }
@@ -147,12 +151,14 @@ object ScalaReflection extends ScalaReflection {
   /*
    * Retrieves the runtime class corresponding to the provided type.
    */
+  //根据类型获取对应的Class对象，用于类型与Java类之间的转换
   def getClassFromType(tpe: Type): Class[_] =
     mirror.runtimeClass(erasure(tpe).dealias.typeSymbol.asClass)
 
   case class Schema(dataType: DataType, nullable: Boolean)
 
   /** Returns a catalyst DataType and its nullability for the given Scala Type using reflection. */
+  //返回一个Schema对象，包含了对应类型的DataType（Spark中的数据类型）以及是否可以为null
   def schemaFor[T: TypeTag]: Schema = schemaFor(localTypeOf[T])
 
   /** Returns a catalyst DataType and its nullability for the given Scala Type using reflection. */
@@ -167,6 +173,7 @@ object ScalaReflection extends ScalaReflection {
    * matching constructor is returned if it exists. Otherwise, we check for additional compatible
    * constructors defined in the companion object as `apply` methods. Otherwise, it returns `None`.
    */
+  //查找一个类的构造函数，首先检查是否有匹配的构造函数，如果没有，则尝试通过伴生对象中的apply方法来构造对象
   def findConstructor[T](cls: Class[T], paramTypes: Seq[Class[_]]): Option[Seq[AnyRef] => T] = {
     Option(ConstructorUtils.getMatchingAccessibleConstructor(cls, paramTypes: _*)) match {
       case Some(c) => Some(x => c.newInstance(x: _*))
@@ -198,6 +205,7 @@ object ScalaReflection extends ScalaReflection {
   /**
    * Whether the fields of the given type is defined entirely by its constructor parameters.
    */
+  //判断给定类型（tpe）的字段是否完全由其构造函数的参数定义。这在处理数据类型映射时非常有用，特别是对于 Product 类型（例如 case class）和其他具有构造函数的类型
   def definedByConstructorParams(tpe: Type): Boolean = cleanUpReflectionObjects {
     tpe.dealias match {
       // `Option` is a `Product`, but we don't wanna treat `Option[Int]` as a struct type.
@@ -206,7 +214,7 @@ object ScalaReflection extends ScalaReflection {
         isSubtype(tpe.dealias, localTypeOf[DefinedByConstructorParams])
     }
   }
-
+  //将给定的字段名（fieldName）转换为有效的标识符（identifier）。在 Scala 中，字段名有时需要经过特殊处理，以便符合 Java 或其他语言中的标识符规则
   def encodeFieldNameToIdentifier(fieldName: String): String = {
     TermName(fieldName).encodedName.toString
   }
@@ -246,12 +254,14 @@ object ScalaReflection extends ScalaReflection {
     val walkedTypePath = WalkedTypePath().recordRoot(clsName)
     encoderFor(tpe, Set.empty, walkedTypePath, isRowEncoderSupported)
   }
-
+  //为不同类型生成相应的编码器，这些编码器用于在数据序列化和反序列化时将对象转换为某种标准格式（例如 JSON、二进制等）
   private def encoderFor(
-      tpe: `Type`,
-      seenTypeSet: Set[`Type`],
-      path: WalkedTypePath,
-      isRowEncoderSupported: Boolean): AgnosticEncoder[_] = {
+      tpe: `Type`, //这是需要生成编码器的类型
+      seenTypeSet: Set[`Type`], //用于跟踪已经处理过的类型，防止递归调用造成死循环
+      path: WalkedTypePath, //用于记录类型的层级关系。用于在处理复杂类型时跟踪上下文
+      isRowEncoderSupported: Boolean): AgnosticEncoder[_] = { //标识是否支持 Row 类型的编码器
+
+    //为集合类型（例如 Seq, Set, Array 等）生成编码器。它首先提取出集合元素的类型，然后递归调用 encoderFor 为元素类型生成编码器。根据反射，选择合适的类来创建该类型的编码器
     def createIterableEncoder(t: `Type`, fallbackClass: Class[_]): AgnosticEncoder[_] = {
       val TypeRef(_, _, Seq(elementType)) = t
       val encoder = encoderFor(
@@ -408,6 +418,16 @@ object ScalaReflection extends ScalaReflection {
  */
 trait ScalaReflection extends Logging {
   /** The universe we work in (runtime or macro) */
+  //允许程序在运行时对类型进行操作，并动态地处理类、类型、成员等
+  //Universe 是 Scala 反射 API 的主要入口，它分为两个重要的子类
+  //Mirror：表示一个反射镜像，它是 Universe 的子类，并负责在运行时进行类型的操作。
+  // 镜像可以分为 TypeMirror 和 ClassMirror，分别用于类型反射和类反射
+  //Type：表示类型信息，提供了各种方法来描述和比较类型
+  //TypeTag：反射 API 中非常重要的一个类型标记，它提供了运行时类型信息的访问方式。你可以通过 typeOf[T] 来获取类型标签
+  //ClassTag：用于支持与类型相关的操作，如数组类型的操作。它支持像 arrayTag[T] 这样的方法，提供了对数组类型的支持
+  //Tree：表示 Scala 中的一种抽象语法树（AST）。例如，ValDef 表示变量定义，DefDef 表示方法定义等。
+  // 树可以用来表示 Scala 源代码的结构
+  //Symbol：表示类、对象、方法等程序元素的符号。在反射中，Symbol 是进行符号解析的关键，通过它可以访问到类、方法、字段等的信息
   val universe: scala.reflect.api.Universe
 
   /** The mirror used to access types in the universe */
@@ -422,6 +442,8 @@ trait ScalaReflection extends Logging {
    *
    * @see https://github.com/scala/bug/issues/8302
    */
+    //接受一个懒加载的代码块 func（=> T），并在执行它之前和之后自动清理反射过程中创建的对象。
+  // 这是为了避免 Scala 反射中的内存泄漏问题
   def cleanUpReflectionObjects[T](func: => T): T = {
     universe.asInstanceOf[scala.reflect.runtime.JavaUniverse].undoLog.undo(func)
   }
@@ -436,16 +458,21 @@ trait ScalaReflection extends Logging {
    *
    * @see SPARK-5281
    */
+    //获取类型 T
   def localTypeOf[T: TypeTag]: `Type` = {
     val tag = implicitly[TypeTag[T]]
     tag.in(mirror).tpe.dealias
+    //使用 tag.in(mirror) 可以确保在当前 mirror（类加载器）中获取类型信息。dealias 是用于移除别名，得到实际的类型
   }
-
+  //判断某个类型 tpe 是否是一个值类（ValueClass）
+  //值类是Scala中的一种特殊类型，常见于 AnyVal 类型的子类（例如 Int、Double）
   private def isValueClass(tpe: Type): Boolean = {
     tpe.typeSymbol.isClass && tpe.typeSymbol.asClass.isDerivedValueClass
+    //isDerivedValueClass 是 isClass 的扩展，表示该类型是否是值类
   }
 
   /** Returns the name and type of the underlying parameter of value class `tpe`. */
+    // 获取值类的基础类型，即值类包装的类型。例如，Int 类型可以是一个值类，它的基础类型就是 Int
   private def getUnderlyingTypeOfValueClass(tpe: `Type`): Type = {
     getConstructorParameters(tpe).head._2
   }
@@ -456,6 +483,7 @@ trait ScalaReflection extends Logging {
    * Note that it only works for scala classes with primary constructor, and currently doesn't
    * support inner class.
    */
+    //返回类型 tpe 的构造函数的参数名和参数类型
   def getConstructorParameters(tpe: Type): Seq[(String, Type)] = {
     val dealiasedTpe = tpe.dealias
     val formalTypeArgs = dealiasedTpe.typeSymbol.asClass.typeParams
@@ -476,6 +504,8 @@ trait ScalaReflection extends Logging {
    * If our type is a Scala trait it may have a companion object that
    * only defines a constructor via `apply` method.
    */
+   //获取 Scala 类型 tpe 的伴生对象的构造函数（通常是 apply 方法）
+    //如果该类型没有伴生对象或没有 apply 方法，则抛出错误
   private def getCompanionConstructor(tpe: Type): Symbol = {
     def throwUnsupportedOperation = {
       throw ExecutionErrors.cannotFindConstructorForTypeError(tpe.toString)
@@ -488,7 +518,7 @@ trait ScalaReflection extends Logging {
       }
     }
   }
-
+  //方法获取给定类型 tpe 的构造函数参数。首先，它检查构造函数是否存在，如果不存在，则尝试获取伴生对象中的构造函数
   protected def constructParams(tpe: Type): Seq[Symbol] = {
     val constructorSymbol = tpe.member(termNames.CONSTRUCTOR) match {
       case NoSymbol => getCompanionConstructor(tpe)

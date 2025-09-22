@@ -434,19 +434,20 @@ object CreateStruct {
   since = "1.5.0",
   group = "struct_funcs")
 // scalastyle:on line.size.limit
+//用来创建一个包含字段名和值的结构体（Struct）的表达式类，每两个参数分别是字段名和字段值
 case class CreateNamedStruct(children: Seq[Expression]) extends Expression with NoThrow {
   lazy val (nameExprs, valExprs) = children.grouped(2).map {
     case Seq(name, value) => (name, value)
-  }.toList.unzip
+  }.toList.unzip   //nameExprs：一个包含所有字段名表达式的序列  valExprs：一个包含所有字段值表达式的序列
 
-  lazy val names = nameExprs.map(_.eval(EmptyRow))
+  lazy val names = nameExprs.map(_.eval(EmptyRow))  //eval(EmptyRow) 会返回字段名的实际值，并将其存储在 names 中
 
-  override def nullable: Boolean = false
+  override def nullable: Boolean = false  //表示生成的结构体的字段不可为空（false）
 
   override def foldable: Boolean = valExprs.forall(_.foldable)
 
   final override val nodePatterns: Seq[TreePattern] = Seq(CREATE_NAMED_STRUCT)
-
+  //表达式的返回数据类型
   override lazy val dataType: StructType = {
     val fields = names.zip(valExprs).map {
       case (name, expr) =>
@@ -460,12 +461,12 @@ case class CreateNamedStruct(children: Seq[Expression]) extends Expression with 
   }
 
   override def checkInputDataTypes(): TypeCheckResult = {
-    if (children.size % 2 != 0) {
+    if (children.size % 2 != 0) { //元素数量必须是偶数（每个字段名后面必须跟一个字段值）
       throw QueryCompilationErrors.wrongNumArgsError(
         toSQLId(prettyName), Seq("2n (n > 0)"), children.length
       )
     } else {
-      val invalidNames = nameExprs.filterNot(e => e.foldable && e.dataType == StringType)
+      val invalidNames = nameExprs.filterNot(e => e.foldable && e.dataType == StringType)  //字段名表达式必须是可折叠且类型为 StringType
       if (invalidNames.nonEmpty) {
         DataTypeMismatch(
           errorSubClass = "CREATE_NAMED_STRUCT_WITHOUT_FOLDABLE_STRING",
@@ -473,7 +474,7 @@ case class CreateNamedStruct(children: Seq[Expression]) extends Expression with 
             "inputExprs" -> invalidNames.map(toSQLExpr(_)).mkString("[", ", ", "]")
           )
         )
-      } else if (!names.contains(null)) {
+      } else if (!names.contains(null)) {  //如果字段名中包含 null 或其他非法数据，则返回错误
         TypeCheckResult.TypeCheckSuccess
       } else {
         DataTypeMismatch(
@@ -491,9 +492,9 @@ case class CreateNamedStruct(children: Seq[Expression]) extends Expression with 
    * StructType.
    */
   def flatten: Seq[NamedExpression] = valExprs.zip(names).map {
-    case (v, n) => Alias(v, n.toString)()
+    case (v, n) => Alias(v, n.toString)()  //个字段值表达式都被包装在 Alias 中，Alias 给字段值赋予一个名称
   }
-
+  //通过对每个字段值表达式执行 eval(input) 来获取字段值，并将结果封装成一个 InternalRow 对象，这个对象表示生成的结构体
   override def eval(input: InternalRow): Any = {
     InternalRow(valExprs.map(_.eval(input)): _*)
   }

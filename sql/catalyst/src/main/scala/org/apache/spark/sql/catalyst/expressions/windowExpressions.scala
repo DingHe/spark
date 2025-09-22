@@ -34,6 +34,7 @@ import org.apache.spark.sql.types._
  * The trait of the Window Specification (specified in the OVER clause or WINDOW clause) for
  * Window Functions.
  */
+//定义窗口函数的规范接口，指定如何对数据进行分区、排序以及窗口框架等操作
 sealed trait WindowSpec
 
 /**
@@ -43,10 +44,12 @@ sealed trait WindowSpec
  * @param orderSpec It defines the ordering of rows in a partition.
  * @param frameSpecification It defines the window frame in a partition.
  */
+//
 case class WindowSpecDefinition(
-    partitionSpec: Seq[Expression],
-    orderSpec: Seq[SortOrder],
-    frameSpecification: WindowFrame) extends Expression with WindowSpec with Unevaluable {
+    partitionSpec: Seq[Expression],  //输入行的分区方式。每个分区会在窗口函数计算时作为独立的组来处理
+    orderSpec: Seq[SortOrder],  //定义窗口中的行如何排序。排序是在每个分区内进行的
+    frameSpecification: WindowFrame) //定义窗口框架，描述在每个分区内，窗口函数如何处理数据的范围。窗口框架通常包括 ROWS 或 RANGE 等类型，指明窗口的起始和结束位置
+  extends Expression with WindowSpec with Unevaluable {
 
   override def children: Seq[Expression] = partitionSpec ++ orderSpec :+ frameSpecification
 
@@ -92,7 +95,7 @@ case class WindowSpecDefinition(
       case _ => TypeCheckSuccess
     }
   }
-
+  //生成对应的 SQL 表达式。它将 partitionSpec、orderSpec 和 frameSpecification 转换为 SQL 语句的一部分，最终构造一个完整的窗口规范的 SQL 字符串
   override def sql: String = {
     def toSql(exprs: Seq[Expression], prefix: String): Seq[String] = {
       Seq(exprs).filter(_.nonEmpty).map(_.map(_.sql).mkString(prefix, ", ", ""))
@@ -124,9 +127,10 @@ case class WindowSpecReference(name: String) extends WindowSpec
 /**
  * The trait used to represent the type of a Window Frame.
  */
+//表示窗口帧的类型。sealed 关键字意味着这个特质只能被当前文件中的类或对象所继承，防止外部扩展
 sealed trait FrameType {
-  def inputType: AbstractDataType
-  def sql: String
+  def inputType: AbstractDataType   //返回帧的输入类型。它定义了该帧类型所需的输入数据的类型
+  def sql: String                   //表示窗口帧的 SQL 表达形式。例如，对于 RowFrame，SQL 表达式可能是 "ROWS"
 }
 
 /**
@@ -135,9 +139,10 @@ sealed trait FrameType {
  * For example, `ROW BETWEEN 1 PRECEDING AND 1 FOLLOWING` represents a 3-row frame,
  * from the row that precedes the current row to the row that follows the current row.
  */
+//表示 行帧，它在一个分区内将每一行当作独立的单位处理，具体来说，它使用物理偏移来确定帧的范围
 case object RowFrame extends FrameType {
-  override def inputType: AbstractDataType = IntegerType
-  override def sql: String = "ROWS"
+  override def inputType: AbstractDataType = IntegerType  //表示在定义行帧时，使用整数类型作为偏移量
+  override def sql: String = "ROWS"     //RowFrame 对应的 SQL 表达式是 "ROWS"
 }
 
 /**
@@ -147,33 +152,38 @@ case object RowFrame extends FrameType {
  * For example, assuming the value of the current row's `ORDER BY` expression `expr` is `v`,
  * `RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING` represents a frame containing rows whose values
  * `expr` are in the range of [v-1, v+1].
- *
+ * 如果没有order by 语句，则包含所有的行
  * If `ORDER BY` clause is not defined, all rows in the partition are considered as peers
  * of the current row.
  */
+// 表示 范围帧，它将分区内的行视为具有相同 ORDER BY 排序值的“同行”集合。
+// 范围帧使用逻辑偏移来定义帧的范围，即与当前行的 ORDER BY 值相关的范围
 case object RangeFrame extends FrameType {
-  override def inputType: AbstractDataType = TypeCollection.NumericAndInterval
+  override def inputType: AbstractDataType = TypeCollection.NumericAndInterval  //表示范围帧的输入可以是数值型或时间间隔型的数据
   override def sql: String = "RANGE"
 }
 
 /**
  * The trait used to represent special boundaries used in a window frame.
  */
+//sealed trait，表示窗口帧中的特殊边界
 sealed trait SpecialFrameBoundary extends LeafExpression with Unevaluable {
-  override def dataType: DataType = NullType
-  override def nullable: Boolean = false
+  override def dataType: DataType = NullType  //这些边界本身没有具体的数据类型，因为它们只起到标识作用
+  override def nullable: Boolean = false   //所有的特殊边界都不可为空
 }
 
 /** UNBOUNDED boundary. */
+//表示窗口帧的 无界前 边界，即帧从分区的起始位置开始，不限制帧的前端
 case object UnboundedPreceding extends SpecialFrameBoundary {
   override def sql: String = "UNBOUNDED PRECEDING"
 }
-
+//表示窗口帧的 无界后 边界，即帧扩展到分区的末尾，不限制帧的后端。这个边界通常用于窗口函数中的 窗口帧结束位置，意味着窗口帧从当前行延伸至分区的最后一行
 case object UnboundedFollowing extends SpecialFrameBoundary {
   override def sql: String = "UNBOUNDED FOLLOWING"
 }
 
 /** CURRENT ROW boundary. */
+//表示窗口帧的 当前行 边界，意味着窗口帧从当前行开始或结束
 case object CurrentRow extends SpecialFrameBoundary {
   override def sql: String = "CURRENT ROW"
 }
@@ -183,30 +193,33 @@ case object CurrentRow extends SpecialFrameBoundary {
  */
 sealed trait WindowFrame extends Expression with Unevaluable {
   override def dataType: DataType = throw QueryCompilationErrors.dataTypeOperationUnsupportedError
-  override def nullable: Boolean = false
+  override def nullable: Boolean = false  //窗口帧不能返回 null
 }
 
 /** Used as a placeholder when a frame specification is not defined. */
+//表示一个 未指定的窗口帧
 case object UnspecifiedFrame extends WindowFrame with LeafLike[Expression]
 
 /**
  * A specified Window Frame. The val lower/upper can be either a foldable [[Expression]] or a
  * [[SpecialFrameBoundary]].
  */
+ //表示一个 指定的窗口帧，包含了具体的窗口范围
 case class SpecifiedWindowFrame(
-    frameType: FrameType,
-    lower: Expression,
+    frameType: FrameType,  //指定窗口帧的类型（如 RowFrame 或 RangeFrame），它表示如何定义窗口的边界（基于行或基于值）
+    lower: Expression,  //分别表示窗口帧的下边界和上边界，可以是 Expression 类型的表达式，或者是特殊的边界（如 UnboundedPreceding 或 UnboundedFollowing）。这些边界定义了窗口帧的范围
     upper: Expression)
   extends WindowFrame with BinaryLike[Expression] {
-
+  //分别代表窗口帧的下边界和上边界
   override def left: Expression = lower
   override def right: Expression = upper
-
+  //获取 lower 和 upper 中不属于特殊边界（如 UnboundedPreceding 或 UnboundedFollowing）的部分。用于提取实际的计算边界
   lazy val valueBoundary: Seq[Expression] =
     children.filterNot(_.isInstanceOf[SpecialFrameBoundary])
-
+  //用于检查窗口帧中上下边界表达式的数据类型是否合法
   override def checkInputDataTypes(): TypeCheckResult = {
     // Check lower value.
+    //检查 lower 边界的表达式数据类型是否合法
     val lowerCheck = checkBoundary(lower, "lower")
     if (lowerCheck.isFailure) {
       return lowerCheck
@@ -219,6 +232,7 @@ case class SpecifiedWindowFrame(
     }
 
     // Check combination (of expressions).
+    //是检查 lower 和 upper 边界表达式的组合是否有效
     (lower, upper) match {
       case (l: Expression, u: Expression) if !isValidFrameBoundary(l, u) =>
         DataTypeMismatch(
@@ -279,10 +293,12 @@ case class SpecifiedWindowFrame(
     case _: AtomicType => GreaterThan(l, r).eval().asInstanceOf[Boolean]
     case _ => false
   }
-
+  //验证窗口帧的边界表达式（b）是否合法
+  //b：代表窗口帧的边界，类型是 Expression，即窗口帧的上下边界可以是任意的 SQL 表达式
+  //location：表示当前正在检查的边界的位置（如 "lower" 或 "upper"），用于在错误消息中提供更多上下文信息
   private def checkBoundary(b: Expression, location: String): TypeCheckResult = b match {
-    case _: SpecialFrameBoundary => TypeCheckSuccess
-    case e: Expression if !e.foldable =>
+    case _: SpecialFrameBoundary => TypeCheckSuccess  //如果边界是一个特殊的边界，直接返回 TypeCheckSuccess，表示检查通过
+    case e: Expression if !e.foldable => //表达式 不可折叠（即无法在编译时计算出值，foldable 为 false），则返回一个 DataTypeMismatch 错误
       DataTypeMismatch(
         errorSubClass = "SPECIFIED_WINDOW_FRAME_WITHOUT_FOLDABLE",
         messageParameters = Map(
@@ -334,16 +350,18 @@ object WindowExpression {
     e.find(_.isInstanceOf[WindowExpression]).isDefined
   }
 }
-
+//Spark 中用于表示窗口函数表达式的类，通常用于 SQL 查询中窗口函数的计算
+//将窗口函数和窗口规范（WindowSpecDefinition）结合起来，形成完整的窗口表达式
 case class WindowExpression(
-    windowFunction: Expression,
-    windowSpec: WindowSpecDefinition) extends Expression with Unevaluable
+    windowFunction: Expression,//窗口函数本身的表达式。窗口函数是操作数据的函数，通常是聚合函数、排名函数、分析函数等。例如，ROW_NUMBER()、RANK()、SUM() 等
+    windowSpec: WindowSpecDefinition) //窗口规范，定义了如何对数据进行分区、排序以及如何确定窗口的范围
+  extends Expression with Unevaluable
   with BinaryLike[Expression] {
 
   override def left: Expression = windowFunction
   override def right: Expression = windowSpec
 
-  override def dataType: DataType = windowFunction.dataType
+  override def dataType: DataType = windowFunction.dataType //窗口函数的返回数据类型
   override def nullable: Boolean = windowFunction.nullable
 
   override def toString: String = s"$windowFunction $windowSpec"
@@ -359,6 +377,7 @@ case class WindowExpression(
 /**
  * A window function is a function that can only be evaluated in the context of a window operator.
  */
+//窗口函数
 trait WindowFunction extends Expression {
   /** Frame in which the window operator must be executed. */
   def frame: WindowFrame = UnspecifiedFrame
@@ -395,13 +414,15 @@ object WindowFunctionType {
     t.getOrElse(SQL)
   }
 }
-
+//定义了一个带有偏移量的窗口函数，通常用于像 LEAD 或 LAG 等窗口函数，它们允许访问当前行之前或之后的行数据
 trait OffsetWindowFunction extends WindowFunction {
   /**
    * Input expression to evaluate against a row which a number of rows below or above (depending on
    * the value and sign of the offset) the starting row (current row if isRelative=true, or the
    * first row of the window frame otherwise).
    */
+  //输入表达式，它表示对一个行进行评估的表达式。这个输入表达式的计算是基于当前行和由 offset 指定的偏移位置的行
+  //如果 isRelative=true，表示偏移是相对于当前行的；如果 isRelative=false，则表示偏移是相对于窗口帧的第一行
   val input: Expression
 
   /**
@@ -411,17 +432,24 @@ trait OffsetWindowFunction extends WindowFunction {
    * of the `offset` is from back to front. If it is zero, it means that the offset is ignored and
    * use current row.
    */
+  //表示当前行与目标行之间的偏移量。这个偏移量的值可以是正整数、负整数或零
+  //正整数：表示从前向后移动行
+  //负整数：表示从后向前移动行
+  //零：表示忽略偏移量，使用当前行的数据
   val offset: Expression
 
   /**
    * Default result value for the function when the `offset`th row does not exist.
    */
+  //当偏移行不存在时（例如，当前行之前没有足够的行数，或者当前行之后没有足够的行数），该表达式用于返回默认值。它定义了窗口函数在没有找到目标行时的行为
   val default: Expression
 
   /**
    * An optional specification that indicates the offset window function should skip null values in
    * the determination of which row to use.
    */
+  //指示窗口函数是否应跳过 null 值。它用于决定在计算偏移时是否忽略 null 值的行。
+  // 这个属性通常用于优化 LEAD、LAG 和 NthValue 函数的性能，避免对 null 值的行进行偏移
   val ignoreNulls: Boolean
 
   /**
@@ -429,6 +457,8 @@ trait OffsetWindowFunction extends WindowFunction {
    * by offset window functions in `WindowExecBase.windowFrameExpressionFactoryPairs`, as offset
    * window functions with the same offset and same window frame can be evaluated together.
    */
+    // 虚拟窗口帧，用于存储偏移信息。它的作用是为带有偏移量的窗口函数提供一个窗口帧
+    //将具有相同偏移量和相同窗口帧配置的偏移窗口函数分组处理。换句话说，具有相同偏移量的窗口函数可以一起计算
   lazy val fakeFrame = SpecifiedWindowFrame(RowFrame, offset, offset)
 }
 
@@ -438,6 +468,8 @@ trait OffsetWindowFunction extends WindowFunction {
  * within the partition. For instance: a FrameLessOffsetWindowFunction for value x with offset -2,
  * will get the value of x 2 rows back from the current row in the partition.
  */
+//无框架偏移窗口函数（frameless offset window function）。与常规窗口函数不同，它没有指定窗口框架，而是基于当前行的偏移量来计算结果
+//举例来说，如果偏移量为 -2，则函数返回的是当前行之前两行的数据
 sealed abstract class FrameLessOffsetWindowFunction
   extends OffsetWindowFunction with Unevaluable with ImplicitCastInputTypes {
 
@@ -453,7 +485,7 @@ sealed abstract class FrameLessOffsetWindowFunction
    */
 
   override def nullable: Boolean = default == null || default.nullable || input.nullable
-
+  //返回窗口框架，默认情况下是 fakeFrame。由于该函数是无框架的，因此使用了一个“假”的框架 (fakeFrame)，即不对数据进行分区和排序限制，仅通过偏移来计算结果
   override lazy val frame: WindowFrame = fakeFrame
 
   override def checkInputDataTypes(): TypeCheckResult = {
@@ -595,7 +627,7 @@ case class Lag(
       newFirst: Expression, newSecond: Expression, newThird: Expression): Lag =
     copy(input = newFirst, inputOffset = newSecond, default = newThird)
 }
-
+//聚合窗口函数
 abstract class AggregateWindowFunction extends DeclarativeAggregate with WindowFunction {
   self: Product =>
   override val frame: WindowFrame = SpecifiedWindowFrame(RowFrame, UnboundedPreceding, CurrentRow)

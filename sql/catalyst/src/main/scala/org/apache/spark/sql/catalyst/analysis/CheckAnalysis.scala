@@ -39,6 +39,8 @@ import org.apache.spark.util.Utils
 /**
  * Throws user facing errors when passed invalid queries that fail to analyze.
  */
+// 在 Spark SQL 查询分析阶段进行错误检查和验证的特征。
+// 它用于验证逻辑计划（LogicalPlan）的正确性，确保查询在语法和语义上都符合预期，且没有任何问题
 trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsBase {
 
   protected def isView(nameParts: Seq[String]): Boolean
@@ -49,25 +51,28 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
    * Override to provide additional checks for correct analysis.
    * These rules will be evaluated after our built-in check rules.
    */
+  //用于存储一些自定义的扩展检查规则。用户可以重写该属性，添加自己的额外检查逻辑。这些规则将在内建的检查规则之后执行
   val extendedCheckRules: Seq[LogicalPlan => Unit] = Nil
 
-  val DATA_TYPE_MISMATCH_ERROR = TreeNodeTag[Boolean]("dataTypeMismatchError")
-  val INVALID_FORMAT_ERROR = TreeNodeTag[Boolean]("invalidFormatError")
+  val DATA_TYPE_MISMATCH_ERROR = TreeNodeTag[Boolean]("dataTypeMismatchError") //数据类型不匹配错误
+  val INVALID_FORMAT_ERROR = TreeNodeTag[Boolean]("invalidFormatError")        //格式无效错误
 
   /**
    * Fails the analysis at the point where a specific tree node was parsed using a provided
    * error class and message parameters.
    */
+  //用于在分析过程中抛出 AnalysisException 异常
   def failAnalysis(errorClass: String, messageParameters: Map[String, String]): Nothing = {
     throw new AnalysisException(
       errorClass = errorClass,
       messageParameters = messageParameters)
   }
-
+  //检查给定的数据类型（DataType）是否包含 MapType
   protected def hasMapType(dt: DataType): Boolean = {
     dt.existsRecursively(_.isInstanceOf[MapType])
   }
-
+  //检查给定的逻辑计划中是否存在 MapType 数据类型的列。
+  // 它会在执行集合操作（如 Intersect、Except 或 Distinct）时检查是否包含 MapType 列，并返回相关的属性
   protected def mapColumnInSetOperation(plan: LogicalPlan): Option[Attribute] = plan match {
     case _: Intersect | _: Except | _: Distinct =>
       plan.output.find(a => hasMapType(a.dataType))
@@ -75,14 +80,18 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
       d.keys.find(a => hasMapType(a.dataType))
     case _ => None
   }
-
+  //检查类似 LIMIT 的表达式（通常是 SQL 中的 LIMIT 子句）是否有效，确保其符合特定的规则。如果表达式无效，它会抛出相应的异常
   private def checkLimitLikeClause(name: String, limitExpr: Expression): Unit = {
+    //name: 表达式的名称，通常是 SQL 查询中涉及的子句的名称（比如 LIMIT）
+    //limitExpr: 要检查的表达式（Expression 类型），通常是用于限制结果的值，比如 LIMIT 后面跟的数字
     limitExpr match {
+      //如果表达式是不可折叠的（即它依赖于外部因素，无法计算出固定结果），则认为它无效
       case e if !e.foldable => limitExpr.failAnalysis(
         errorClass = "INVALID_LIMIT_LIKE_EXPRESSION.IS_UNFOLDABLE",
         messageParameters = Map(
           "name" -> name,
           "expr" -> toSQLExpr(limitExpr)))
+      //检查表达式的数据类型是否为整数类型
       case e if e.dataType != IntegerType => limitExpr.failAnalysis(
         errorClass = "INVALID_LIMIT_LIKE_EXPRESSION.DATA_TYPE",
         messageParameters = Map(
@@ -91,12 +100,12 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
           "dataType" -> toSQLType(e.dataType)))
       case e =>
         e.eval() match {
-          case null => limitExpr.failAnalysis(
+          case null => limitExpr.failAnalysis(   //不能为空
             errorClass = "INVALID_LIMIT_LIKE_EXPRESSION.IS_NULL",
             messageParameters = Map(
               "name" -> name,
               "expr" -> toSQLExpr(limitExpr)))
-          case v: Int if v < 0 => limitExpr.failAnalysis(
+          case v: Int if v < 0 => limitExpr.failAnalysis(   //不能小于0
             errorClass = "INVALID_LIMIT_LIKE_EXPRESSION.IS_NEGATIVE",
             messageParameters = Map(
               "name" -> name,
@@ -108,6 +117,8 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
   }
 
   /** Check and throw exception when a given resolved plan contains LateralColumnAliasReference. */
+  //检查给定的已解析逻辑计划中是否包含 LateralColumnAliasReference（横向列别名引用）。
+  // 如果包含该类型的引用，它会抛出一个 SparkException，并提供相关的调试信息
   private def checkNotContainingLCA(exprSeq: Seq[NamedExpression], plan: LogicalPlan): Unit = {
     if (!plan.resolved) return
     exprSeq.foreach(_.transformDownWithPruning(_.containsPattern(LATERAL_COLUMN_ALIAS_REFERENCE)) {
@@ -118,7 +129,7 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
           summary = lcaRef.origin.context.summary)
     })
   }
-
+   //检查Map数据类型的key是否为String
   private def isMapWithStringKey(e: Expression): Boolean = if (e.resolved) {
     e.dataType match {
       case m: MapType => m.keyType.isInstanceOf[StringType]
@@ -127,32 +138,35 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
   } else {
     false
   }
-
+  //处理查询分析过程中遇到的“无法解析的属性”错误。
+  // 当逻辑计划中出现了引用未解析的列时，它会抛出一个异常，并为用户提供相关的错误信息，帮助他们识别和修复问题
   private def failUnresolvedAttribute(
-      operator: LogicalPlan,
-      a: Attribute,
+      operator: LogicalPlan,   //表示正在执行的逻辑计划，通常是当前查询的某个部分
+      a: Attribute,            //表示查询中的某个属性，它是无法解析的列
       errorClass: String): Nothing = {
     val missingCol = a.sql
     val candidates = operator.inputSet.toSeq
       .map(attr => attr.qualifier :+ attr.name)
     val orderedCandidates =
-      StringUtils.orderSuggestedIdentifiersBySimilarity(missingCol, candidates)
+      StringUtils.orderSuggestedIdentifiersBySimilarity(missingCol, candidates)  //根据相似度对候选列进行排序
     throw QueryCompilationErrors.unresolvedAttributeError(
       errorClass, missingCol, orderedCandidates, a.origin)
   }
-
+  // CTE 关系是 SQL 查询中的一部分，允许定义临时的结果集，这些结果集可以在查询的后续部分中引用。
+  // 如果某个 CTE 被定义但没有被引用，则它是“未引用的”或“悬挂的”，这个方法的目的是查找并处理这些 CTE
   private def checkUnreferencedCTERelations(
-      cteMap: mutable.Map[Long, (CTERelationDef, Int, mutable.Map[Long, Int])],
-      visited: mutable.Map[Long, Boolean],
-      danglingCTERelations: mutable.ArrayBuffer[CTERelationDef],
-      cteId: Long): Unit = {
+      cteMap: mutable.Map[Long, (CTERelationDef, Int, mutable.Map[Long, Int])], //保存所有 CTE 的定义。Long 是 CTE 的唯一标识符，CTERelationDef 是 CTE 的定义，Int 是 CTE 的引用计数，mutable.Map[Long, Int] 是引用的 CTE ID 映射
+      visited: mutable.Map[Long, Boolean], //用于记录已经访问过的 CTE，避免重复处理
+      danglingCTERelations: mutable.ArrayBuffer[CTERelationDef],  //用于存储所有未引用的 CTE 关系
+      cteId: Long): Unit = {  //是当前正在检查的 CTE 的 ID
     if (visited(cteId)) {
       return
     }
     val (cteDef, _, refMap) = cteMap(cteId)
-    refMap.foreach { case (id, _) =>
+    refMap.foreach { case (id, _) =>  //遍历当前 CTE 被哪些其他 CTE 引用
       checkUnreferencedCTERelations(cteMap, visited, danglingCTERelations, id)
     }
+    //如果当前 CTE (cteId) 没有被其他 CTE 引用（即它没有被递归调用），那么它就是未引用的 CTE，将其添加到 danglingCTERelations 中
     danglingCTERelations.append(cteDef)
     visited(cteId) = true
   }
@@ -160,6 +174,7 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
   /**
    * Checks whether the operator allows non-deterministic expressions.
    */
+    //检查给定的逻辑计划是否允许使用非确定性表达式。非确定性表达式是指结果在多次执行时可能会有所不同的表达式
   private def operatorAllowsNonDeterministicExpressions(plan: LogicalPlan): Boolean = {
     plan match {
       case p: SupportsNonDeterministicExpression =>
@@ -167,9 +182,9 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
       case _ => false
     }
   }
-
+  //用于对给定的逻辑计划（LogicalPlan）进行分析和检查，特别是与 CTE（公用表表达式）相关的部分
   def checkAnalysis(plan: LogicalPlan): Unit = {
-    val inlineCTE = InlineCTE(alwaysInline = true)
+    val inlineCTE = InlineCTE(alwaysInline = true)  //alwaysInline = true 表示 CTE 总是会被内联
     val cteMap = mutable.HashMap.empty[Long, (CTERelationDef, Int, mutable.Map[Long, Int])]
     inlineCTE.buildCTEMap(plan, cteMap)
     val danglingCTERelations = mutable.ArrayBuffer.empty[CTERelationDef]
@@ -181,17 +196,18 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
       // If a CTE relation ref count is 0, the other CTE relations that reference it should also be
       // collected. This code will also guarantee the leaf relations that do not reference
       // any others are collected first.
-      if (refCount == 0) {
+      if (refCount == 0) { //对于每个 CTE，首先检查它的引用计数（refCount）。如果 refCount 为 0，表示该 CTE 没有被任何其他 CTE 引用
         checkUnreferencedCTERelations(cteMap, visited, danglingCTERelations, cteId)
       }
     }
     // Inline all CTEs in the plan to help check query plan structures in subqueries.
+    //将查询计划中的 CTE 内联到主查询中，即将 CTE 定义直接嵌入到查询中，避免 CTE 作为独立的查询部分存在
     var inlinedPlan: LogicalPlan = inlineCTE(plan)
     if (danglingCTERelations.nonEmpty) {
       inlinedPlan = WithCTE(inlinedPlan, danglingCTERelations.toSeq)
     }
     checkAnalysis0(inlinedPlan)
-    plan.setAnalyzed()
+    plan.setAnalyzed()  //在成功分析并验证查询计划后，调用此方法标记计划为已分析（Analyzed）
   }
 
   def checkAnalysis0(plan: LogicalPlan): Unit = {
@@ -200,11 +216,11 @@ trait CheckAnalysis extends PredicateHelper with LookupCatalog with QueryErrorsB
     // top-down traversal.
     plan.foreach {
       case InsertIntoStatement(u: UnresolvedRelation, _, _, _, _, _, _) =>
-        u.tableNotFound(u.multipartIdentifier)
+        u.tableNotFound(u.multipartIdentifier)  //如果表名未解析，则抛出异常
 
       // TODO (SPARK-27484): handle streaming write commands when we have them.
       case write: V2WriteCommand if write.table.isInstanceOf[UnresolvedRelation] =>
-        val tblName = write.table.asInstanceOf[UnresolvedRelation].multipartIdentifier
+        val tblName = write.table.asInstanceOf[UnresolvedRelation].multipartIdentifier   //如果是未解析的表则抛出异常
         write.table.tableNotFound(tblName)
 
       case _ =>

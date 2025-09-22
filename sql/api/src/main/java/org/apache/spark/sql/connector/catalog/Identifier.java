@@ -21,7 +21,7 @@ import org.apache.spark.annotation.Evolving;
 
 /**
  * Identifies an object in a catalog.
- *
+ * 标识catalog中的对象
  * @since 3.0.0
  */
 @Evolving

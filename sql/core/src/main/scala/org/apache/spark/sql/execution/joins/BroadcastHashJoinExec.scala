@@ -37,11 +37,12 @@ import org.apache.spark.sql.execution.metric.SQLMetrics
  * broadcast relation.  This data is then placed in a Spark broadcast variable.  The streamed
  * relation is not shuffled.
  */
+//通过广播一个较小的数据集，并在分布式计算中使用该数据集与较大的数据集进行连接操作，从而避免了对较大数据集的全局 shuffle
 case class BroadcastHashJoinExec(
-    leftKeys: Seq[Expression],
+    leftKeys: Seq[Expression], //左侧数据集（streamed side）进行连接时使用的键
     rightKeys: Seq[Expression],
     joinType: JoinType,
-    buildSide: BuildSide,
+    buildSide: BuildSide, //表示哪个数据集作为构建（build）侧,就是哪一侧用于构建hash表
     condition: Option[Expression],
     left: SparkPlan,
     right: SparkPlan,
@@ -58,13 +59,13 @@ case class BroadcastHashJoinExec(
 
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
-
+  //返回一个分布式计划的需求，指明左侧和右侧的分布类型。
   override def requiredChildDistribution: Seq[Distribution] = {
     val mode = HashedRelationBroadcastMode(buildBoundKeys, isNullAwareAntiJoin)
     buildSide match {
-      case BuildLeft =>
+      case BuildLeft => //如果连接的构建侧是左侧，则需要 BroadcastDistribution（即广播分布），右侧是未指定分布；
         BroadcastDistribution(mode) :: UnspecifiedDistribution :: Nil
-      case BuildRight =>
+      case BuildRight => //如果构建侧是右侧，则需要右侧是广播分布，左侧未指定分布
         UnspecifiedDistribution :: BroadcastDistribution(mode) :: Nil
     }
   }

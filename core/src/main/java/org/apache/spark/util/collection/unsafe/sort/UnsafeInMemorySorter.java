@@ -32,7 +32,7 @@ import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.util.collection.Sorter;
 
-/**
+/** 用于高效排序的类，特别适用于大数据量的排序任务。它通过在内存中对记录进行排序，使用了“键前缀排序”算法，并在内部存储了指向记录的指针及其排序键的前缀，从而提高了排序效率
  * Sorts records using an AlphaSort-style key-prefix sort. This sort stores pointers to records
  * alongside a user-defined prefix of the record's sorting key. When the underlying sort algorithm
  * compares records, it will first compare the stored key prefixes; if the prefixes are not equal,
@@ -43,8 +43,8 @@ public final class UnsafeInMemorySorter {
 
   private static final class SortComparator implements Comparator<RecordPointerAndKeyPrefix> {
 
-    private final RecordComparator recordComparator;
-    private final PrefixComparator prefixComparator;
+    private final RecordComparator recordComparator; //用于比较完整记录的比较器
+    private final PrefixComparator prefixComparator; //用于比较记录的键前缀的比较器
     private final TaskMemoryManager memoryManager;
 
     SortComparator(
@@ -58,13 +58,13 @@ public final class UnsafeInMemorySorter {
 
     @Override
     public int compare(RecordPointerAndKeyPrefix r1, RecordPointerAndKeyPrefix r2) {
-      final int prefixComparisonResult = prefixComparator.compare(r1.keyPrefix, r2.keyPrefix);
+      final int prefixComparisonResult = prefixComparator.compare(r1.keyPrefix, r2.keyPrefix); // 先比较键前缀
       int uaoSize = UnsafeAlignedOffset.getUaoSize();
-      if (prefixComparisonResult == 0) {
-        final Object baseObject1 = memoryManager.getPage(r1.recordPointer);
+      if (prefixComparisonResult == 0) { // 如果键前缀相等，则比较完整记录
+        final Object baseObject1 = memoryManager.getPage(r1.recordPointer); // 获取第一个记录的内存信息
         final long baseOffset1 = memoryManager.getOffsetInPage(r1.recordPointer) + uaoSize;
         final int baseLength1 = UnsafeAlignedOffset.getSize(baseObject1, baseOffset1 - uaoSize);
-        final Object baseObject2 = memoryManager.getPage(r2.recordPointer);
+        final Object baseObject2 = memoryManager.getPage(r2.recordPointer); // 获取第二个记录的内存信息
         final long baseOffset2 = memoryManager.getOffsetInPage(r2.recordPointer) + uaoSize;
         final int baseLength2 = UnsafeAlignedOffset.getSize(baseObject2, baseOffset2 - uaoSize);
         return recordComparator.compare(baseObject1, baseOffset1, baseLength1, baseObject2,
@@ -75,16 +75,16 @@ public final class UnsafeInMemorySorter {
     }
   }
 
-  private final MemoryConsumer consumer;
+  private final MemoryConsumer consumer; //用于为排序过程分配和释放内存
   private final TaskMemoryManager memoryManager;
   @Nullable
-  private final Comparator<RecordPointerAndKeyPrefix> sortComparator;
+  private final Comparator<RecordPointerAndKeyPrefix> sortComparator; //用于在排序过程中比较记录的键前缀和完整记录
 
   /**
    * If non-null, specifies the radix sort parameters and that radix sort will be used.
    */
   @Nullable
-  private final PrefixComparators.RadixSortSupport radixSortSupport;
+  private final PrefixComparators.RadixSortSupport radixSortSupport; //如果排序使用基数排序（Radix Sort），则此属性存储基数排序的支持信息
 
   /**
    * Within this buffer, position {@code 2 * i} holds a pointer to the record at
@@ -93,12 +93,12 @@ public final class UnsafeInMemorySorter {
    * Only part of the array will be used to store the pointers, the rest part is preserved as
    * temporary buffer for sorting.
    */
-  private LongArray array;
+  private LongArray array; //存储记录指针和键前缀的数组。每个记录占用两个数组元素：一个存储记录的指针，一个存储键前缀
 
   /**
    * The position in the sort buffer where new records can be inserted.
    */
-  private int pos = 0;
+  private int pos = 0; //表示当前可以插入新记录的位置
 
   /**
    * If sorting with radix sort, specifies the starting position in the sort buffer where records
@@ -106,16 +106,16 @@ public final class UnsafeInMemorySorter {
    * records, and positions [nullBoundaryPos..pos) non-null prefixed records. This lets us avoid
    * radix sorting over null values.
    */
-  private int nullBoundaryPos = 0;
+  private int nullBoundaryPos = 0; //当使用基数排序时，记录中存储 null 键前缀的边界位置。所有 null 键前缀的记录都排在前面
 
   /*
    * How many records could be inserted, because part of the array should be left for sorting.
    */
-  private int usableCapacity = 0;
+  private int usableCapacity = 0; //数组中可以插入记录的最大容量
 
-  private long initialSize;
+  private long initialSize; //数组初始分配的大小
 
-  private long totalSortTimeNanos = 0L;
+  private long totalSortTimeNanos = 0L; //记录排序过程中消耗的时间（单位：纳秒）
 
   public UnsafeInMemorySorter(
     final MemoryConsumer consumer,
@@ -152,7 +152,7 @@ public final class UnsafeInMemorySorter {
     this.array = array;
     this.usableCapacity = getUsableCapacity();
   }
-
+  //返回可以用于插入记录的最大容量。基数排序和 Tim Sort 对内存的使用方式不同，基数排序使用的内存是缓冲区的两倍，Tim Sort 则需要将内存的 2/3 用于排序
   private int getUsableCapacity() {
     // Radix sort requires same amount of used memory as buffer, Tim sort requires
     // half of the used memory as buffer.
@@ -184,7 +184,7 @@ public final class UnsafeInMemorySorter {
     nullBoundaryPos = 0;
   }
 
-  /**
+  /** 返回当前已插入的记录数量。由于每条记录占用数组的两个元素，返回的是 pos / 2
    * @return the number of records that have been inserted into this sorter.
    */
   public int numRecords() {
@@ -197,7 +197,7 @@ public final class UnsafeInMemorySorter {
   public long getSortTimeNanos() {
     return totalSortTimeNanos;
   }
-
+ //返回 array 使用的内存大小，单位是字节
   public long getMemoryUsage() {
     if (array == null) {
       return 0L;
@@ -205,11 +205,11 @@ public final class UnsafeInMemorySorter {
 
     return array.size() * 8;
   }
-
+  //判断是否还有足够的空间来插入新记录。判断依据是 pos + 1 是否小于 usableCapacity
   public boolean hasSpaceForAnotherRecord() {
     return pos + 1 < usableCapacity;
   }
-
+  //扩展指针数组。若当前 array 数组容量不够，创建一个新的更大的数组并将数据复制过去。
   public void expandPointerArray(LongArray newArray) {
     if (array != null) {
       if (newArray.size() < array.size()) {
@@ -232,7 +232,7 @@ public final class UnsafeInMemorySorter {
   /**
    * Inserts a record to be sorted. Assumes that the record pointer points to a record length
    * stored as a uaoSize(4 or 8) bytes integer, followed by the record's bytes.
-   *
+   * 插入一条记录。记录的指针和键前缀分别存储在 array 数组的两个元素中。如果使用基数排序且键前缀为 null，会将 null 键前缀的记录插入到数组的前面
    * @param recordPointer pointer to a record in a data page, encoded by {@link TaskMemoryManager}.
    * @param keyPrefix a user-defined key prefix
    */
@@ -258,7 +258,7 @@ public final class UnsafeInMemorySorter {
       pos++;
     }
   }
-
+  //用于遍历已排序的数据。它实现了 UnsafeSorterIterator 接口，可以高效地按排序顺序遍历记录。
   public final class SortedIterator extends UnsafeSorterIterator implements Cloneable {
 
     private final int numRecords;

@@ -38,7 +38,7 @@ import org.apache.spark.sql.types._
  * Used to read and write data stored in files to/from the [[InternalRow]] format.
  */
 trait FileFormat {
-  /**
+  /**  用于推断文件的 schema（结构化数据的格式） files: Seq[FileStatus]：待读取的文件列表
    * When possible, this method should return the schema of the given `files`.  When the format
    * does not support inference, or no valid files are given should return None.  In these cases
    * Spark will require that user specify the schema manually.
@@ -48,11 +48,11 @@ trait FileFormat {
       options: Map[String, String],
       files: Seq[FileStatus]): Option[StructType]
 
-  /**
+  /** 准备写入数据的作业。可以在此方法中进行客户端作业准备工作，如配置用户定义的输出提交器
    * Prepares a write job and returns an [[OutputWriterFactory]].  Client side job preparation can
    * be put here.  For example, user defined output committer can be configured here
    * by setting the output committer class in the conf of spark.sql.sources.outputCommitterClass.
-   */
+   */ //job: Job：Hadoop 作业对象，用于配置写入作业  dataSchema: StructType：写入数据的 schema
   def prepareWrite(
       sparkSession: SparkSession,
       job: Job,
@@ -68,7 +68,7 @@ trait FileFormat {
    * For ParquetFileFormat and OrcFileFormat, passing this option is required.
    *
    * TODO: we should just have different traits for the different formats.
-   */
+   */ //该文件格式是否支持列式批量输出（columnar batch output）。列式输出可以提高读取性能，尤其是在处理大数据量时
   def supportBatch(sparkSession: SparkSession, dataSchema: StructType): Boolean = {
     false
   }
@@ -76,7 +76,7 @@ trait FileFormat {
   /**
    * Returns concrete column vector class names for each column to be used in a columnar batch
    * if this format supports returning columnar batch.
-   */
+   */ //返回每个列的具体的列容器类名
   def vectorTypes(
       requiredSchema: StructType,
       partitionSchema: StructType,
@@ -86,7 +86,7 @@ trait FileFormat {
 
   /**
    * Returns whether a file with `path` could be split or not.
-   */
+   *///判断给定路径下的文件是否可拆分
   def isSplitable(
       sparkSession: SparkSession,
       options: Map[String, String],
@@ -109,7 +109,7 @@ trait FileFormat {
    * @param filters A set of filters than can optionally be used to reduce the number of rows output
    * @param options A set of string -> string configuration options.
    * @return
-   */
+   */ //构建一个读取文件的函数，该函数将每个文件读取为 InternalRow 的迭代器
   protected def buildReader(
       sparkSession: SparkSession,
       dataSchema: StructType,
@@ -125,7 +125,7 @@ trait FileFormat {
    * Exactly the same as [[buildReader]] except that the reader function returned by this method
    * appends partition values to [[InternalRow]]s produced by the reader function [[buildReader]]
    * returns.
-   */
+   *///与 buildReader 方法类似，但返回的迭代器将文件的数据行与分区值合并，以便于分区列的信息与数据一起返回
   def buildReaderWithPartitionValues(
       sparkSession: SparkSession,
       dataSchema: StructType,
@@ -167,7 +167,7 @@ trait FileFormat {
 
   /**
    * Create a file metadata struct column containing fields supported by the given file format.
-   */
+   *///创建一个包含文件格式元数据的结构化列。每个文件格式可以有一些特定的元数据，如文件路径、文件大小、修改时间等
   def createFileMetadataCol(): AttributeReference = {
     // Strip out the fields' metadata to avoid exposing it to the user. [[FileSourceStrategy]]
     // avoids confusion by mapping back to [[metadataSchemaFields]].
@@ -185,7 +185,7 @@ trait FileFormat {
   /**
    * Returns whether this format supports the given filed name in read/write path.
    * By default all field name is supported.
-   */
+   *///检查该文件格式是否支持给定的字段名。默认情况下，所有字段名都是支持的
   def supportFieldName(name: String): Boolean = true
 
   /**
@@ -206,7 +206,7 @@ trait FileFormat {
    * so will often pair with a custom reader that can populate those columns. For example,
    * [[ParquetFileFormat]] defines a "_metadata.row_index" column that relies on
    * [[VectorizedParquetRecordReader]] to extract the actual row index values from the parquet scan.
-   */
+   *///返回文件格式支持的元数据字段。每个文件格式可以定义不同的元数据字段。BASE_METADATA_FIELDS 是 FileFormat 定义的默认元数据字段，包括文件路径、文件大小等
   def metadataSchemaFields: Seq[StructField] = FileFormat.BASE_METADATA_FIELDS
 
   /**
@@ -220,7 +220,7 @@ trait FileFormat {
    * NOTE: Extractors are lazy, invoked only if the query actually selects their column at runtime.
    *
    * See also [[FileFormat.getFileConstantMetadataColumnValue]].
-   */
+   *///一个映射，指示如何提取文件的常量元数据。每个文件格式可以定义如何从 PartitionedFile 中提取特定的元数据字段
   def fileConstantMetadataExtractors: Map[String, PartitionedFile => Any] =
     FileFormat.BASE_METADATA_EXTRACTORS
 }
@@ -290,26 +290,26 @@ object FileFormat {
    * Raw values (including null) are automatically converted to literals as a courtesy.
    */
   def getFileConstantMetadataColumnValue(
-      name: String,
+      name: String, //元数据列的名称
       file: PartitionedFile,
-      metadataExtractors: Map[String, PartitionedFile => Any]): Literal = {
+      metadataExtractors: Map[String, PartitionedFile => Any]): Literal = { //它将元数据列的名称映射到一个提取器函数
     val extractor = metadataExtractors.getOrElse(name,
       { pf: PartitionedFile => pf.otherConstantMetadataColumnValues.get(name).orNull }
     )
     Literal(extractor.apply(file))
   }
-
+  //创建一个 InternalRow，该行包含有关文件的元数据字段以及其他与文件相关的信息（如路径、文件大小、修改时间等）
   // create an internal row given required metadata fields and file information
   def createMetadataInternalRow(
-      partitionValues: InternalRow,
-      fieldNames: Seq[String],
-      filePath: SparkPath,
+      partitionValues: InternalRow,  //分区列的值，通常情况下，当我们读取一个数据集时，分区列会被附加到每一行的数据中，因此这部分数据会被包含在 InternalRow 中
+      fieldNames: Seq[String], //需要返回的元数据字段名称。字段名称通常是表示文件信息的字段，如 file_path、file_name、file_size 等
+      filePath: SparkPath, //文件的路径（作为 SparkPath 类型）
       fileSize: Long,
       fileModificationTime: Long): InternalRow = {
     // When scanning files directly from the filesystem, we only support file-constant metadata
     // fields whose values can be derived from a file status. In particular, we don't have accurate
     // file split information yet, nor do we have a way to provide custom metadata column values.
-    val validFieldNames = Set(FILE_PATH, FILE_NAME, FILE_SIZE, FILE_MODIFICATION_TIME)
+    val validFieldNames = Set(FILE_PATH, FILE_NAME, FILE_SIZE, FILE_MODIFICATION_TIME)  //包含所有支持的元数据字段名称
     val extractors = FileFormat.BASE_METADATA_EXTRACTORS.filterKeys(validFieldNames.contains).toMap
     assert(fieldNames.forall(validFieldNames.contains))
     val pf = PartitionedFile(

@@ -36,7 +36,7 @@ import org.apache.spark.util.Utils
 /**
  * Read-only byte buffer which is physically stored as multiple chunks rather than a single
  * contiguous array.
- *
+ *  Spark 中用于管理多块（chunked）只读 ByteBuffer 的一个工具类。它将数据分成多个块存储，每块使用一个 ByteBuffer，并提供了灵活的操作方法
  * @param chunks an array of [[ByteBuffer]]s. Each buffer in this array must have position == 0.
  *               Ownership of these buffers is transferred to the ChunkedByteBuffer, so if these
  *               buffers may also be used elsewhere then the caller is responsible for copying
@@ -50,7 +50,7 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) extends Ex
   // Chunk size in bytes
   private val bufferWriteChunkSize =
     Option(SparkEnv.get).map(_.conf.get(config.BUFFER_WRITE_CHUNK_SIZE))
-      .getOrElse(config.BUFFER_WRITE_CHUNK_SIZE.defaultValue.get).toInt
+      .getOrElse(config.BUFFER_WRITE_CHUNK_SIZE.defaultValue.get).toInt //表示单块写入操作的最大大小
 
   private[this] var disposed: Boolean = false
 
@@ -58,19 +58,19 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) extends Ex
    * This size of this buffer, in bytes. Using var here for serialization purpose (need to set a
    * object after default construction)
    */
-  private var _size: Long = chunks.map(_.limit().asInstanceOf[Long]).sum
+  private var _size: Long = chunks.map(_.limit().asInstanceOf[Long]).sum //ChunkedByteBuffer 的总大小（字节数），等于所有 ByteBuffer 块的大小之和
 
   def size: Long = _size
-
+  //创建一个空的 ChunkedByteBuffer
   def this() = {
     this(Array.empty[ByteBuffer])
   }
-
+  //通过单个 ByteBuffer 创建 ChunkedByteBuffer
   def this(byteBuffer: ByteBuffer) = {
     this(Array(byteBuffer))
   }
 
-  /**
+  /** 将所有块数据写入指定的 WritableByteChannel
    * Write this buffer to a channel.
    */
   def writeFully(channel: WritableByteChannel): Unit = {
@@ -92,7 +92,7 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) extends Ex
     }
   }
 
-  /**
+  /**序列化，首先写入块的数量  写入每个块的大小和内容  数据写入保持原始块的布局
    * Writes to the provided ObjectOutput with zero copy if possible.
    */
   override def writeExternal(out: ObjectOutput): Unit = {
@@ -102,7 +102,7 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) extends Ex
     chunksCopy.foreach(buffer => out.writeInt(buffer.limit()))
     chunksCopy.foreach(Utils.writeByteBuffer(_, out))
   }
-
+  //反序列化，
   override def readExternal(in: ObjectInput): Unit = {
     val chunksNum = in.readInt()
     val indices = 0 until chunksNum
@@ -133,7 +133,7 @@ private[spark] class ChunkedByteBuffer(var chunks: Array[ByteBuffer]) extends Ex
 
   /**
    * Copy this buffer into a new byte array.
-   *
+   * 转换为字节数组
    * @throws UnsupportedOperationException if this buffer's size exceeds the maximum array size.
    */
   def toArray: Array[Byte] = {

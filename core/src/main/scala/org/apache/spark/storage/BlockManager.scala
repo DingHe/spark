@@ -67,31 +67,31 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 /* Class for returning a fetched block and associated metrics. */
 private[spark] class BlockResult(
     val data: Iterator[Any],
-    val readMethod: DataReadMethod.Value,
+    val readMethod: DataReadMethod.Value,  //内存、磁盘、hadoop和网络
     val bytes: Long)
 
 /**
  * Abstracts away how blocks are stored and provides different ways to read the underlying block
  * data. Callers should call [[BlockData#dispose()]] when they're done with the block.
  */
-private[spark] trait BlockData {
+private[spark] trait BlockData { //表示Spark中数据块的 trait，它定义了一些方法来处理数据块的序列化和管理
 
-  def toInputStream(): InputStream
+  def toInputStream(): InputStream //将数据块转换为一个 InputStream，通常用于从存储系统中读取数据。
 
   /**
    * Returns a Netty-friendly wrapper for the block's data.
    *
    * Please see `ManagedBuffer.convertToNetty()` for more details.
    */
-  def toNetty(): Object
+  def toNetty(): Object //用于网络传输
 
-  def toChunkedByteBuffer(allocator: Int => ByteBuffer): ChunkedByteBuffer
+  def toChunkedByteBuffer(allocator: Int => ByteBuffer): ChunkedByteBuffer //适合于处理大数据集
 
-  def toByteBuffer(): ByteBuffer
+  def toByteBuffer(): ByteBuffer  //将数据块转换为一个 ByteBuffer
 
-  def size: Long
+  def size: Long  //数据块的大小，单位是字节
 
-  def dispose(): Unit
+  def dispose(): Unit  //释放数据块所占用的资源
 
 }
 
@@ -118,27 +118,27 @@ private[spark] class ByteBufferBlockData(
   }
 
 }
-
+//管理Spark中的本地目录，尤其是与executor相关的本地目录。它通过缓存和异步调用来提高性能，避免频繁地查询本地目录
 private[spark] class HostLocalDirManager(
-    cacheSize: Int,
-    blockStoreClient: BlockStoreClient) extends Logging {
+    cacheSize: Int, //限制缓存中最多可以存储多少个条目
+    blockStoreClient: BlockStoreClient) extends Logging { //用于从远程节点（通常是其他 Executor）获取本地目录信息的客户端
 
-  private val executorIdToLocalDirsCache =
+  private val executorIdToLocalDirsCache =  //存储 executor ID 与其对应的本地目录数组之间的映射
     CacheBuilder
       .newBuilder()
       .maximumSize(cacheSize)
       .build[String, Array[String]]()
 
-  private[spark] def getCachedHostLocalDirs: Map[String, Array[String]] =
+  private[spark] def getCachedHostLocalDirs: Map[String, Array[String]] =  //返回缓存中所有 executor 的本地目录信息
     executorIdToLocalDirsCache.synchronized {
       executorIdToLocalDirsCache.asMap().asScala.toMap
     }
-
+  //据给定的 executorId 获取缓存中该 executor 的本地目录信息
   private[spark] def getCachedHostLocalDirsFor(executorId: String): Option[Array[String]] =
     executorIdToLocalDirsCache.synchronized {
       Option(executorIdToLocalDirsCache.getIfPresent(executorId))
     }
-
+  //异步获取一个或多个 executor 的本地目录信息
   private[spark] def getHostLocalDirs(
       host: String,
       port: Int,
@@ -163,54 +163,55 @@ private[spark] class HostLocalDirManager(
   }
 }
 
-/**
+/** 负责管理 Spark 中的缓存数据块的存储和获取操作。BlockManager 是每个节点（Driver 和 Executor）上运行的管理器，
+ * 它提供了将数据块存储和检索到本地或远程存储的接口，存储的介质包括内存、磁盘和堆外内存。
  * Manager running on every node (driver and executors) which provides interfaces for putting and
  * retrieving blocks both locally and remotely into various stores (memory, disk, and off-heap).
  *
  * Note that [[initialize()]] must be called before the BlockManager is usable.
  */
 private[spark] class BlockManager(
-    val executorId: String,
+    val executorId: String, //所属于的 executor 的唯一标识符，区分不同的executor
     rpcEnv: RpcEnv,
-    val master: BlockManagerMaster,
-    val serializerManager: SerializerManager,
+    val master: BlockManagerMaster, //管理所有 BlockManager 的主节点对象
+    val serializerManager: SerializerManager, //负责对象序列化与反序列化的管理
     val conf: SparkConf,
-    memoryManager: MemoryManager,
-    mapOutputTracker: MapOutputTracker,
-    shuffleManager: ShuffleManager,
-    val blockTransferService: BlockTransferService,
+    memoryManager: MemoryManager, //内存管理器，负责管理 Spark 的内存资源，特别是与数据块存储和缓存相关的内存管理
+    mapOutputTracker: MapOutputTracker, //负责跟踪 map 操作输出的状态
+    shuffleManager: ShuffleManager,  //负责 shuffle 过程中的数据管理
+    val blockTransferService: BlockTransferService, //用于在节点之间传输数据块的服务
     securityManager: SecurityManager,
-    externalBlockStoreClient: Option[ExternalBlockStoreClient])
+    externalBlockStoreClient: Option[ExternalBlockStoreClient]) //外部块存储客户端，负责与外部存储系统的交互
   extends BlockDataManager with BlockEvictionHandler with Logging {
 
   // same as `conf.get(config.SHUFFLE_SERVICE_ENABLED)`
-  private[spark] val externalShuffleServiceEnabled: Boolean = externalBlockStoreClient.isDefined
-  private val isDriver = executorId == SparkContext.DRIVER_IDENTIFIER
+  private[spark] val externalShuffleServiceEnabled: Boolean = externalBlockStoreClient.isDefined  //是否启用外部 Shuffle 服务
+  private val isDriver = executorId == SparkContext.DRIVER_IDENTIFIER   //是否是 Driver 节点
 
   private val remoteReadNioBufferConversion =
-    conf.get(Network.NETWORK_REMOTE_READ_NIO_BUFFER_CONVERSION)
+    conf.get(Network.NETWORK_REMOTE_READ_NIO_BUFFER_CONVERSION)  //是否启用远程读取时 NIO 缓冲区转换的设置
 
-  private[spark] val subDirsPerLocalDir = conf.get(config.DISKSTORE_SUB_DIRECTORIES)
+  private[spark] val subDirsPerLocalDir = conf.get(config.DISKSTORE_SUB_DIRECTORIES)  //每个本地磁盘目录下的子目录数
 
-  val diskBlockManager = {
+  val diskBlockManager = {  //磁盘存储管理器，负责管理磁盘上的数据存储
     // Only perform cleanup if an external service is not serving our shuffle files.
     val deleteFilesOnStop =
       !externalShuffleServiceEnabled || isDriver
     new DiskBlockManager(conf, deleteFilesOnStop = deleteFilesOnStop, isDriver = isDriver)
   }
-
+  //RDD 缓存可见性追踪是否启用
   /** Whether rdd cache visibility tracking is enabled. */
   private val trackingCacheVisibility: Boolean = conf.get(RDD_CACHE_VISIBILITY_TRACKING_ENABLED)
 
   // Visible for testing
-  private[storage] val blockInfoManager = new BlockInfoManager(trackingCacheVisibility)
+  private[storage] val blockInfoManager = new BlockInfoManager(trackingCacheVisibility)  //管理数据块的信息
 
   private val futureExecutionContext = ExecutionContext.fromExecutorService(
-    ThreadUtils.newDaemonCachedThreadPool("block-manager-future", 128))
+    ThreadUtils.newDaemonCachedThreadPool("block-manager-future", 128)) //一个用于异步任务执行的线程池
 
   // Actual storage of where blocks are kept
   private[spark] val memoryStore =
-    new MemoryStore(conf, blockInfoManager, serializerManager, memoryManager, this)
+    new MemoryStore(conf, blockInfoManager, serializerManager, memoryManager, this)  //内存存储管理器，负责将数据块存储到内存中
   private[spark] val diskStore = new DiskStore(conf, diskBlockManager, securityManager)
   memoryManager.setMemoryStore(memoryStore)
 
@@ -218,8 +219,8 @@ private[spark] class BlockManager(
   // However, since we use this only for reporting and logging, what we actually want here is
   // the absolute maximum value that `maxMemory` can ever possibly reach. We may need
   // to revisit whether reporting this value as the "max" is intuitive to the user.
-  private val maxOnHeapMemory = memoryManager.maxOnHeapStorageMemory
-  private val maxOffHeapMemory = memoryManager.maxOffHeapStorageMemory
+  private val maxOnHeapMemory = memoryManager.maxOnHeapStorageMemory   //最大堆内存，用于存储数据块
+  private val maxOffHeapMemory = memoryManager.maxOffHeapStorageMemory  //最大堆外内存，用于存储数据块
 
   private[spark] val externalShuffleServicePort = StorageUtils.externalShuffleServicePort(conf)
 
@@ -235,20 +236,20 @@ private[spark] class BlockManager(
 
   // Max number of failures before this block manager refreshes the block locations from the driver
   private val maxFailuresBeforeLocationRefresh =
-    conf.get(config.BLOCK_FAILURES_BEFORE_LOCATION_REFRESH)
+    conf.get(config.BLOCK_FAILURES_BEFORE_LOCATION_REFRESH)  //在重新注册 block location 之前的最大失败次数
 
   private val storageEndpoint = rpcEnv.setupEndpoint(
     "BlockManagerEndpoint" + BlockManager.ID_GENERATOR.next,
-    new BlockManagerStorageEndpoint(rpcEnv, this, mapOutputTracker))
+    new BlockManagerStorageEndpoint(rpcEnv, this, mapOutputTracker))  //负责与其他组件进行 RPC 通信
 
   // Pending re-registration action being executed asynchronously or null if none is pending.
   // Accesses should synchronize on asyncReregisterLock.
-  private var asyncReregisterTask: Future[Unit] = null
-  private val asyncReregisterLock = new Object
+  private var asyncReregisterTask: Future[Unit] = null   //用于异步重新注册的任务
+  private val asyncReregisterLock = new Object           //用于同步 asyncReregisterTask 访问的锁
 
   // Field related to peer block managers that are necessary for block replication
-  @volatile private var cachedPeers: Seq[BlockManagerId] = _
-  private val peerFetchLock = new Object
+  @volatile private var cachedPeers: Seq[BlockManagerId] = _     //缓存的对等节点列表，通常用于块的复制
+  private val peerFetchLock = new Object                         //用于同步对等节点的锁
   private var lastPeerFetchTimeNs = 0L
 
   private var blockReplicationPolicy: BlockReplicationPolicy = _
@@ -263,7 +264,7 @@ private[spark] class BlockManager(
   private[storage] val remoteBlockTempFileManager =
     new BlockManager.RemoteBlockDownloadFileManager(
       this,
-      securityManager.getIOEncryptionKey())
+      securityManager.getIOEncryptionKey())      //最大允许加载到内存中的远程数据块大小
   private val maxRemoteBlockToMem = conf.get(config.MAX_REMOTE_BLOCK_SIZE_FETCH_TO_MEM)
 
   var hostLocalDirManager: Option[HostLocalDirManager] = None
@@ -286,11 +287,11 @@ private[spark] class BlockManager(
     shuffleManager.shuffleBlockResolver.asInstanceOf[MigratableResolver]
   }
 
-  override def getLocalDiskDirs: Array[String] = diskBlockManager.localDirsString
+  override def getLocalDiskDirs: Array[String] = diskBlockManager.localDirsString   //获取本地磁盘的目录路径
 
   /**
    * Diagnose the possible cause of the shuffle data corruption by verifying the shuffle checksums
-   *
+   * 诊断可能导致 shuffle 数据损坏的原因，特别是通过验证 shuffle 数据块的校验和
    * @param blockId The blockId of the corrupted shuffle block
    * @param checksumByReader The checksum value of the corrupted block
    * @param algorithm The checksum algorithm that is used when calculating the checksum value
@@ -300,7 +301,7 @@ private[spark] class BlockManager(
       checksumByReader: Long,
       algorithm: String): Cause = {
     assert(blockId.isInstanceOf[ShuffleBlockId],
-      s"Corruption diagnosis only supports shuffle block yet, but got $blockId")
+      s"Corruption diagnosis only supports shuffle block yet, but got $blockId") //确保传入的 blockId 是一个 ShuffleBlockId 类型，ShuffleBlockId 是表示 shuffle 数据块的特定类型，确保只对 shuffle 数据块执行诊断
     val shuffleBlock = blockId.asInstanceOf[ShuffleBlockId]
     val resolver = shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
     val checksumFile =
@@ -310,29 +311,30 @@ private[spark] class BlockManager(
       algorithm, checksumFile, reduceId, resolver.getBlockData(shuffleBlock), checksumByReader)
   }
 
-  /**
+  /** 管理数据块存储的抽象类。它负责将数据块存储到指定的存储级别（内存、磁盘等），并支持块的复制操作，
+   * 尤其是在高可用性场景中需要多副本存储时使用。该类通过不同的存储方式来确保数据块的持久性，并根据存储策略选择合适的存储介质
    * Abstraction for storing blocks from bytes, whether they start in memory or on disk.
    *
    * @param blockSize the decrypted size of the block
    */
   private[spark] abstract class BlockStoreUpdater[T](
-      blockSize: Long,
+      blockSize: Long, //数据块的大小
       blockId: BlockId,
       level: StorageLevel,
       classTag: ClassTag[T],
-      tellMaster: Boolean,
-      keepReadLock: Boolean) {
+      tellMaster: Boolean,  //是否将数据块的存储状态报告给 BlockManagerMaster
+      keepReadLock: Boolean) { //是否在存储完成后保持对数据块的读锁
 
     /**
      *  Reads the block content into the memory. If the update of the block store is based on a
      *  temporary file this could lead to loading the whole file into a ChunkedByteBuffer.
      */
-    protected def readToByteBuffer(): ChunkedByteBuffer
+    protected def readToByteBuffer(): ChunkedByteBuffer  //用于将数据块内容读取到 ChunkedByteBuffer。如果数据块在临时文件中，这可能会导致整个文件被加载到内存中
 
-    protected def blockData(): BlockData
+    protected def blockData(): BlockData  //返回数据块的具体内容，通常作为 BlockData 对象
 
-    protected def saveToDiskStore(): Unit
-
+    protected def saveToDiskStore(): Unit  //将数据块保存到磁盘存储
+    //该方法尝试将反序列化的数据存储到内存中。它通过 serializerManager 反序列化 inputStream 中的数据，并将数据存储到内存（通过 memoryStore.putIteratorAsValues
     private def saveDeserializedValuesToMemoryStore(inputStream: InputStream): Boolean = {
       try {
         val values = serializerManager.dataDeserializeStream(blockId, inputStream)(classTag)
@@ -353,7 +355,7 @@ private[spark] class BlockManager(
         IOUtils.closeQuietly(inputStream)
       }
     }
-
+    //方法将已经序列化的数据（ChunkedByteBuffer）存储到内存中。如果存储级别是 MemoryMode.OFF_HEAP，则会将数据复制到直接内存
     private def saveSerializedValuesToMemoryStore(bytes: ChunkedByteBuffer): Boolean = {
       val memoryMode = level.memoryMode
       memoryStore.putBytes(blockId, blockSize, memoryMode, () => {
@@ -373,7 +375,7 @@ private[spark] class BlockManager(
      *
      * If keepReadLock is true, this method will hold the read lock when it returns (even if the
      * block already exists). If false, this method will hold no locks when it returns.
-     *
+     * 负责执行数据存储和复制的任务
      * @return true if the block was already present or if the put succeeded, false otherwise.
      */
      def save(): Boolean = {
@@ -435,7 +437,8 @@ private[spark] class BlockManager(
     }
   }
 
-  /**
+  /** 数据块存储更新，能够将数据存储到内存或磁盘中，支持基于不同存储级别的存储操作。它的作用是管理数据块的持久化过程，
+   * 确保数据块根据指定的存储级别存储到相应的存储介质，并支持必要的数据块复制
    * Helper for storing a block from bytes already in memory.
    * '''Important!''' Callers must not mutate or release the data buffer underlying `bytes`. Doing
    * so may corrupt or change the data stored by the `BlockManager`.
@@ -498,13 +501,14 @@ private[spark] class BlockManager(
    * Initializes the BlockManager with the given appId. This is not performed in the constructor as
    * the appId may not be known at BlockManager instantiation time (in particular for the driver,
    * where it is only learned after registration with the TaskScheduler).
-   *
+   * 初始化 BlockManager，并且是在 BlockManager 构造器之外调用的。
+   * 原因是 appId 可能在 BlockManager 实例化时并不知晓，尤其是在驱动端，appId 是在注册到任务调度器之后才知道的
    * This method initializes the BlockTransferService and BlockStoreClient, registers with the
    * BlockManagerMaster, starts the BlockManagerWorker endpoint, and registers with a local shuffle
    * service if configured.
    */
   def initialize(appId: String): Unit = {
-    blockTransferService.init(this)
+    blockTransferService.init(this)  //初始化了块传输服务（BlockTransferService），用于数据块的传输
     externalBlockStoreClient.foreach { blockStoreClient =>
       blockStoreClient.init(appId)
     }
@@ -523,7 +527,7 @@ private[spark] class BlockManager(
     // it needs the merge directories metadata which is provided by the local executor during
     // the registration with the ESS. Therefore, this registration should be prior to
     // the BlockManager registration. See SPARK-39647.
-    if (externalShuffleServiceEnabled) {
+    if (externalShuffleServiceEnabled) { //如果启用了外部 Shuffle 服务
       logInfo(s"external shuffle service port = $externalShuffleServicePort")
       shuffleServerId = BlockManagerId(executorId, blockTransferService.hostName,
         externalShuffleServicePort)
@@ -531,12 +535,13 @@ private[spark] class BlockManager(
         registerWithExternalShuffleServer()
       }
     }
-
+    //构造一个包含主机名和端口等信息的 BlockManagerId
     val id =
       BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
 
     // The idFromMaster has just additional topology information. Otherwise, it has the same
     // executor id/host/port of idWithoutTopologyInfo which is not expected to be changed.
+    //注册到 BlockManagerMaster
     val idFromMaster = master.registerBlockManager(
       id,
       diskBlockManager.localDirsString,
@@ -549,7 +554,7 @@ private[spark] class BlockManager(
     if (!externalShuffleServiceEnabled) {
       shuffleServerId = blockManagerId
     }
-
+    //负责管理每个节点上的本地磁盘缓存
     hostLocalDirManager = {
       if ((conf.get(config.SHUFFLE_HOST_LOCAL_DISK_READING_ENABLED) &&
           !conf.get(config.SHUFFLE_USE_OLD_FETCH_PROTOCOL)) ||
@@ -1490,7 +1495,7 @@ private[spark] class BlockManager(
     }
   }
 
-  /**
+  /** 执行数据块的存储操作，确保数据块在存储过程中符合一致性和有效性要求，并且能够处理异常和清理工作。它的实现包括存储数据块、管理锁、复制块以及处理失败情况等
    * Helper method used to abstract common code from [[BlockStoreUpdater.save()]]
    * and [[doPutIterator()]].
    *
@@ -1502,7 +1507,7 @@ private[spark] class BlockManager(
       level: StorageLevel,
       classTag: ClassTag[_],
       tellMaster: Boolean,
-      keepReadLock: Boolean)(putBody: BlockInfo => Option[T]): Option[T] = {
+      keepReadLock: Boolean)(putBody: BlockInfo => Option[T]): Option[T] = {  //putBody函数，接受 BlockInfo 作为参数并执行实际的存储操作。如果存储成功，返回 None；如果存储失败，返回 Some，其中 T 是操作的结果类型
 
     require(blockId != null, "BlockId is null")
     require(level != null && level.isValid, "StorageLevel is null or invalid")
@@ -1510,7 +1515,7 @@ private[spark] class BlockManager(
 
     val putBlockInfo = {
       val newInfo = new BlockInfo(level, classTag, tellMaster)
-      if (blockInfoManager.lockNewBlockForWriting(blockId, newInfo, keepReadLock)) {
+      if (blockInfoManager.lockNewBlockForWriting(blockId, newInfo, keepReadLock)) {  //获取 BlockInfo 并加锁
         newInfo
       } else {
         logWarning(s"Block $blockId already exists on this machine; not re-adding it")
@@ -1521,7 +1526,7 @@ private[spark] class BlockManager(
     val startTimeNs = System.nanoTime()
     var exceptionWasThrown: Boolean = true
     val result: Option[T] = try {
-      val res = putBody(putBlockInfo)
+      val res = putBody(putBlockInfo)  //使用 putBody 函数执行实际的存储操作
       exceptionWasThrown = false
       if (res.isEmpty) {
         // the block was successfully stored
@@ -1747,15 +1752,15 @@ private[spark] class BlockManager(
     }
   }
 
-  /**
+  /** 用于获取集群中其他节点的 BlockManagerId，并且对获取的节点信息进行了缓存，减少频繁从 Master 获取同样的数据
    * Get peer block managers in the system.
    */
-  private[storage] def getPeers(forceFetch: Boolean): Seq[BlockManagerId] = {
+  private[storage] def getPeers(forceFetch: Boolean): Seq[BlockManagerId] = { //如果为 true，则强制重新从 Master 获取 Peer 节点信息，即使缓存数据没有过期
     peerFetchLock.synchronized {
-      val cachedPeersTtl = conf.get(config.STORAGE_CACHED_PEERS_TTL) // milliseconds
+      val cachedPeersTtl = conf.get(config.STORAGE_CACHED_PEERS_TTL) // milliseconds 从配置文件中读取缓存数据的过期时间（毫秒），该时间决定了缓存多久更新一次
       val diff = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastPeerFetchTimeNs)
       val timeout = diff > cachedPeersTtl
-      if (cachedPeers == null || forceFetch || timeout) {
+      if (cachedPeers == null || forceFetch || timeout) { //如果时间差大于缓存的过期时间，则认为缓存过期，需要重新获取 Peer 节点
         cachedPeers = master.getPeers(blockManagerId).sortBy(_.hashCode)
         lastPeerFetchTimeNs = System.nanoTime()
         logDebug("Fetched peers from master: " + cachedPeers.mkString("[", ",", "]"))
@@ -1807,20 +1812,20 @@ private[spark] class BlockManager(
     }
   }
 
-  /**
+  /** 负责将一个数据块复制到其他节点，这个过程是一个阻塞操作，意味着只有在复制完成后，方法才会返回
    * Replicate block to another node. Note that this is a blocking call that returns after
    * the block has been replicated.
    */
   private def replicate(
       blockId: BlockId,
-      data: BlockData,
+      data: BlockData, //要复制的数据块内容
       level: StorageLevel,
       classTag: ClassTag[_],
-      existingReplicas: Set[BlockManagerId] = Set.empty,
-      maxReplicationFailures: Option[Int] = None): Boolean = {
+      existingReplicas: Set[BlockManagerId] = Set.empty, //当前已复制该数据块的节点的 BlockManagerId 集合
+      maxReplicationFailures: Option[Int] = None): Boolean = { //最大复制失败次数。如果设置了此参数，方法会在达到最大失败次数时停止尝试复制。
 
     val maxReplicationFailureCount = maxReplicationFailures.getOrElse(
-      conf.get(config.STORAGE_MAX_REPLICATION_FAILURE))
+      conf.get(config.STORAGE_MAX_REPLICATION_FAILURE)) //从配置中获取最大复制失败次数
     val tLevel = StorageLevel(
       useDisk = level.useDisk,
       useMemory = level.useMemory,
@@ -1828,11 +1833,11 @@ private[spark] class BlockManager(
       deserialized = level.deserialized,
       replication = 1)
 
-    val numPeersToReplicateTo = level.replication - 1
+    val numPeersToReplicateTo = level.replication - 1 //目标节点数量，等于复制因子减去当前节点
     val startTime = System.nanoTime
 
-    val peersReplicatedTo = mutable.HashSet.empty ++ existingReplicas
-    val peersFailedToReplicateTo = mutable.HashSet.empty[BlockManagerId]
+    val peersReplicatedTo = mutable.HashSet.empty ++ existingReplicas  //已经成功复制到的节点集合
+    val peersFailedToReplicateTo = mutable.HashSet.empty[BlockManagerId]  //复制失败的节点集合
     var numFailures = 0
 
     val initialPeers = getPeers(false).filterNot(existingReplicas.contains)
@@ -1842,7 +1847,7 @@ private[spark] class BlockManager(
       initialPeers,
       peersReplicatedTo,
       blockId,
-      numPeersToReplicateTo)
+      numPeersToReplicateTo) //根据某种策略来优先选择复制的节点
 
     while(numFailures <= maxReplicationFailureCount &&
       peersForReplication.nonEmpty &&
@@ -1862,7 +1867,7 @@ private[spark] class BlockManager(
           blockId,
           buffer,
           tLevel,
-          classTag)
+          classTag) //复制过程会尝试将数据块同步上传到目标节点
         logTrace(s"Replicated $blockId of ${data.size} bytes to $peer" +
           s" in ${(System.nanoTime - onePeerStartTime).toDouble / 1e6} ms")
         peersForReplication = peersForReplication.tail

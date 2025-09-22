@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.trees.TreePattern.{COMMAND, TreePattern}
  * commands can be used by parsers to represent DDL operations.  Commands, unlike queries, are
  * eagerly executed.
  */
+//表达非查询语句
 trait Command extends LogicalPlan {
   override def output: Seq[Attribute] = Seq.empty
   override def producedAttributes: AttributeSet = outputSet

@@ -44,10 +44,10 @@ object SparkSQLExample {
 
     // $example off:init_session$
 
-    runBasicDataFrameExample(spark)
-    runDatasetCreationExample(spark)
+   // runBasicDataFrameExample(spark)
+/*    runDatasetCreationExample(spark)*/
     runInferSchemaExample(spark)
-    runProgrammaticSchemaExample(spark)
+/*    runProgrammaticSchemaExample(spark)*/
 
     spark.stop()
   }
@@ -57,7 +57,7 @@ object SparkSQLExample {
     val df = spark.read.json("examples/src/main/resources/people.json")
 
     // Displays the content of the DataFrame to stdout
-    df.show()
+    //df.show()
     // +----+-------+
     // | age|   name|
     // +----+-------+
@@ -71,13 +71,13 @@ object SparkSQLExample {
     // This import is needed to use the $-notation
     import spark.implicits._
     // Print the schema in a tree format
-    df.printSchema()
+    //df.printSchema()
     // root
     // |-- age: long (nullable = true)
     // |-- name: string (nullable = true)
 
     // Select only the "name" column
-    df.select("name").show()
+    df.filter($"age" > 21).select("name").show()
     // +-------+
     // |   name|
     // +-------+
@@ -87,7 +87,7 @@ object SparkSQLExample {
     // +-------+
 
     // Select everybody, but increment the age by 1
-    df.select($"name", $"age" + 1).show()
+    //df.select($"name", $"age" + 1).show()
     // +-------+---------+
     // |   name|(age + 1)|
     // +-------+---------+
@@ -97,7 +97,7 @@ object SparkSQLExample {
     // +-------+---------+
 
     // Select people older than 21
-    df.filter($"age" > 21).show()
+    //df.filter($"age" > 21).show()
     // +---+----+
     // |age|name|
     // +---+----+
@@ -105,7 +105,7 @@ object SparkSQLExample {
     // +---+----+
 
     // Count people by age
-    df.groupBy("age").count().show()
+    //df.groupBy("age").count().show()
     // +----+-----+
     // | age|count|
     // +----+-----+
@@ -117,10 +117,10 @@ object SparkSQLExample {
 
     // $example on:run_sql$
     // Register the DataFrame as a SQL temporary view
-    df.createOrReplaceTempView("people")
+    //df.createOrReplaceTempView("people")
 
-    val sqlDF = spark.sql("SELECT * FROM people")
-    sqlDF.show()
+    //val sqlDF = spark.sql("SELECT * FROM people")
+    //sqlDF.show()
     // +----+-------+
     // | age|   name|
     // +----+-------+
@@ -132,10 +132,10 @@ object SparkSQLExample {
 
     // $example on:global_temp_view$
     // Register the DataFrame as a global temporary view
-    df.createGlobalTempView("people")
+    //df.createGlobalTempView("people")
 
     // Global temporary view is tied to a system preserved database `global_temp`
-    spark.sql("SELECT * FROM global_temp.people").show()
+    //spark.sql("SELECT * FROM global_temp.people").show()
     // +----+-------+
     // | age|   name|
     // +----+-------+
@@ -145,7 +145,7 @@ object SparkSQLExample {
     // +----+-------+
 
     // Global temporary view is cross-session
-    spark.newSession().sql("SELECT * FROM global_temp.people").show()
+    //spark.newSession().sql("SELECT * FROM global_temp.people").show()
     // +----+-------+
     // | age|   name|
     // +----+-------+
@@ -202,6 +202,7 @@ object SparkSQLExample {
 
     // SQL statements can be run by using the sql methods provided by Spark
     val teenagersDF = spark.sql("SELECT name, age FROM people WHERE age BETWEEN 13 AND 19")
+
 
     // The columns of a row in the result can be accessed by field index
     teenagersDF.map(teenager => "Name: " + teenager(0)).show()

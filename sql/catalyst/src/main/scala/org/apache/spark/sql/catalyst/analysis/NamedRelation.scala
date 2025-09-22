@@ -18,7 +18,7 @@
 package org.apache.spark.sql.catalyst.analysis
 
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-
+//命名的关系需要有name
 trait NamedRelation extends LogicalPlan {
   def name: String
 

@@ -36,7 +36,7 @@ object EncoderUtils {
   private[catalyst] def externalDataTypeFor(enc: AgnosticEncoder[_]): DataType = {
     externalDataTypeFor(enc, lenientSerialization = false)
   }
-
+  //返回AgnosticEncoder编码器的数据类型
   private[catalyst]  def lenientExternalDataTypeFor(enc: AgnosticEncoder[_]): DataType =
     externalDataTypeFor(enc, enc.lenientSerialization)
 
@@ -44,18 +44,19 @@ object EncoderUtils {
       enc: AgnosticEncoder[_],
       lenientSerialization: Boolean): DataType = {
     // DataType can be native.
-    if (isNativeEncoder(enc)) {
+    if (isNativeEncoder(enc)) {  //原始数据类型的编码器，直接返回数据类型
       enc.dataType
-    } else if (lenientSerialization) {
+    } else if (lenientSerialization) {  //宽松模式，直接返回对象类型
       ObjectType(classOf[java.lang.Object])
     } else {
-      ObjectType(enc.clsTag.runtimeClass)
+      ObjectType(enc.clsTag.runtimeClass)  //其他，返回以运行时类为基类的对象类型
     }
   }
 
   /**
    * Returns true if the encoders' internal and external data type is the same.
    */
+  //是否原始数据类型的编码器
   private[catalyst] def isNativeEncoder(enc: AgnosticEncoder[_]): Boolean = enc match {
     case PrimitiveBooleanEncoder => true
     case PrimitiveByteEncoder => true

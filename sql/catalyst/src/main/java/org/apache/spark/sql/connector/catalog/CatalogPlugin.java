@@ -41,6 +41,8 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap;
  *
  * @since 3.0.0
  */
+
+//一个标记接口，用于实现 Spark 的目录功能。具体的目录功能（如表、视图、函数等）需要通过实现额外的接口来提供
 @Evolving
 public interface CatalogPlugin {
   /**
@@ -51,6 +53,7 @@ public interface CatalogPlugin {
    * @param name the name used to identify and load this catalog
    * @param options a case-insensitive string map of configuration
    */
+  //用于初始化配置。它会在目录实现类实例化后、加载完成之前调用一次
   void initialize(String name, CaseInsensitiveStringMap options);
 
   /**
@@ -59,6 +62,7 @@ public interface CatalogPlugin {
    * This method is only called after {@link #initialize(String, CaseInsensitiveStringMap)} is
    * called to pass the catalog's name.
    */
+  //用于标识和加载该目录的名称
   String name();
 
   /**
@@ -71,6 +75,8 @@ public interface CatalogPlugin {
    *
    * @return a multi-part namespace
    */
+  //返回目录的默认命名空间。命名空间通常是一个多部分字符串（如 ["db1", "table1"]）
+  //该方法的默认实现返回一个空数组，表示没有默认命名空间
   default String[] defaultNamespace() {
     return new String[0];
   }

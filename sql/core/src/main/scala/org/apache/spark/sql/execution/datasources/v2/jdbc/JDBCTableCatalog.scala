@@ -37,11 +37,11 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 class JDBCTableCatalog extends TableCatalog
   with SupportsNamespaces with FunctionCatalog with Logging {
   import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
-
+  //存储当前 JDBC 表目录的名称
   private var catalogName: String = null
-  private var options: JDBCOptions = _
-  private var dialect: JdbcDialect = _
-  private var functions: Map[String, UnboundFunction] = _
+  private var options: JDBCOptions = _  //存储 JDBC 配置信息，包含连接数据库所需的各种选项，如数据库 URL、用户名、密码等
+  private var dialect: JdbcDialect = _  //存储 JDBC 方言对象，方言用于处理不同数据库的 SQL 语法差异
+  private var functions: Map[String, UnboundFunction] = _  //存储数据库中可用的函数。它是一个映射，函数名称到未绑定函数的映射
 
   override def name(): String = {
     require(catalogName != null, "The JDBC table catalog is not initialed")
@@ -60,7 +60,7 @@ class JDBCTableCatalog extends TableCatalog
     dialect = JdbcDialects.get(this.options.url)
     functions = dialect.functions.toMap
   }
-
+  //列出指定命名空间下的所有表。通过 JDBC 连接获取表元数据，并返回表的标识符
   override def listTables(namespace: Array[String]): Array[Identifier] = {
     checkNamespace(namespace)
     JdbcUtils.withConnection(options) { conn =>

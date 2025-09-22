@@ -27,15 +27,15 @@ import org.apache.spark.SparkException
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.client.{RpcResponseCallback, TransportClient}
 import org.apache.spark.rpc.{RpcAddress, RpcEnvStoppedException}
-
+//代表一个待发送的消息
 private[netty] sealed trait OutboxMessage {
-
+  //用指定的 TransportClient 发送消息
   def sendWith(client: TransportClient): Unit
-
+  //当消息发送失败时调用，处理错误
   def onFailure(e: Throwable): Unit
 
 }
-
+//表示单向消息的类，消息只发送一次，不需要等待响应
 private[netty] case class OneWayOutboxMessage(content: ByteBuffer) extends OutboxMessage
   with Logging {
 
@@ -51,11 +51,11 @@ private[netty] case class OneWayOutboxMessage(content: ByteBuffer) extends Outbo
   }
 
 }
-
+//带有响应回调的消息，表示一个RPC请求消息
 private[netty] case class RpcOutboxMessage(
     content: ByteBuffer,
     _onFailure: (Throwable) => Unit,
-    _onSuccess: (TransportClient, ByteBuffer) => Unit)
+    _onSuccess: (TransportClient, ByteBuffer) => Unit)  //当RPC请求成功时调用，触发外部的成功回调
   extends OutboxMessage with RpcResponseCallback with Logging {
 
   private var client: TransportClient = _
@@ -91,34 +91,34 @@ private[netty] case class RpcOutboxMessage(
   }
 
 }
-
+//负责管理发送消息的队列，并在没有连接时处理连接的建立和消息的发送
 private[netty] class Outbox(nettyEnv: NettyRpcEnv, val address: RpcAddress) {
 
   outbox => // Give this an alias so we can use it more clearly in closures.
 
   @GuardedBy("this")
-  private val messages = new java.util.LinkedList[OutboxMessage]
+  private val messages = new java.util.LinkedList[OutboxMessage] //存储待发送的消息队列
 
   @GuardedBy("this")
-  private var client: TransportClient = null
+  private var client: TransportClient = null //发送消息的 TransportClient，表示与远程节点的连接
 
   /**
    * connectFuture points to the connect task. If there is no connect task, connectFuture will be
    * null.
    */
   @GuardedBy("this")
-  private var connectFuture: java.util.concurrent.Future[Unit] = null
+  private var connectFuture: java.util.concurrent.Future[Unit] = null //连接正在建立中，则为一个 Future，表示连接任务的状态
 
   @GuardedBy("this")
-  private var stopped = false
+  private var stopped = false // Outbox 是否已停止，如果停止了，新的消息将不会被发送
 
   /**
    * If there is any thread draining the message queue
    */
   @GuardedBy("this")
-  private var draining = false
+  private var draining = false //当前是否有线程正在“排空”消息队列
 
-  /**
+  /** 用于将消息添加到队列中。如果 Outbox 已经停止，消息会丢失，并且调用 onFailure 通知发送失败；如果没有停止，消息将被添加到队列并尝试发送
    * Send a message. If there is no active connection, cache it and launch a new connection. If
    * [[Outbox]] is stopped, the sender will be notified with a [[SparkException]].
    */
@@ -138,7 +138,7 @@ private[netty] class Outbox(nettyEnv: NettyRpcEnv, val address: RpcAddress) {
     }
   }
 
-  /**
+  /** 尝试从消息队列中取出消息并通过现有的 TransportClient 发送。如果当前没有连接，或者正在建立连接，或者已有线程在处理消息，则不会立即发送
    * Drain the message queue. If there is other draining thread, just exit. If the connection has
    * not been established, launch a task in the `nettyEnv.clientConnectionExecutor` to setup the
    * connection.

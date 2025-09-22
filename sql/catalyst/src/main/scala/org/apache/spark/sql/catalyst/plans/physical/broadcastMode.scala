@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.InternalRow
  * Marker trait to identify the shape in which tuples are broadcasted. Typical examples of this are
  * identity (tuples remain unchanged) or hashed (tuples are converted into some hash index).
  */
+//标识广播数据如何处理的特征，定义了转换数据的行为
 trait BroadcastMode {
   def transform(rows: Array[InternalRow]): Any
 
@@ -31,7 +32,7 @@ trait BroadcastMode {
   def canonicalized: BroadcastMode
 }
 
-/**
+/** 表示广播模式是“原样模式”（即广播的行数据保持原样，不进行任何转换）
  * IdentityBroadcastMode requires that rows are broadcasted in their original form.
  */
 case object IdentityBroadcastMode extends BroadcastMode {

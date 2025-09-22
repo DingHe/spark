@@ -231,6 +231,7 @@ private[spark] class Executor(
   private val maxResultSize = conf.get(MAX_RESULT_SIZE)
 
   // Maintains the list of running tasks.
+  //存储正在运行的任务。键是 taskId，值是对应的 TaskRunner
   private[executor] val runningTasks = new ConcurrentHashMap[Long, TaskRunner]
 
   // Kill mark TTL in milliseconds - 10 seconds.
@@ -238,6 +239,8 @@ private[spark] class Executor(
 
   // Kill marks with interruptThread flag, kill reason and timestamp.
   // This is to avoid dropping the kill event when killTask() is called before launchTask().
+  //用于缓存那些在任务到达之前就收到的杀死请求
+  //键是任务ID，值是（中断标志、kill的原因、时间戳）
   private[executor] val killMarks = new ConcurrentHashMap[Long, (Boolean, String, Long)]
 
   private val killMarkCleanupTask = new Runnable {
@@ -351,15 +354,23 @@ private[spark] class Executor(
   private[executor] def createTaskRunner(context: ExecutorBackend,
     taskDescription: TaskDescription) = new TaskRunner(context, taskDescription, plugins)
 
+  //主要作用是在执行器上启动一个任务（Task）
+  //context: ExecutorBackend: 参数 context 是 ExecutorBackend 接口的一个实例，它是执行器与驱动程序之间通信的后端，用于发送任务状态更新（如任务完成、失败等）给驱动程序
+  //taskDescription: TaskDescription: 参数 taskDescription 包含了任务的所有元数据，例如任务 ID、任务序列化后的字节码、任务的本地性要求、累加器信息等
   def launchTask(context: ExecutorBackend, taskDescription: TaskDescription): Unit = {
+    //任务的唯一标识符（taskId）
     val taskId = taskDescription.taskId
+    //用于创建一个 TaskRunner 对象
     val tr = createTaskRunner(context, taskDescription)
     runningTasks.put(taskId, tr)
+    //这几行代码处理一种特殊情况：在任务启动之前，就已经收到了来自驱动程序的杀死请求。
     val killMark = killMarks.get(taskId)
+    //如果找到了对应的杀死请求（即 killMark 不为 null），说明该任务在启动前已被标记为要杀死
     if (killMark != null) {
       tr.kill(killMark._1, killMark._2)
       killMarks.remove(taskId)
     }
+    //将 TaskRunner 实例提交给线程池，线程池会从其可用线程中分配一个来执行 tr 的 run 方法。run 方法是 TaskRunner 的入口，它将开始真正地执行任务
     threadPool.execute(tr)
     if (decommissioned) {
       log.error(s"Launching a task while in decommissioned state.")
@@ -449,27 +460,33 @@ private[spark] class Executor(
   private def computeTotalGcTime(): Long = {
     ManagementFactory.getGarbageCollectorMXBeans.asScala.map(_.getCollectionTime).sum
   }
-
+  // Spark 执行器（Executor） 中的一个核心组件，它实现了 java.lang.Runnable 接口。它的主要作用是封装和管理单个任务（Task）的完整生命周期
+  // 确保每个任务都在独立的线程中运行，并且所有与该任务相关的操作（从启动到结束）都由它负责处理，从而实现任务的隔离和可靠性
   class TaskRunner(
-      execBackend: ExecutorBackend,
-      val taskDescription: TaskDescription,
-      private val plugins: Option[PluginContainer])
+      execBackend: ExecutorBackend, //执行器后端接口，用于与驱动程序进行通信，例如发送任务状态更新
+      val taskDescription: TaskDescription, //包含任务所有元数据的对象，如任务 ID、任务名称、序列化后的任务代码、本地属性等
+      private val plugins: Option[PluginContainer])//可选的插件容器，允许在任务生命周期的不同阶段（开始、成功、失败）执行自定义逻辑
     extends Runnable {
-
+    //作用：任务的全局唯一标识符，从 taskDescription 中提取。
     val taskId = taskDescription.taskId
+    //作用：任务的名称，通常用于日志记录和监控。
     val taskName = taskDescription.name
+    //作用：为任务线程生成的名称，格式为 "Executor task launch worker for [任务名]"。
     val threadName = s"Executor task launch worker for $taskName"
     val mdcProperties = taskDescription.properties.asScala
       .filter(_._1.startsWith("mdc.")).toSeq
 
     /** If specified, this task has been killed and this option contains the reason. */
+      //用于存储任务被杀死的原因
     @volatile private var reasonIfKilled: Option[String] = None
-
+   //作用：存储任务线程的 ID，在 run 方法中设置。
     @volatile private var threadId: Long = -1
 
     def getThreadId: Long = threadId
 
     /** Whether this task has been finished. */
+      //指示任务是否已完成
+      //@GuardedBy 注解表示对该变量的访问必须通过锁定 TaskRunner.this 对象来同步
     @GuardedBy("TaskRunner.this")
     private var finished = false
 
@@ -482,8 +499,10 @@ private[spark] class Executor(
      * The task to run. This will be set in run() by deserializing the task binary coming
      * from the driver. Once it is set, it will never be changed.
      */
+      //存储反序列化后的任务对象。Task 对象包含了实际的计算逻辑
     @volatile var task: Task[Any] = _
-
+    //用于杀死任务
+    //可以根据 interruptThread 参数决定是否中断任务线程
     def kill(interruptThread: Boolean, reason: String): Unit = {
       logInfo(s"Executor is trying to kill $taskName, reason: $reason")
       reasonIfKilled = Some(reason)
@@ -499,6 +518,8 @@ private[spark] class Executor(
     /**
      * Set the finished flag to true and clear the current thread's interrupt status
      */
+      //用于将 finished 标志设置为 true，同时清除线程的中断状态。
+    // 清除中断状态是为了防止在 execBackend.statusUpdate 等操作中由于中断而导致异常（ClosedByInterruptException）
     private def setTaskFinishedAndClearInterruptStatus(): Unit = synchronized {
       this.finished = true
       // SPARK-14234 - Reset the interrupted status of the thread to avoid the
@@ -517,6 +538,7 @@ private[spark] class Executor(
      *    2. Collect accumulator updates
      *    3. Set the finished flag to true and clear current thread's interrupt status
      */
+      //用于在任务失败时收集累加器更新、计算运行时长和 GC 时间，并重置任务状态
     private def collectAccumulatorsAndResetStatusOnFailure(taskStartTimeNs: Long) = {
       // Report executor runtime and JVM gc time
       Option(task).foreach(t => {
@@ -535,21 +557,26 @@ private[spark] class Executor(
       setTaskFinishedAndClearInterruptStatus()
       (accums, accUpdates)
     }
-
+    //TaskRunner 的核心方法，实现了 Runnable 接口。线程池会执行这个方法，其中包含了任务从启动到结束的整个流程
     override def run(): Unit = {
 
       // Classloader isolation
+      //这部分代码处理类加载器隔离。它根据任务描述中的 artifacts.state（作业工件状态）来决定使用哪一个类加载器
+      //保证了不同作业的依赖包（JARs）不会相互冲突
       val isolatedSession = taskDescription.artifacts.state match {
         case Some(jobArtifactState) =>
           isolatedSessionCache.get(jobArtifactState.uuid, () => newSessionState(jobArtifactState))
         case _ => defaultSessionState
       }
-
+      //设置日志框架的 MDC（Mapped Diagnostic Context），将任务名称和属性添加到当前线程的日志上下文中。这使得日志中能包含任务的元数据，方便调试和追踪
       setMDCForTask(taskName, mdcProperties)
+      //获取并存储当前线程的 ID，并设置线程的名称
       threadId = Thread.currentThread.getId
       Thread.currentThread.setName(threadName)
       val threadMXBean = ManagementFactory.getThreadMXBean
+      //为该任务创建一个独立的内存管理器 TaskMemoryManager，用于管理任务执行时所需的内存，如用于排序、哈希等操作的内存。这确保了任务之间的内存隔离
       val taskMemoryManager = new TaskMemoryManager(env.memoryManager, taskId)
+      //记录任务反序列化开始的纳秒级时间戳和 CPU 时间。这用于后续计算任务的反序列化耗时
       val deserializeStartTimeNs = System.nanoTime()
       val deserializeStartCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
         threadMXBean.getCurrentThreadCpuTime
@@ -557,6 +584,7 @@ private[spark] class Executor(
       Thread.currentThread.setContextClassLoader(isolatedSession.replClassLoader)
       val ser = env.closureSerializer.newInstance()
       logInfo(s"Running $taskName")
+      //通过 execBackend 向驱动程序发送任务状态更新，告知驱动程序该任务已进入 RUNNING 状态
       execBackend.statusUpdate(taskId, TaskState.RUNNING, EMPTY_BYTE_BUFFER)
       var taskStartTimeNs: Long = 0
       var taskStartCpu: Long = 0
@@ -566,6 +594,8 @@ private[spark] class Executor(
       try {
         // Must be set before updateDependencies() is called, in case fetching dependencies
         // requires access to properties contained within (e.g. for access control).
+        // 在执行任务前，先设置任务的本地属性，然后调用 updateDependencies 方法来下载和分发任务所需的 JAR 包、文件和归档。
+        // 接着，再次设置上下文类加载器（确保所有线程都能访问到新的依赖），并反序列化 taskDescription 中的 serializedTask，得到可执行的 Task 对象
         Executor.taskDeserializationProps.set(taskDescription.properties)
 
         updateDependencies(
@@ -583,6 +613,7 @@ private[spark] class Executor(
 
         // If this task has been killed before we deserialized it, let's quit now. Otherwise,
         // continue executing the task.
+        //在反序列化完成后，再次检查任务是否被预先杀死。如果 reasonIfKilled 存在，则立即抛出 TaskKilledException，而不是继续执行任务
         val killReason = reasonIfKilled
         if (killReason.isDefined) {
           // Throw an exception rather than returning, because returning within a try{} block
@@ -596,11 +627,13 @@ private[spark] class Executor(
         // in case FetchFailures have occurred. In local mode `env.mapOutputTracker` will be
         // MapOutputTrackerMaster and its cache invalidation is not based on epoch numbers so
         // we don't need to make any special calls here.
+        //如果不是本地模式，更新 MapOutputTrackerWorker 的 epoch。
+        // 这是为了在 Shuffle 失败时，强制执行器刷新其缓存的 Map 输出状态，从而确保能够拉取到正确的块
         if (!isLocal) {
           logDebug(s"$taskName's epoch is ${task.epoch}")
           env.mapOutputTracker.asInstanceOf[MapOutputTrackerWorker].updateEpoch(task.epoch)
         }
-
+        //通知度量指标轮询器（metricsPoller）任务已开始，并设置 taskStarted 标志
         metricsPoller.onTaskStart(taskId, task.stageId, task.stageAttemptId)
         taskStarted = true
 
@@ -611,6 +644,20 @@ private[spark] class Executor(
         } else 0L
         var threwException = true
         val value = Utils.tryWithSafeFinally {
+          //调用 task.run(...) 来执行实际的用户代码
+          // cpus 并不是给单个 Task 业务逻辑用的，而是 给调度器（Executor + TaskScheduler）用的
+          // spark.task.cpus：每个 task 需要多少个 CPU core。默认是 1。
+          // Executor 在调度时，会用这个参数来决定是否有足够资源运行更多任务
+          // 如果 spark.task.cpus = 2，那 Executor 即使有 4 个核，也只能并行跑 2 个 task
+          // 所以，cpus 影响的是任务调度和资源分配，不直接影响任务逻辑
+          // 虽然 ResultTask/ShuffleMapTask 不用 cpus，但是
+          // Executor 会根据 cpus 限制并发 task 数
+          // 调度器 会通过它做资源申请和分配
+          // 大多数场景下，设置 spark.task.cpus > 1没有意义，除非任务本身需要多核并行才能发挥效果
+          // 例如 Task 内部用到了多线程或并行库  比如 MLlib 的某些算法、调用了 BLAS/OpenMP、多线程 I/O
+          // 这些 Task 内部会并行计算，需要多核 CPU 才能高效运行
+          // 普通 SQL/ETL 场景，Task 基本上是单线程 CPU-bound。
+          // 此时把 spark.task.cpus 设大了，只会减少并发数，拖慢整体执行时间
           val res = task.run(
             taskAttemptId = taskId,
             attemptNumber = taskDescription.attemptNumber,
@@ -621,7 +668,9 @@ private[spark] class Executor(
           threwException = false
           res
         } {
+          //释放该任务持有的所有块存储锁
           val releasedLocks = env.blockManager.releaseAllLocksForTask(taskId)
+          //清理任务分配的所有内存
           val freedMemory = taskMemoryManager.cleanUpAllAllocatedMemory()
 
           if (freedMemory > 0 && !threwException) {
@@ -644,6 +693,7 @@ private[spark] class Executor(
             }
           }
         }
+        // 如果用户代码意外地捕获了这个异常而没有重新抛出，这里会记录一个错误日志，以警告用户不当的行为
         task.context.fetchFailed.foreach { fetchFailure =>
           // uh-oh.  it appears the user code has caught the fetch-failure without throwing any
           // other exceptions.  Its *possible* this is what the user meant to do (though highly
@@ -652,6 +702,7 @@ private[spark] class Executor(
             s"unrecoverable fetch failures!  Most likely this means user code is incorrectly " +
             s"swallowing Spark's internal ${classOf[FetchFailedException]}", fetchFailure)
         }
+        // 记录任务完成的时间，并再次检查任务是否被中断，如果被中断，则将其标记为失败
         val taskFinishNs = System.nanoTime()
         val taskFinishCpu = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
           threadMXBean.getCurrentThreadCpuTime
@@ -659,14 +710,16 @@ private[spark] class Executor(
 
         // If the task has been killed, let's fail it.
         task.context.killTaskIfInterrupted()
-
+        //创建新的序列化器实例，并序列化任务的返回值（value）到 ByteBuffer 中。同时记录序列化前后的时间，用于计算结果序列化耗时
         val resultSer = env.serializer.newInstance()
         val beforeSerializationNs = System.nanoTime()
+        //序列化任务的返回值
         val valueByteBuffer = SerializerHelper.serializeToChunkedBuffer(resultSer, value)
         val afterSerializationNs = System.nanoTime()
 
         // Deserialization happens in two parts: first, we deserialize a Task object, which
         // includes the Partition. Second, Task.run() deserializes the RDD and function to be run.
+        //计算并更新所有与任务相关的度量指标，包括反序列化时间、执行时间、CPU 时间、GC 时间、结果序列化时间等
         task.metrics.setExecutorDeserializeTime(TimeUnit.NANOSECONDS.toMillis(
           (taskStartTimeNs - deserializeStartTimeNs) + task.executorDeserializeTimeNs))
         task.metrics.setExecutorDeserializeCpuTime(
@@ -681,6 +734,7 @@ private[spark] class Executor(
           afterSerializationNs - beforeSerializationNs))
         // Expose task metrics using the Dropwizard metrics system.
         // Update task metrics counters
+        //将这些指标累加到执行器级别的度量源（ExecutorSource）中，以便在 Spark UI 中展示
         executorSource.METRIC_CPU_TIME.inc(task.metrics.executorCpuTime)
         executorSource.METRIC_RUN_TIME.inc(task.metrics.executorRunTime)
         executorSource.METRIC_JVM_GC_TIME.inc(task.metrics.jvmGCTime)
@@ -701,6 +755,7 @@ private[spark] class Executor(
         incrementShuffleMetrics(executorSource, task.metrics)
 
         // Note: accumulator updates must be collected after TaskMetrics is updated
+        // 收集任务的累加器更新和度量指标峰值，将它们与序列化的任务返回值一起封装到 DirectTaskResult 对象中，然后再次序列化以准备发送
         val accumUpdates = task.collectAccumulatorUpdates()
         val metricPeaks = metricsPoller.getTaskMetricPeaks(taskId)
         // TODO: do not serialize value twice
@@ -711,13 +766,17 @@ private[spark] class Executor(
         val resultSize = serializedDirectResult.size
 
         // directSend = sending directly back to the driver
+        // 根据结果大小，决定如何将结果发送给驱动程序
         val serializedResult: ByteBuffer = {
+          //如果序列化结果的大小超过 spark.driver.maxResultSize，则抛弃结果，只返回一个 IndirectTaskResult
           if (maxResultSize > 0 && resultSize > maxResultSize) {
             logWarning(s"Finished $taskName. Result is larger than maxResultSize " +
               s"(${Utils.bytesToString(resultSize)} > ${Utils.bytesToString(maxResultSize)}), " +
               s"dropping it.")
             ser.serialize(new IndirectTaskResult[Any](TaskResultBlockId(taskId), resultSize))
           } else if (resultSize > maxDirectResultSize) {
+            //如果结果大小超过 spark.executor.maxDirectResultSize 但在 maxResultSize 范围内，则将结果存入块管理器（BlockManager），
+            // 并返回一个指向该块的 IndirectTaskResult。驱动程序将通过 BlockManager 远程拉取结果
             val blockId = TaskResultBlockId(taskId)
             env.blockManager.putBytes(
               blockId,
@@ -726,12 +785,14 @@ private[spark] class Executor(
             logInfo(s"Finished $taskName. $resultSize bytes result sent via BlockManager)")
             ser.serialize(new IndirectTaskResult[Any](blockId, resultSize))
           } else {
+            //直接发送：如果结果足够小，直接将序列化的结果 ByteBuffer 返回
             logInfo(s"Finished $taskName. $resultSize bytes result sent to driver")
             // toByteBuffer is safe here, guarded by maxDirectResultSize
             serializedDirectResult.toByteBuffer
           }
         }
-
+        // 任务成功完成的最后步骤。
+        // 它增加成功的任务计数，设置任务完成标志，通知插件任务成功，并通过 execBackend 向驱动程序发送 FINISHED 状态更新和最终结果
         executorSource.SUCCEEDED_TASKS.inc(1L)
         setTaskFinishedAndClearInterruptStatus()
         plugins.foreach(_.onTaskSucceeded())
@@ -835,7 +896,7 @@ private[spark] class Executor(
         }
       }
     }
-
+    //用于将任务的 Shuffle 度量指标累加到执行器级别的度量源（ExecutorSource）中，以便进行汇总统计
     private def incrementShuffleMetrics(
       executorSource: ExecutorSource,
       metrics: TaskMetrics
@@ -882,7 +943,7 @@ private[spark] class Executor(
       executorSource.METRIC_PUSH_BASED_SHUFFLE_MERGED_REMOTE_REQS_DURATION
         .inc(metrics.shuffleReadMetrics.remoteMergedReqsDuration)
     }
-
+    //检查任务的上下文中是否存在 FetchFailedException，通常在处理异常时用于判断任务失败的原因是否与 Shuffle 拉取失败有关
     private def hasFetchFailure: Boolean = {
       task != null && task.context != null && task.context.fetchFailed.isDefined
     }

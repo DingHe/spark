@@ -42,7 +42,7 @@ import org.apache.spark.util.Utils
  */
 trait AnalysisHelper extends QueryPlan[LogicalPlan] { self: LogicalPlan =>
 
-  private var _analyzed: Boolean = false
+  private var _analyzed: Boolean = false  //标志逻辑记录是否已经分析过
 
   /**
    * Recursively marks all nodes in this plan tree as analyzed.
@@ -111,38 +111,38 @@ trait AnalysisHelper extends QueryPlan[LogicalPlan] { self: LogicalPlan =>
     resolveOperatorsUpWithPruning(AlwaysProcess.fn, UnknownRuleId)(rule)
   }
 
-  /**
+  /** 提供了一种高效的、带剪枝的逻辑计划变换机制，核心目标是：避免对已分析或无效的子树进行重复处理，通过ruleId标记规则有效性，减少不必要的遍历，保持节点的元数据一致性，确保变换后的计划结构和原始信息保持一致
    * Returns a copy of this node where `rule` has been recursively applied first to all of its
    * children and then itself (post-order, bottom-up). When `rule` does not apply to a given node,
    * it is left unchanged.  This function is similar to `transformUp`, but skips sub-trees that
    * have already been marked as analyzed.
    *
-   * @param rule   the function used to transform this nodes children.
+   * @param rule   the function used to transform this nodes children. 对逻辑计划（LogicalPlan）进行变换的部分函数，按需对节点及其子树进行处理
    * @param cond   a Lambda expression to prune tree traversals. If `cond.apply` returns false
    *               on an operator T, skips processing T and its subtree; otherwise, processes
-   *               T and its subtree recursively.
+   *               T and its subtree recursively. 用于剪枝（Pruning）子树的Lambda表达式，决定是否对某个节点及其子树进行处理
    * @param ruleId is a unique Id for `rule` to prune unnecessary tree traversals. When it is
    *               UnknownRuleId, no pruning happens. Otherwise, if `rule` (with id `ruleId`)
    *               has been marked as in effective on an operator T, skips processing T and its
    *               subtree. Do not pass it if the rule is not purely functional and reads a
-   *               varying initial state for different invocations.
+   *               varying initial state for different invocations. 规则的唯一标识符，用于标记该规则是否对某个节点及其子树无效，避免重复计算。
    */
   def resolveOperatorsUpWithPruning(cond: TreePatternBits => Boolean,
     ruleId: RuleId = UnknownRuleId)(rule: PartialFunction[LogicalPlan, LogicalPlan])
   : LogicalPlan = {
-    if (!analyzed && cond.apply(self) && !isRuleIneffective(ruleId)) {
-      AnalysisHelper.allowInvokingTransformsInAnalyzer {
-        val afterRuleOnChildren = mapChildren(_.resolveOperatorsUpWithPruning(cond, ruleId)(rule))
-        val afterRule = if (self fastEquals afterRuleOnChildren) {
+    if (!analyzed && cond.apply(self) && !isRuleIneffective(ruleId)) { //判断是否需要处理当前节点
+      AnalysisHelper.allowInvokingTransformsInAnalyzer { //下面是匿名函数简写，正常是这样child => child.resolveOperatorsUpWithPruning(cond, ruleId)(rule)
+        val afterRuleOnChildren = mapChildren(_.resolveOperatorsUpWithPruning(cond, ruleId)(rule)) //对当前节点的每个子节点应用传入的函数，返回包含新的子节点的逻辑树，叶子节点的mapChildren直接返回原节点
+        val afterRule = if (self fastEquals afterRuleOnChildren) {  //如果子节点未发生变化，直接对当前节点应用rule
           CurrentOrigin.withOrigin(origin) {
             rule.applyOrElse(self, identity[LogicalPlan])
           }
-        } else {
+        } else {                    //如果子节点发生变化，则对变换后的节点应用rule
           CurrentOrigin.withOrigin(origin) {
             rule.applyOrElse(afterRuleOnChildren, identity[LogicalPlan])
           }
         }
-        if (self eq afterRule) {
+        if (self eq afterRule) { //如果节点未发生变化，使用markRuleAsIneffective(ruleId)标记该规则对当前节点无效，避免下次重复处理
           self.markRuleAsIneffective(ruleId)
           self
         } else {
@@ -301,7 +301,7 @@ trait AnalysisHelper extends QueryPlan[LogicalPlan] { self: LogicalPlan =>
 
 object AnalysisHelper {
 
-  /**
+  /**跟踪规则调用分析的深度
    * A thread local to track whether we are in a resolveOperator call (for the purpose of analysis).
    * This is an int because resolve* calls might be be nested (e.g. a rule might trigger another
    * query compilation within the rule itself), so we are tracking the depth here.

@@ -29,13 +29,13 @@ import org.apache.spark.util.collection.ExternalAppendOnlyMap
  * @param mergeCombiners function to merge outputs from multiple mergeValue function.
  */
 @DeveloperApi
-case class Aggregator[K, V, C] (
-    createCombiner: V => C,
-    mergeValue: (C, V) => C,
-    mergeCombiners: (C, C) => C) {
+case class Aggregator[K, V, C] (//K：键的类型，V：值的类型（即待聚合的数据类型），C：聚合结果的类型
+    createCombiner: V => C,  //这个函数接受一个类型为 V 的值，返回一个类型为 C 的初始聚合值。它定义了如何将初始值 V 转换为聚合后的值 C
+    mergeValue: (C, V) => C,  //这个函数描述了如何将新值 V 合并到现有的聚合结果 C 中，即如何“更新”当前的聚合结果
+    mergeCombiners: (C, C) => C) {  //这个函数定义了如何将多个聚合结果 C 合并在一起，即在不同任务间合并聚合中间结果
 
   def combineValuesByKey(
-      iter: Iterator[_ <: Product2[K, V]],
+      iter: Iterator[_ <: Product2[K, V]],  //是一个包含键值对 (K, V) 的迭代器，表示需要聚合的数据
       context: TaskContext): Iterator[(K, C)] = {
     val combiners = new ExternalAppendOnlyMap[K, V, C](createCombiner, mergeValue, mergeCombiners)
     combiners.insertAll(iter)

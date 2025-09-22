@@ -30,11 +30,11 @@ import org.apache.spark.internal.Logging
 private[spark] class JobWaiter[T](
     dagScheduler: DAGScheduler,
     val jobId: Int,
-    totalTasks: Int,
+    totalTasks: Int,  //总的任务数
     resultHandler: (Int, T) => Unit)
   extends JobListener with Logging {
 
-  private val finishedTasks = new AtomicInteger(0)
+  private val finishedTasks = new AtomicInteger(0)  //已经完成的task数量
   // If the job is finished, this will be its result. In the case of 0 task jobs (e.g. zero
   // partition RDDs), we set the jobResult directly to JobSucceeded.
   private val jobPromise: Promise[Unit] =
@@ -49,6 +49,7 @@ private[spark] class JobWaiter[T](
    * asynchronously. After the low level scheduler cancels all the tasks belonging to this job, it
    * will fail this job with a SparkException.
    */
+    //通过dagScheduler的cancelJob函数取消作用
   def cancel(): Unit = {
     dagScheduler.cancelJob(jobId, None)
   }
@@ -56,9 +57,9 @@ private[spark] class JobWaiter[T](
   override def taskSucceeded(index: Int, result: Any): Unit = {
     // resultHandler call must be synchronized in case resultHandler itself is not thread safe.
     synchronized {
-      resultHandler(index, result.asInstanceOf[T])
+      resultHandler(index, result.asInstanceOf[T])  //结果回调
     }
-    if (finishedTasks.incrementAndGet() == totalTasks) {
+    if (finishedTasks.incrementAndGet() == totalTasks) {   //如果完成的task等于总数，代表作业完成
       jobPromise.success(())
     }
   }

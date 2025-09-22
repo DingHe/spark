@@ -38,7 +38,7 @@ import org.slf4j.LoggerFactory;
  *
  * We use `FixedLengthRowBasedKeyValueBatch` if all fields in the key and the value are fixed-length
  * data types. Otherwise we use `VariableLengthRowBasedKeyValueBatch`.
- *
+ * 存储键值对的一个抽象类。每个键值对由一个 UnsafeRow 组成，并存储在连续的内存区域中。这个类的实现支持两种不同的方式来处理数据：固定长度字段（FixedLengthRowBasedKeyValueBatch）和可变长度字段（VariableLengthRowBasedKeyValueBatch）
  * RowBasedKeyValueBatch is backed by a single page / MemoryBlock (ranges from 1 to 64MB depending
  * on the system configuration). If the page is full, the aggregate logic should fallback to a
  * second level, larger hash map. We intentionally use the single-page design because it simplifies
@@ -50,30 +50,30 @@ import org.slf4j.LoggerFactory;
 public abstract class RowBasedKeyValueBatch extends MemoryConsumer implements Closeable {
   protected static final Logger logger = LoggerFactory.getLogger(RowBasedKeyValueBatch.class);
 
-  private static final int DEFAULT_CAPACITY = 1 << 16;
-
+  private static final int DEFAULT_CAPACITY = 1 << 16; //默认的批量大小，设置为 65536（即 1 << 16），表示 RowBasedKeyValueBatch 可以存储的最大行数
+  //分别表示键和值的 schema，定义了键和值的字段类型和结构
   protected final StructType keySchema;
   protected final StructType valueSchema;
-  protected final int capacity;
-  protected int numRows = 0;
+  protected final int capacity; //能够存储的最大行数
+  protected int numRows = 0; //当前批次中存储的行数
 
   // ids for current key row and value row being retrieved
   protected int keyRowId = -1;
-
+  //用于存储键和值的 UnsafeRow 对象。每次从内存中读取一行数据时，都会复用这两个对象
   // placeholder for key and value corresponding to keyRowId.
   protected final UnsafeRow keyRow;
   protected final UnsafeRow valueRow;
-
+  //存储数据的内存页。一个内存页用于存储一批数据
   protected MemoryBlock page = null;
-  protected Object base = null;
-  protected final long recordStartOffset;
-  protected long pageCursor = 0;
+  protected Object base = null; //内存页的基础对象，用于访问内存页中的数据
+  protected final long recordStartOffset; //记录每个数据记录的起始偏移量
+  protected long pageCursor = 0; //当前内存页中的游标，用于跟踪数据写入的进度
 
   public static RowBasedKeyValueBatch allocate(StructType keySchema, StructType valueSchema,
                                                TaskMemoryManager manager) {
     return allocate(keySchema, valueSchema, manager, DEFAULT_CAPACITY);
   }
-
+  //根据传入的键值 schema 和内存管理器分配内存。如果键和值的字段都是固定长度的类型，则创建 FixedLengthRowBasedKeyValueBatch，否则创建 VariableLengthRowBasedKeyValueBatch
   public static RowBasedKeyValueBatch allocate(StructType keySchema, StructType valueSchema,
                                                TaskMemoryManager manager, int maxRows) {
     boolean allFixedLength = true;
@@ -112,7 +112,7 @@ public abstract class RowBasedKeyValueBatch extends MemoryConsumer implements Cl
       recordStartOffset = page.getBaseOffset();
     }
   }
-
+  //返回当前批次中存储的行数
   public final int numRows() { return numRows; }
 
   @Override
@@ -122,7 +122,7 @@ public abstract class RowBasedKeyValueBatch extends MemoryConsumer implements Cl
       page = null;
     }
   }
-
+  //尝试分配一个内存页。如果分配成功，返回 true 并设置相关的内存基础对象和偏移量。如果分配失败（内存不足），则返回 false
   private boolean acquirePage(long requiredSize) {
     try {
       page = allocatePage(requiredSize);
@@ -135,7 +135,7 @@ public abstract class RowBasedKeyValueBatch extends MemoryConsumer implements Cl
     return true;
   }
 
-  /**
+  /** 将一个键值对追加到当前的批次中。该方法将数据复制到内存页中，并返回一个 UnsafeRow，指向该键值对的值。如果失败，则返回 null
    * Append a key value pair.
    * It copies data into the backing MemoryBlock.
    * Returns an UnsafeRow pointing to the value if succeeds, otherwise returns null.
@@ -143,7 +143,7 @@ public abstract class RowBasedKeyValueBatch extends MemoryConsumer implements Cl
   public abstract UnsafeRow appendRow(Object kbase, long koff, int klen,
                                       Object vbase, long voff, int vlen);
 
-  /**
+  /** 根据给定的 rowId 获取对应的键。返回的 UnsafeRow 会在多次调用中复用
    * Returns the key row in this batch at `rowId`. Returned key row is reused across calls.
    */
   public abstract UnsafeRow getKeyRow(int rowId);
@@ -165,7 +165,7 @@ public abstract class RowBasedKeyValueBatch extends MemoryConsumer implements Cl
    */
   protected abstract UnsafeRow getValueFromKey(int rowId);
 
-  /**
+  /** 此方法总是返回 0，并不会实际执行溢写操作，因为我们通常依赖其他内存消费者来进行溢写
    * Sometimes the TaskMemoryManager may call spill() on its associated MemoryConsumers to make
    * space for new consumers. For RowBasedKeyValueBatch, we do not actually spill and return 0.
    * We should not throw OutOfMemory exception here because other associated consumers might spill

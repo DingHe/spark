@@ -67,15 +67,15 @@ import static org.apache.spark.network.util.NettyUtils.getRemoteAddress;
  *
  * NB: This class is used to make requests to the server, while {@link TransportResponseHandler} is
  * responsible for handling responses from the server.
- *
+ * 客户端类，用于高效地从远程服务器获取流数据或执行远程过程调用 (RPC)
  * Concurrency: thread safe and can be called from multiple threads.
  */
 public class TransportClient implements Closeable {
   private static final Logger logger = LoggerFactory.getLogger(TransportClient.class);
 
-  private final Channel channel;
-  private final TransportResponseHandler handler;
-  @Nullable private String clientId;
+  private final Channel channel; //表示与远程服务器建立的网络连接
+  private final TransportResponseHandler handler; //负责处理服务器响应，管理请求和回调
+  @Nullable private String clientId; //存储客户端的标识符。用于身份验证
   private volatile boolean timedOut;
 
   public TransportClient(Channel channel, TransportResponseHandler handler) {
@@ -91,7 +91,7 @@ public class TransportClient implements Closeable {
   public boolean isActive() {
     return !timedOut && (channel.isOpen() || channel.isActive());
   }
-
+  //返回当前通道的远程地址，即服务器的地址
   public SocketAddress getSocketAddress() {
     return channel.remoteAddress();
   }
@@ -124,7 +124,7 @@ public class TransportClient implements Closeable {
    * Multiple fetchChunk requests may be outstanding simultaneously, and the chunks are guaranteed
    * to be returned in the same order that they were requested, assuming only a single
    * TransportClient is used to fetch the chunks.
-   *
+   * 从远程服务器请求一个数据块。通过指定 streamId 和 chunkIndex 获取数据块。请求的响应会调用提供的 callback 回调。
    * @param streamId Identifier that refers to a stream in the remote StreamManager. This should
    *                 be agreed upon by client and server beforehand.
    * @param chunkIndex 0-based index of the chunk to fetch
@@ -153,7 +153,7 @@ public class TransportClient implements Closeable {
 
   /**
    * Request to stream the data with the given stream ID from the remote end.
-   *
+   * 请求远程服务器开始数据流。此方法用于接收流数据，返回的数据将通过 callback 进行处理
    * @param streamId The stream to fetch.
    * @param callback Object to call with the stream data.
    */
@@ -180,7 +180,7 @@ public class TransportClient implements Closeable {
   /**
    * Sends an opaque message to the RpcHandler on the server-side. The callback will be invoked
    * with the server's response or upon any failure.
-   *
+   * 发送一个 RPC 请求到服务器。该请求的响应或失败会通过 callback 进行处理。返回请求的唯一标识符 requestId
    * @param message The message to send.
    * @param callback Callback to handle the RPC's reply.
    * @return The RPC's id.
@@ -203,7 +203,7 @@ public class TransportClient implements Closeable {
   /**
    * Sends a MergedBlockMetaRequest message to the server. The response of this message is
    * either a {@link MergedBlockMetaSuccess} or {@link RpcFailure}.
-   *
+   *  发送合并块元数据请求到服务器，用于获取数据块合并的信息。返回的响应会调用 callback
    * @param appId applicationId.
    * @param shuffleId shuffle id.
    * @param shuffleMergeId shuffleMergeId is used to uniquely identify merging process
@@ -232,7 +232,7 @@ public class TransportClient implements Closeable {
   /**
    * Send data to the remote end as a stream.  This differs from stream() in that this is a request
    * to *send* data to the remote end, not to receive it from the remote.
-   *
+   * 向远程服务器上传一个数据流。包括元数据 meta 和实际数据 data，上传成功或失败时会调用 callback
    * @param meta meta data associated with the stream, which will be read completely on the
    *             receiving end before the stream itself.
    * @param data this will be streamed to the remote end to allow for transferring large amounts
@@ -257,7 +257,7 @@ public class TransportClient implements Closeable {
     return requestId;
   }
 
-  /**
+  /** 同步发送一个 RPC 请求，等待指定的超时时间获取响应。返回一个 ByteBuffer 作为响应
    * Synchronously sends an opaque message to the RpcHandler on the server-side, waiting for up to
    * a specified timeout for a response.
    */
@@ -294,7 +294,7 @@ public class TransportClient implements Closeable {
     }
   }
 
-  /**
+  /** 发送一个无响应的消息到服务器，不需要接收返回的消息
    * Sends an opaque message to the RpcHandler on the server-side. No reply is expected for the
    * message, and no delivery guarantees are made.
    *
@@ -306,7 +306,7 @@ public class TransportClient implements Closeable {
 
   /**
    * Removes any state associated with the given RPC.
-   *
+   * 移除与指定 requestId 相关的 RPC 请求
    * @param requestId The RPC id returned by {@link #sendRpc(ByteBuffer, RpcResponseCallback)}.
    */
   public void removeRpcRequest(long requestId) {
@@ -344,7 +344,7 @@ public class TransportClient implements Closeable {
   private static long requestId() {
     return Math.abs(UUID.randomUUID().getLeastSignificantBits());
   }
-
+  //监听 channel 上的操作结果，处理成功或失败的情况。用于各种操作的回调处理
   private class StdChannelListener
       implements GenericFutureListener<Future<? super Void>> {
     final long startTime;

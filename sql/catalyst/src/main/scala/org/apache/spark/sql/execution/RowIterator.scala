@@ -29,23 +29,28 @@ import org.apache.spark.sql.errors.QueryExecutionErrors
  * iterator to consume the next row, whereas RowIterator combines these calls into a single
  * [[advanceNext()]] method.
  */
+//内部的迭代器接口，比标准的 Scala 集合的 Iterator API 要更加严格。具体来说，它将 hasNext() 和 next() 方法合并为了一个单独的 advanceNext() 方法
 abstract class RowIterator {
   /**
    * Advance this iterator by a single row. Returns `false` if this iterator has no more rows
    * and `true` otherwise. If this returns `true`, then the new row can be retrieved by calling
    * [[getRow]].
    */
+  //推进迭代器，返回一个布尔值。如果迭代器还有更多的行，返回 true，否则返回 false。如果返回 true，则可以调用 getRow 方法来获取下一行数据
   def advanceNext(): Boolean
 
   /**
    * Retrieve the row from this iterator. This method is idempotent. It is illegal to call this
    * method after [[advanceNext()]] has returned `false`.
    */
+  //获取当前迭代器指向的行数据
+  //该方法是幂等的，也就是说，无论你调用多少次 getRow，只要迭代器没有被推进到下一个元素，它返回的行数据是相同的
   def getRow: InternalRow
 
   /**
    * Convert this RowIterator into a [[scala.collection.Iterator]].
    */
+  //将 RowIterator 转换为标准的 Scala Iterator
   def toScala: Iterator[InternalRow] = new RowIteratorToScala(this)
 }
 

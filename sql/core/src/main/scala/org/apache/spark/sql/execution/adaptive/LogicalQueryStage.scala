@@ -31,14 +31,14 @@ import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
  * For example, a logical Aggregate can be transformed into FinalAgg - Shuffle - PartialAgg, in
  * which the Shuffle will be wrapped into a [[QueryStageExec]], thus the [[LogicalQueryStage]]
  * will have FinalAgg - QueryStageExec as its physical plan.
- */
+ */ //与 QueryStageExec 相关的一个逻辑计划封装类，它将一个物理查询阶段（QueryStageExec）或包含 QueryStageExec 的物理查询片段包装为一个逻辑查询阶段
 // TODO we can potentially include only [[QueryStageExec]] in this class if we make the aggregation
 // planning aware of partitioning.
 case class LogicalQueryStage(
-    logicalPlan: LogicalPlan,
-    physicalPlan: SparkPlan) extends LeafNode {
+    logicalPlan: LogicalPlan, //表示当前 LogicalQueryStage 的逻辑查询计划，通常是 Spark 解析的查询树的一个部分。它通常是经过优化后的逻辑计划，但未经过物理执行规划
+    physicalPlan: SparkPlan) extends LeafNode { //表示当前 LogicalQueryStage 的物理查询计划，它是查询优化后生成的最终执行计划的一部分，通常包含一个或多个 QueryStageExec 类型的执行计划
 
-  override def output: Seq[Attribute] = logicalPlan.output
+  override def output: Seq[Attribute] = logicalPlan.output //返回逻辑计划的输出属性（即查询结果中的列）
   override val isStreaming: Boolean = logicalPlan.isStreaming
   override val outputOrdering: Seq[SortOrder] = physicalPlan.outputOrdering
   override protected val nodePatterns: Seq[TreePattern] = {
@@ -50,7 +50,7 @@ case class LogicalQueryStage(
     }
     Seq(LOGICAL_QUERY_STAGE) ++ repartitionPattern
   }
-
+  //计算当前查询阶段的统计信息
   override def computeStats(): Statistics = {
     // TODO this is not accurate when there is other physical nodes above QueryStageExec.
     val physicalStats = physicalPlan.collectFirst {

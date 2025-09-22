@@ -25,7 +25,7 @@ import org.json4s.jackson.JsonMethods._
 import org.apache.spark.SparkException
 import org.apache.spark.annotation.Evolving
 
-/**
+/**  GPU  FPGA等资源信息
  * Class to hold information about a type of Resource. A resource could be a GPU, FPGA, etc.
  * The array of addresses are resource specific and its up to the user to interpret the address.
  *

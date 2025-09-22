@@ -27,13 +27,14 @@ import org.apache.spark.util.CallSite
  * partition, and the set of partition IDs, `partitions`. Some stages may not run on all partitions
  * of the RDD, for actions like first() and lookup().
  */
+//用于执行与 Spark 动作（如 count()、save() 等）相关的计算。
 private[spark] class ResultStage(
-    id: Int,
-    rdd: RDD[_],
-    val func: (TaskContext, Iterator[_]) => _,
-    val partitions: Array[Int],
-    parents: List[Stage],
-    firstJobId: Int,
+    id: Int, //ResultStage 的唯一标识符，表示该阶段的 ID
+    rdd: RDD[_], //与当前阶段关联的 RDD，代表当前阶段的计算基础
+    val func: (TaskContext, Iterator[_]) => _, //表示要在每个分区上执行的计算，Iterator[_] 是该分区数据的迭代器
+    val partitions: Array[Int],//当前阶段需要计算的分区 ID 数组
+    parents: List[Stage], //当前阶段的父阶段列表，
+    firstJobId: Int, //首次提交该阶段的作业 ID
     callSite: CallSite,
     resourceProfileId: Int)
   extends Stage(id, rdd, partitions.length, parents, firstJobId, callSite, resourceProfileId) {
@@ -42,7 +43,7 @@ private[spark] class ResultStage(
    * The active job for this result stage. Will be empty if the job has already finished
    * (e.g., because the job was cancelled).
    */
-  private[this] var _activeJob: Option[ActiveJob] = None
+  private[this] var _activeJob: Option[ActiveJob] = None  //表示与当前阶段相关的活跃作业
 
   def activeJob: Option[ActiveJob] = _activeJob
 
@@ -56,7 +57,7 @@ private[spark] class ResultStage(
 
   /**
    * Returns the sequence of partition ids that are missing (i.e. needs to be computed).
-   *
+   * 它通过检查作业中的每个分区是否已经完成来判断哪些分区仍然需要计算。
    * This can only be called when there is an active job.
    */
   override def findMissingPartitions(): Seq[Int] = {

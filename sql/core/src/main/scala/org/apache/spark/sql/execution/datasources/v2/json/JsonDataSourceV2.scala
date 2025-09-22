@@ -22,7 +22,7 @@ import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
-
+//json V2版本的数据源
 class JsonDataSourceV2 extends FileDataSourceV2 {
 
   override def fallbackFileFormat: Class[_ <: FileFormat] = classOf[JsonFileFormat]

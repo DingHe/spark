@@ -28,11 +28,14 @@ import org.apache.spark.annotation.{DeveloperApi, Since}
  */
 @DeveloperApi
 @Since("3.5.0")
+//PartitionEvaluator 是 Spark 中用于在每个分区内执行代码生成的工具
+//T 可能是输入的数据类型（例如 InternalRow），而 U 是输出的数据类型
 trait PartitionEvaluatorFactory[T, U] extends Serializable {
 
   /**
    * Creates a partition evaluator. Each RDD partition will create one evaluator instance, which
    * means one evaluator instance will be used by only one thread.
    */
+  //每个 RDD 分区都会创建一个 PartitionEvaluator 实例，这意味着每个 PartitionEvaluator 实例将由单独的线程使用
   def createEvaluator(): PartitionEvaluator[T, U]
 }

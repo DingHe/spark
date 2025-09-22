@@ -34,7 +34,7 @@ import org.apache.spark.util.SerializableConfiguration
 
 class JsonFileFormat extends TextBasedFileFormat with DataSourceRegister {
   override val shortName: String = "json"
-
+  //检查给定的 JSON 文件是否可分割
   override def isSplitable(
       sparkSession: SparkSession,
       options: Map[String, String],
@@ -51,7 +51,7 @@ class JsonFileFormat extends TextBasedFileFormat with DataSourceRegister {
       sparkSession: SparkSession,
       options: Map[String, String],
       files: Seq[FileStatus]): Option[StructType] = {
-    val parsedOptions = new JSONOptionsInRead(
+    val parsedOptions = new JSONOptionsInRead(  //把传进来的参数options封装成JSON参数
       options,
       sparkSession.sessionState.conf.sessionLocalTimeZone,
       sparkSession.sessionState.conf.columnNameOfCorruptRecord)

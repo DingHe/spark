@@ -26,7 +26,7 @@ import org.apache.spark.util.Utils
 
 /**
  * An implementation of checkpointing implemented on top of Spark's caching layer.
- *
+ *  是 Spark 中的一种优化方式，使用本地的块存储来代替将数据保存到可靠的外部存储系统
  * Local checkpointing trades off fault tolerance for performance by skipping the expensive
  * step of saving the RDD data to a reliable and fault-tolerant storage. Instead, the data
  * is written to the local, ephemeral block storage that lives in each executor. This is useful
@@ -35,12 +35,12 @@ import org.apache.spark.util.Utils
 private[spark] class LocalRDDCheckpointData[T: ClassTag](@transient private val rdd: RDD[T])
   extends RDDCheckpointData[T](rdd) with Logging {
 
-  /**
+  /** 所谓的本地保存就是利用spark自己的blockManager把数据保存在本地机器上，不是分布式系统，例如hdfs
    * Ensure the RDD is fully cached so the partitions can be recovered later.
    */
   protected override def doCheckpoint(): CheckpointRDD[T] = {
     val level = rdd.getStorageLevel
-
+    //假设当前存储级别使用了磁盘，因为如果只使用内存，内存中的数据可能会被逐出（eviction），导致检查点数据丢失
     // Assume storage level uses disk; otherwise memory eviction may cause data loss
     assume(level.useDisk, s"Storage level $level is not appropriate for local checkpointing")
 
@@ -49,8 +49,8 @@ private[spark] class LocalRDDCheckpointData[T: ClassTag](@transient private val 
     val action = (tc: TaskContext, iterator: Iterator[T]) => Utils.getIteratorSize(iterator)
     val missingPartitionIndices = rdd.partitions.map(_.index).filter { i =>
       !SparkEnv.get.blockManager.master.contains(RDDBlockId(rdd.id, i))
-    }
-    if (missingPartitionIndices.nonEmpty) {
+    }  //找出哪些分区的数据尚未存储在BlockManager中
+    if (missingPartitionIndices.nonEmpty) {  //如果有缺失的分区，调用runJob方法执行一个任务，确保这些缺失的分区数据被计算并缓存
       rdd.sparkContext.runJob(rdd, action, missingPartitionIndices)
     }
 

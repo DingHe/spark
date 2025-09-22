@@ -48,6 +48,7 @@ public interface TableCatalog extends CatalogPlugin {
    * A reserved property to specify the location of the table. The files of the table
    * should be under this location. The location is a Hadoop Path string.
    */
+  //用于指定表的位置。表的数据文件应该存放在这个位置，它的值是一个 Hadoop Path 字符串
   String PROP_LOCATION = "location";
 
   /**
@@ -55,31 +56,37 @@ public interface TableCatalog extends CatalogPlugin {
    * If this property is "true", it means it's a managed table even if it has a location. As an
    * example, SHOW CREATE TABLE will not generate the LOCATION clause.
    */
+  //表示表的位置是由系统管理的，而不是用户指定的。如果该属性为 true，即使表有一个位置，它也会被认为是一个管理表
   String PROP_IS_MANAGED_LOCATION = "is_managed_location";
 
   /**
    * A reserved property to specify a table was created with EXTERNAL.
    */
+  //指定表是否是外部表。如果该属性为 true，表示该表是外部表
   String PROP_EXTERNAL = "external";
 
   /**
    * A reserved property to specify the description of the table.
    */
+  //指定表的描述信息
   String PROP_COMMENT = "comment";
 
   /**
    * A reserved property to specify the provider of the table.
    */
+  //指定表的提供者，通常指示表的数据存储系统（例如，Hive、Parquet 等）
   String PROP_PROVIDER = "provider";
 
   /**
    * A reserved property to specify the owner of the table.
    */
+  //指定表的所有者
   String PROP_OWNER = "owner";
 
   /**
    * A prefix used to pass OPTIONS in table properties
    */
+  //用于传递表属性中的 OPTIONS 的前缀
   String OPTION_PREFIX = "option.";
 
   /**
@@ -96,6 +103,7 @@ public interface TableCatalog extends CatalogPlugin {
    * @return an array of Identifiers for tables
    * @throws NoSuchNamespaceException If the namespace does not exist (optional).
    */
+  //列出目录中某个命名空间下的所有表
   Identifier[] listTables(String[] namespace) throws NoSuchNamespaceException;
 
   /**
@@ -108,6 +116,7 @@ public interface TableCatalog extends CatalogPlugin {
    * @return the table's metadata
    * @throws NoSuchTableException If the table doesn't exist or is a view
    */
+  //根据表的标识符从目录中加载表的元数据。如果标识符对应的是一个视图而非表，则抛出异常
   Table loadTable(Identifier ident) throws NoSuchTableException;
 
   /**
@@ -168,6 +177,7 @@ public interface TableCatalog extends CatalogPlugin {
    *
    * @param ident a table identifier
    */
+  //使表的缓存失效。如果该表已经加载或缓存，它会删除缓存的数据。如果表不存在或没有缓存，则该方法什么都不做
   default void invalidateTable(Identifier ident) {
   }
 
@@ -180,6 +190,7 @@ public interface TableCatalog extends CatalogPlugin {
    * @param ident a table identifier
    * @return true if the table exists, false otherwise
    */
+  //检查指定标识符的表是否存在。如果表存在，则返回 true，否则返回 false
   default boolean tableExists(Identifier ident) {
     try {
       return loadTable(ident) != null;
@@ -215,6 +226,7 @@ public interface TableCatalog extends CatalogPlugin {
    * @throws UnsupportedOperationException If a requested partition transform is not supported
    * @throws NoSuchNamespaceException If the identifier namespace does not exist (optional)
    */
+  //用于创建表，传入的参数包括列、分区转换和属性。如果表已经存在，则抛出 TableAlreadyExistsException。如果分区转换不被支持
   default Table createTable(
       Identifier ident,
       Column[] columns,
@@ -227,6 +239,7 @@ public interface TableCatalog extends CatalogPlugin {
    * If true, mark all the fields of the query schema as nullable when executing
    * CREATE/REPLACE TABLE ... AS SELECT ... and creating the table.
    */
+  //确定在执行 CREATE/REPLACE TABLE ... AS SELECT ... 时，查询模式的所有字段是否应标记为可空字段。默认情况下，返回 true，即所有字段为可空
   default boolean useNullableQuerySchema() {
     return true;
   }
@@ -250,6 +263,8 @@ public interface TableCatalog extends CatalogPlugin {
    * @throws NoSuchTableException If the table doesn't exist or is a view
    * @throws IllegalArgumentException If any change is rejected by the implementation.
    */
+  //应用一组表更改操作。每个操作必须按给定的顺序应用。如果有任何更改被拒绝，则不会对表进行任何更改。
+  // 如果表不存在或是视图，则抛出 NoSuchTableException
   Table alterTable(
       Identifier ident,
       TableChange... changes) throws NoSuchTableException;
@@ -281,6 +296,7 @@ public interface TableCatalog extends CatalogPlugin {
    *
    * @since 3.1.0
    */
+  //用于删除表并完全移除其数据，跳过回收站（如果支持的话）
   default boolean purgeTable(Identifier ident) throws UnsupportedOperationException {
     throw QueryExecutionErrors.unsupportedPurgeTableError();
   }
@@ -302,6 +318,7 @@ public interface TableCatalog extends CatalogPlugin {
    * @throws UnsupportedOperationException If the namespaces of old and new identifiers do not
    *                                       match (optional)
    */
+  //用于重命名表。如果目录中存在视图而非表
   void renameTable(Identifier oldIdent, Identifier newIdent)
       throws NoSuchTableException, TableAlreadyExistsException;
 }

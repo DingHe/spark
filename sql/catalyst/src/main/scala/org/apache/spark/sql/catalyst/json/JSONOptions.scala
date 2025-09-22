@@ -31,7 +31,7 @@ import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
 
 /**
  * Options for parsing JSON data into Spark SQL rows.
- *
+ * 解析JSON数据的配置参数
  * Most of these map directly to Jackson's internal options, specified in [[JsonReadFeature]].
  */
 private[sql] class JSONOptions(

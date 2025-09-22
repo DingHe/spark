@@ -31,11 +31,13 @@ import org.apache.spark.sql.types._
  *
  * @note The returned UnsafeRow will be pointed to a scratch buffer inside the projection.
  */
+//用于将表达式生成的代码转化为实际的 UnsafeRow 投影，这样可以通过高效的代码来读取和写入行数据
 object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafeProjection] {
 
   case class Schema(dataType: DataType, nullable: Boolean)
 
   /** Returns true iff we support this data type. */
+  //检查给定的数据类型（DataType）是否被 UnsafeProjection 支持
   def canSupport(dataType: DataType): Boolean = UserDefinedType.sqlType(dataType) match {
     case NullType => true
     case _: AtomicType => true
@@ -45,7 +47,7 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
     case MapType(kt, vt, _) if canSupport(kt) && canSupport(vt) => true
     case _ => false
   }
-
+  //将 StructType 类型的数据写入缓冲区（UnsafeRow）
   private def writeStructToBuffer(
       ctx: CodegenContext,
       input: String,
@@ -80,7 +82,7 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
        |}
      """.stripMargin
   }
-
+  //根据给定的表达式、字段信息和 rowWriter，将数据写入缓冲区。这里的字段包括结构体、数组、映射等类型
   private def writeExpressionsToBuffer(
       ctx: CodegenContext,
       row: String,
@@ -148,7 +150,7 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
        |$writeFieldsCode
      """.stripMargin
   }
-
+  //将 ArrayType 的数据写入缓冲区。对于包含 null 的数组元素，会先判断元素是否为空，如果不为空则写入
   private def writeArrayToBuffer(
       ctx: CodegenContext,
       input: String,
@@ -202,7 +204,7 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
        |}
      """.stripMargin
   }
-
+ //将 MapType 类型的数据写入缓冲区。MapType 包含键值对，因此需要分别写入键和值
   private def writeMapToBuffer(
       ctx: CodegenContext,
       input: String,
@@ -251,7 +253,7 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
        |}
      """.stripMargin
   }
-
+  //根据不同的数据类型（如结构体、数组、映射、数字类型等）生成相应的写入代码
   private def writeElement(
       ctx: CodegenContext,
       input: String,
@@ -282,20 +284,20 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
 
     case _ => s"$writer.write($index, $input);"
   }
-
+  //负责生成用于将一行数据转换为 UnsafeRow 格式的代码
   def createCode(
       ctx: CodegenContext,
-      expressions: Seq[Expression],
-      useSubexprElimination: Boolean = false): ExprCode = {
-    val exprEvals = ctx.generateExpressions(expressions, useSubexprElimination)
+      expressions: Seq[Expression],//需要转换为 UnsafeRow 的表达式列表，通常是一行数据中各个字段的计算逻辑
+      useSubexprElimination: Boolean = false): ExprCode = { //是否启用子表达式消除（common subexpression elimination, CSE），以优化代码生成，避免重复计算相同的子表达式
+    val exprEvals = ctx.generateExpressions(expressions, useSubexprElimination) //遍历传入的 expressions（表达式列表），为每个表达式生成相应的代码（ExprCode）
     val exprSchemas = expressions.map(e => Schema(e.dataType, e.nullable))
 
     val numVarLenFields = exprSchemas.count {
       case Schema(dt, _) => !UnsafeRow.isFixedLength(dt)
       // TODO: consider large decimal and interval type
     }
-
-    val rowWriterClass = classOf[UnsafeRowWriter].getName
+    //构造一个UnsafeRow的写入类
+    val rowWriterClass = classOf[UnsafeRowWriter].getName  //UnsafeRow的写入类，内部封装UnsafeRow的写入方法
     val rowWriter = ctx.addMutableState(rowWriterClass, "rowWriter",
       v => s"$v = new $rowWriterClass(${expressions.length}, ${numVarLenFields * 32});")
 
@@ -320,7 +322,7 @@ object GenerateUnsafeProjection extends CodeGenerator[Seq[Expression], UnsafePro
 
   protected def bind(in: Seq[Expression], inputSchema: Seq[Attribute]): Seq[Expression] =
     bindReferences(in, inputSchema)
-
+  //根据给定的表达式序列生成 UnsafeProjection 对象。它会调用 create 方法来生成最终的代码
   def generate(
       expressions: Seq[Expression],
       subexpressionEliminationEnabled: Boolean): UnsafeProjection = {

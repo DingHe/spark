@@ -31,19 +31,19 @@ import org.apache.spark.rpc._
 
 /**
  * A message dispatcher, responsible for routing RPC messages to the appropriate endpoint(s).
- *
+ * 主要负责处理远程过程调用（RPC）消息的分发。它通过管理注册的 RpcEndpoint（RPC 端点），将消息路由到相应的处理器
  * @param numUsableCores Number of CPU cores allocated to the process, for sizing the thread pool.
  *                       If 0, will consider the available CPUs on the host.
  */
 private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) extends Logging {
-
+  //存储所有注册的 RPC 端点和它们对应的消息处理循环（MessageLoop）。MessageLoop 用于处理该端点的消息
   private val endpoints: ConcurrentMap[String, MessageLoop] =
     new ConcurrentHashMap[String, MessageLoop]
   private val endpointRefs: ConcurrentMap[RpcEndpoint, RpcEndpointRef] =
-    new ConcurrentHashMap[RpcEndpoint, RpcEndpointRef]
+    new ConcurrentHashMap[RpcEndpoint, RpcEndpointRef]  //存储每个 RpcEndpoint 对象及其对应的 RpcEndpointRef（RPC 端点引用）
 
-  private val shutdownLatch = new CountDownLatch(1)
-  private lazy val sharedLoop = new SharedMessageLoop(nettyEnv.conf, this, numUsableCores)
+  private val shutdownLatch = new CountDownLatch(1)  //用于实现优雅地关闭 Dispatcher。当 Dispatcher 停止时，它会减少计数器，等待线程可以继续执行
+  private lazy val sharedLoop = new SharedMessageLoop(nettyEnv.conf, this, numUsableCores)  //一个共享的消息循环，用于处理共享的 RPC 端点的消息
 
   /**
    * True if the dispatcher has been stopped. Once stopped, all messages posted will be bounced
@@ -56,25 +56,25 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     val addr = RpcEndpointAddress(nettyEnv.address, name)
     val endpointRef = new NettyRpcEndpointRef(nettyEnv.conf, addr, nettyEnv)
     synchronized {
-      if (stopped) {
+      if (stopped) { //Dispatcher 已经停止
         throw new IllegalStateException("RpcEnv has been stopped")
       }
-      if (endpoints.containsKey(name)) {
+      if (endpoints.containsKey(name)) { //该端点已经存在
         throw new IllegalArgumentException(s"There is already an RpcEndpoint called $name")
       }
 
       // This must be done before assigning RpcEndpoint to MessageLoop, as MessageLoop sets Inbox be
       // active when registering, and endpointRef must be put into endpointRefs before onStart is
       // called.
-      endpointRefs.put(endpoint, endpointRef)
+      endpointRefs.put(endpoint, endpointRef) //为端点创建一个 RpcEndpointRef 并注册它
 
       var messageLoop: MessageLoop = null
       try {
         messageLoop = endpoint match {
           case e: IsolatedRpcEndpoint =>
-            new DedicatedMessageLoop(name, e, this)
+            new DedicatedMessageLoop(name, e, this)  //端点是 IsolatedRpcEndpoint，则为其创建一个专用的消息循环
           case _ =>
-            sharedLoop.register(name, endpoint)
+            sharedLoop.register(name, endpoint)  //其他使用共享的消息循环
             sharedLoop
         }
         endpoints.put(name, messageLoop)
@@ -86,12 +86,12 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     }
     endpointRef
   }
-
+  //获取已注册的 RpcEndpoint 的引用
   def getRpcEndpointRef(endpoint: RpcEndpoint): RpcEndpointRef = endpointRefs.get(endpoint)
-
+  //从endpointRefs中移除指定的RpcEndpoint引用
   def removeRpcEndpointRef(endpoint: RpcEndpoint): Unit = endpointRefs.remove(endpoint)
 
-  // Should be idempotent
+  // Should be idempotent  注销指定的 RPC 端点，并停止其消息循环
   private def unregisterRpcEndpoint(name: String): Unit = {
     val loop = endpoints.remove(name)
     if (loop != null) {
@@ -101,7 +101,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     // now and they can use `getRpcEndpointRef`. So `endpointRefs` will be cleaned in Inbox via
     // `removeRpcEndpointRef`.
   }
-
+  //停止指定的 RPC 端点
   def stop(rpcEndpointRef: RpcEndpointRef): Unit = {
     synchronized {
       if (stopped) {
@@ -114,7 +114,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
 
   /**
    * Send a message to all registered [[RpcEndpoint]]s in this process.
-   *
+   * 向所有注册的 RPC 端点发送消息
    * This can be used to make network events known to all end points (e.g. "a new node connected").
    */
   def postToAll(message: InboxMessage): Unit = {
@@ -128,7 +128,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
       )}
   }
 
-  /** Posts a message sent by a remote endpoint. */
+  /** Posts a message sent by a remote endpoint.向远程端点发送消息，并设置回调函数来处理响应 */
   def postRemoteMessage(message: RequestMessage, callback: RpcResponseCallback): Unit = {
     val rpcCallContext =
       new RemoteNettyRpcCallContext(nettyEnv, callback, message.senderAddress)
@@ -136,7 +136,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     postMessage(message.receiver.name, rpcMessage, (e) => callback.onFailure(e))
   }
 
-  /** Posts a message sent by a local endpoint. */
+  /** Posts a message sent by a local endpoint. 向本地端点发送消息，并通过 Promise 对象处理响应*/
   def postLocalMessage(message: RequestMessage, p: Promise[Any]): Unit = {
     val rpcCallContext =
       new LocalNettyRpcCallContext(message.senderAddress, p)
@@ -144,7 +144,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     postMessage(message.receiver.name, rpcMessage, (e) => p.tryFailure(e))
   }
 
-  /** Posts a one-way message. */
+  /** Posts a one-way message. 向指定的端点发送一条单向消息*/
   def postOneWayMessage(message: RequestMessage): Unit = {
     postMessage(message.receiver.name, OneWayMessage(message.senderAddress, message.content),
       {
@@ -161,7 +161,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
 
   /**
    * Posts a message to a specific endpoint.
-   *
+   * 向指定的端点发送消息
    * @param endpointName name of the endpoint.
    * @param message the message to post
    * @param callbackIfStopped callback function if the endpoint is stopped.
@@ -177,7 +177,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
       } else if (loop == null) {
         Some(new SparkException(s"Could not find $endpointName."))
       } else {
-        loop.post(endpointName, message)
+        loop.post(endpointName, message) //将消息传递给 MessageLoop 进行处理
         None
       }
     }

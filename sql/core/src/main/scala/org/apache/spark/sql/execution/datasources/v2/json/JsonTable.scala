@@ -28,17 +28,20 @@ import org.apache.spark.sql.execution.datasources.json.JsonDataSource
 import org.apache.spark.sql.execution.datasources.v2.FileTable
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
-
+//用于支持 Spark 读取和写入 JSON 格式的数据。
+// 它封装了 JSON 文件的 Schema 解析、扫描、写入等逻辑，属于 Spark 数据源 V2（Data Source V2）框架的一部分
 case class JsonTable(
-    name: String,
+    name: String,  //表名称
     sparkSession: SparkSession,
-    options: CaseInsensitiveStringMap,
-    paths: Seq[String],
-    userSpecifiedSchema: Option[StructType],
-    fallbackFileFormat: Class[_ <: FileFormat])
+    options: CaseInsensitiveStringMap,  //选项参数（如 multiline、mode 等 JSON 读取选项）
+    paths: Seq[String],   //需要读取的 JSON 文件路径
+    userSpecifiedSchema: Option[StructType],  //用户指定的 Schema（如果用户未提供，将通过 inferSchema 进行推断）
+    fallbackFileFormat: Class[_ <: FileFormat])  //允许回退到 V1 FileFormat（如 JsonFileFormat）
   extends FileTable(sparkSession, options, paths, userSpecifiedSchema) {
-  override def newScanBuilder(options: CaseInsensitiveStringMap): JsonScanBuilder =
+  override def newScanBuilder(options: CaseInsensitiveStringMap): JsonScanBuilder = {
+    //JsonScanBuilder 负责执行扫描逻辑
     new JsonScanBuilder(sparkSession, fileIndex, schema, dataSchema, options)
+  }
 
   override def inferSchema(files: Seq[FileStatus]): Option[StructType] = {
     val parsedOptions = new JSONOptionsInRead(

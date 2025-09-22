@@ -52,7 +52,7 @@ import org.apache.spark.util.Utils;
  * store a "page number" and the lower 51 bits to store an offset within this page. These page
  * numbers are used to index into a "page table" array inside of the MemoryManager in order to
  * retrieve the base object.
- * <p>
+ * <p>  负责管理Spark任务在执行过程中分配的内存，特别是在Tungsten执行引擎中，支持堆外内存（off-heap）和堆内存（on-heap）的管理
  * This allows us to address 8192 pages. In on-heap mode, the maximum page size is limited by the
  * maximum size of a long[] array, allowing us to address 8192 * (2^31 - 1) * 8 bytes, which is
  * approximately 140 terabytes of memory.
@@ -62,14 +62,14 @@ public class TaskMemoryManager {
   private static final Logger logger = LoggerFactory.getLogger(TaskMemoryManager.class);
 
   /** The number of bits used to address the page table. */
-  private static final int PAGE_NUMBER_BITS = 13;
+  private static final int PAGE_NUMBER_BITS = 13; //定义了用来表示页面表中页面数量的位数。这里设置为13，即最多可以管理8192个页面
 
   /** The number of bits used to encode offsets in data pages. */
   @VisibleForTesting
-  static final int OFFSET_BITS = 64 - PAGE_NUMBER_BITS;  // 51
+  static final int OFFSET_BITS = 64 - PAGE_NUMBER_BITS;  // 51，定义了用来表示页面内偏移量的位数，64位减去PAGE_NUMBER_BITS，结果为51位
 
   /** The number of entries in the page table. */
-  private static final int PAGE_TABLE_SIZE = 1 << PAGE_NUMBER_BITS;
+  private static final int PAGE_TABLE_SIZE = 1 << PAGE_NUMBER_BITS; //页面表的大小，即页面数量
 
   /**
    * Maximum supported data page size (in bytes). In principle, the maximum addressable page size is
@@ -78,10 +78,10 @@ public class TaskMemoryManager {
    * array, which is (2^31 - 1) * 8 bytes (or about 17 gigabytes). Therefore, we cap this at 17
    * gigabytes.
    */
-  public static final long MAXIMUM_PAGE_SIZE_BYTES = ((1L << 31) - 1) * 8L;
+  public static final long MAXIMUM_PAGE_SIZE_BYTES = ((1L << 31) - 1) * 8L; //每个页面的最大字节数，由于在堆外内存模式下，页面大小理论上可以达到2+PB（千万亿字节），但由于堆内存限制最大为17GB，所以这里将其限制为17GB
 
   /** Bit mask for the lower 51 bits of a long. */
-  private static final long MASK_LONG_LOWER_51_BITS = 0x7FFFFFFFFFFFFL;
+  private static final long MASK_LONG_LOWER_51_BITS = 0x7FFFFFFFFFFFFL; //掩码，用来提取64位长整数中的低51位，用于内存偏移量的编码
 
   /**
    * Similar to an operating system's page table, this array maps page numbers into base object
@@ -91,14 +91,14 @@ public class TaskMemoryManager {
    * When using an on-heap allocator, the entries in this map will point to pages' base objects.
    * Entries are added to this map as new data pages are allocated.
    */
-  private final MemoryBlock[] pageTable = new MemoryBlock[PAGE_TABLE_SIZE];
+  private final MemoryBlock[] pageTable = new MemoryBlock[PAGE_TABLE_SIZE]; //映射每个页面的基地址
 
   /**
    * Bitmap for tracking free pages.
    */
-  private final BitSet allocatedPages = new BitSet(PAGE_TABLE_SIZE);
+  private final BitSet allocatedPages = new BitSet(PAGE_TABLE_SIZE); //跟踪已分配的页面，表示哪些页面已经被分配使用
 
-  private final MemoryManager memoryManager;
+  private final MemoryManager memoryManager;  //目前主要是统一内存管理器
 
   private final long taskAttemptId;
 
@@ -115,7 +115,7 @@ public class TaskMemoryManager {
   @GuardedBy("this")
   private final HashSet<MemoryConsumer> consumers;
 
-  /**
+  /**申请但未使用的内存
    * The amount of memory that is acquired but not used.
    */
   private volatile long acquiredButNotUsed = 0L;

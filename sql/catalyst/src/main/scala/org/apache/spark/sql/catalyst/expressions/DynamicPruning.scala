@@ -40,11 +40,11 @@ trait DynamicPruning extends Predicate
  * @param broadcastKeyIndex the index of the filtering key collected from the broadcast
  */
 case class DynamicPruningSubquery(
-    pruningKey: Expression,
-    buildQuery: LogicalPlan,
-    buildKeys: Seq[Expression],
-    broadcastKeyIndex: Int,
-    onlyInBroadcast: Boolean,
+    pruningKey: Expression, //表示用于过滤的关键字，它是一个表达式，用于根据某些条件从查询中剔除不必要的数据。在动态分区裁剪（Dynamic Partition Pruning）中，它是用来决定如何裁剪数据的关键
+    buildQuery: LogicalPlan, //JOIN操作中“build”侧的逻辑查询计划。在动态裁剪中，“build”侧是通过过滤键（pruningKey）来选择的部分数据，通常是广播表的查询计划
+    buildKeys: Seq[Expression], //用于连接操作的“build”侧的连接键。它们与buildQuery中的数据字段相关联，用于连接操作和过滤的依据
+    broadcastKeyIndex: Int, //是buildKeys中的索引，用于标识在广播表中哪个列（或字段）会被用作裁剪的关键字
+    onlyInBroadcast: Boolean, //裁剪过滤器的应用场景。如果为false，表示裁剪过滤器可能对查询优化有利，因此即使无法重用广播的结果，也会执行该过滤器；如果为true，则只有在可以重用广播结果的情况下，才会执行裁剪过滤器
     exprId: ExprId = NamedExpression.newExprId,
     hint: Option[HintInfo] = None)
   extends SubqueryExpression(buildQuery, Seq(pruningKey), exprId, Seq.empty, hint)
@@ -52,9 +52,9 @@ case class DynamicPruningSubquery(
   with Unevaluable
   with UnaryLike[Expression] {
 
-  override def child: Expression = pruningKey
+  override def child: Expression = pruningKey  //子查询中用于动态裁剪的表达式
 
-  override def plan: LogicalPlan = buildQuery
+  override def plan: LogicalPlan = buildQuery //用于动态裁剪的“build”侧查询计划
 
   override def nullable: Boolean = false
 
@@ -95,6 +95,7 @@ case class DynamicPruningSubquery(
  *
  * @param child underlying predicate.
  */
+//封装DynamicPruning表达式中的实际谓词（predicate）。child表示一个表达式，通常是用于判断过滤条件的子表达式
 case class DynamicPruningExpression(child: Expression)
   extends UnaryExpression
   with DynamicPruning {

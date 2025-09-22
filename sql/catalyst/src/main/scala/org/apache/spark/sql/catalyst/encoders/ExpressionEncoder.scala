@@ -48,7 +48,7 @@ import org.apache.spark.util.Utils
 object ExpressionEncoder {
 
   def apply[T : TypeTag](): ExpressionEncoder[T] = {
-    apply(ScalaReflection.encoderFor[T])
+    apply(ScalaReflection.encoderFor[T])  //ScalaReflection.encoderFor[T]构建具体类型的AgnosticEncoder编码器
   }
 
   def apply[T](enc: AgnosticEncoder[T]): ExpressionEncoder[T] = {
@@ -59,7 +59,7 @@ object ExpressionEncoder {
   }
 
   def apply(schema: StructType): ExpressionEncoder[Row] = apply(schema, lenient = false)
-
+  //lenient是否宽松模式
   def apply(schema: StructType, lenient: Boolean): ExpressionEncoder[Row] = {
     apply(RowEncoder.encoderFor(schema, lenient))
   }
@@ -79,16 +79,16 @@ object ExpressionEncoder {
    * `Option[T]`, and we must not set it to true in this case.
    */
   def tuple(
-      encoders: Seq[ExpressionEncoder[_]],
-      useNullSafeDeserializer: Boolean = false): ExpressionEncoder[_] = {
-    if (encoders.length > 22) {
+      encoders: Seq[ExpressionEncoder[_]],   // 需要组合的编码器列表
+      useNullSafeDeserializer: Boolean = false): ExpressionEncoder[_] = {  // 是否使用安全的反序列化方式（默认 false）
+    if (encoders.length > 22) { //Scala 最多支持 22 个元素的元组（Tuple22）
       throw QueryExecutionErrors.elementsOfTupleExceedLimitError()
     }
 
-    encoders.foreach(_.assertUnresolved())
+    encoders.foreach(_.assertUnresolved()) //ExpressionEncoder 在 Catalyst 解析之前必须保持未解析状态，以便后续优化
 
     val cls = Utils.getContextOrSparkClassLoader.loadClass(s"scala.Tuple${encoders.size}")
-
+    //代表 TupleN 对象，数据类型是 ObjectType(cls)
     val newSerializerInput = BoundReference(0, ObjectType(cls), nullable = true)
     val serializers = encoders.zipWithIndex.map { case (enc, index) =>
       val boundRefs = enc.objSerializer.collect { case b: BoundReference => b }.distinct
@@ -97,23 +97,24 @@ object ExpressionEncoder {
 
       val originalInputObject = boundRefs.head
       val newInputObject = Invoke(
-        newSerializerInput,
-        s"_${index + 1}",
+        newSerializerInput, // 元组对象
+        s"_${index + 1}",   // 访问元组的 `_N` 方法
         originalInputObject.dataType,
         returnNullable = originalInputObject.nullable)
-
+      //原来的 BoundReference(0, _, _) 指向独立的对象，需要替换成 newInputObject（访问元组的方法）
       val newSerializer = enc.objSerializer.transformUp {
         case BoundReference(0, _, _) => newInputObject
       }
 
       Alias(newSerializer, s"_${index + 1}")()
     }
+    //生成 Spark SQL 结构体，用于存储元组中的各个字段
     val newSerializer = CreateStruct(serializers)
 
     def nullSafe(input: Expression, result: Expression): Expression = {
       If(IsNull(input), Literal.create(null, result.dataType), result)
     }
-
+    //表示从 第 0 列获取存储元组的 Row 对象
     val newDeserializerInput = GetColumnByOrdinal(0, newSerializer.dataType)
     val childrenDeserializers = encoders.zipWithIndex.map { case (enc, index) =>
       val getColExprs = enc.objDeserializer.collect { case c: GetColumnByOrdinal => c }.distinct
@@ -233,10 +234,13 @@ object ExpressionEncoder {
  *                        type `T`.
  * @param clsTag A classtag for `T`.
  */
+//在Spark SQL中将自定义对象转换为DataFrame或Dataset时，可以使用ExpressionEncoder来指定对象的编码和解码方式
+//当需要在Spark SQL查询过程中直接对对象进行序列化和反序列化操作时，可以使用ExpressionEncoder进行对象的编码和解码
+//ExpressionEncoder 使用 Catalyst 表达式和代码生成的方式将对象转换为 InternalRow 格式，或从 InternalRow 中反序列化为对象
 case class ExpressionEncoder[T](
-    objSerializer: Expression,
-    objDeserializer: Expression,
-    clsTag: ClassTag[T])
+    objSerializer: Expression, //用于序列化对象 T 的表达式
+    objDeserializer: Expression, //用于反序列化对象的表达式
+    clsTag: ClassTag[T]) //用于存储类型 T 的 ClassTag，用于类型信息的传递
   extends Encoder[T] {
 
   /**
@@ -246,10 +250,11 @@ case class ExpressionEncoder[T](
    *    the `CreateNamedStruct`.
    * 2. For other cases, wrap the single serializer with `CreateNamedStruct`.
    */
+  //作用是通过一系列表达式从原始对象中提取字段，并将其编码为 InternalRow 格式
   val serializer: Seq[NamedExpression] = {
     val clsName = Utils.getSimpleName(clsTag.runtimeClass)
 
-    if (isSerializedAsStructForTopLevel) {
+    if (isSerializedAsStructForTopLevel) { //检查对象是否是被序列化为 StructType 的标志
       val nullSafeSerializer = objSerializer.transformUp {
         case r: BoundReference =>
           // For input object of Product type, we can't encode it to row if it's null, as Spark SQL
@@ -310,6 +315,7 @@ case class ExpressionEncoder[T](
   /**
    * Returns true if the type `T` is serialized as a struct by `objSerializer`.
    */
+  //判断表达式的数据类型是否为StructType
   def isSerializedAsStruct: Boolean = objSerializer.dataType.isInstanceOf[StructType]
 
   /**
@@ -319,6 +325,7 @@ case class ExpressionEncoder[T](
    * flattened to top-level row, because in Spark SQL top-level row can't be null. This method
    * returns true if `T` is serialized as struct and is not `Option` type.
    */
+    //objSerializer数据类型是StructType，并且clsTag不是Option类型
   def isSerializedAsStructForTopLevel: Boolean = {
     isSerializedAsStruct && !classOf[Option[_]].isAssignableFrom(clsTag.runtimeClass)
   }
@@ -344,10 +351,10 @@ case class ExpressionEncoder[T](
    * binding stuff should happen inside query framework.  However, in some cases we need to
    * use encoder as a function to do serialization directly(e.g. Dataset.collect), then we can use
    * this method to do resolution and binding outside of query framework.
-   */
+   */ //该方法的目的是解析（resolve）并绑定（bind）序列化和反序列化的表达式，使得编码器可以正确地将数据从 Spark SQL 行（Row）反序列化为对象类型
   def resolveAndBind(
-      attrs: Seq[Attribute] = DataTypeUtils.toAttributes(schema),
-      analyzer: Analyzer = SimpleAnalyzer): ExpressionEncoder[T] = {
+      attrs: Seq[Attribute] = DataTypeUtils.toAttributes(schema),  //attrs: Seq[Attribute]：这是一个 Attribute 类型的序列，表示 Spark SQL 的列（字段）
+      analyzer: Analyzer = SimpleAnalyzer): ExpressionEncoder[T] = {  //analyzer: Analyzer 查询分析器用于检查和分析 Spark SQL 查询的语法和语义
     val dummyPlan = CatalystSerde.deserialize(LocalRelation(attrs))(this)
     val analyzedPlan = analyzer.execute(dummyPlan)
     analyzer.checkAnalysis(analyzedPlan)

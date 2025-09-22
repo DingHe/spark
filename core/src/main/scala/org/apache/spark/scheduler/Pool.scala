@@ -28,25 +28,27 @@ import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 /**
  * A Schedulable entity that represents collection of Pools or TaskSetManagers
  */
+//调度系统的一部分，用于表示一个调度池（Pool），用于管理和调度任务
 private[spark] class Pool(
-    val poolName: String,
-    val schedulingMode: SchedulingMode,
-    initMinShare: Int,
-    initWeight: Int)
+    val poolName: String, //标识调度池的唯一名称
+    val schedulingMode: SchedulingMode, //FAIR 表示公平调度，FIFO 表示先进先出调度
+    initMinShare: Int, //每个池至少能获得指定数量的资源份额
+    initWeight: Int) //池的权重决定其在调度中的优先级和资源分配
   extends Schedulable with Logging {
 
-  val schedulableQueue = new ConcurrentLinkedQueue[Schedulable]
-  val schedulableNameToSchedulable = new ConcurrentHashMap[String, Schedulable]
-  val weight = initWeight
-  val minShare = initMinShare
-  var runningTasks = 0
-  val priority = 0
+  val schedulableQueue = new ConcurrentLinkedQueue[Schedulable] //存储池中所有的 Schedulable 对象
+  val schedulableNameToSchedulable = new ConcurrentHashMap[String, Schedulable] //将 Schedulable 对象的名称映射到对应的 Schedulable 实例
+  val weight = initWeight  //影响池在资源调度中的相对优先级
+  val minShare = initMinShare  //池至少应当拥有的资源份额
+  var runningTasks = 0 //当前池中正在运行的任务数量
+  val priority = 0   //池的优先级，当前值为 0，表示池的默认优先级
 
   // A pool's stage id is used to break the tie in scheduling.
   var stageId = -1
   val name = poolName
   var parent: Pool = null
 
+   //根据池的调度模式 (schedulingMode)，选择合适的调度算法
   private val taskSetSchedulingAlgorithm: SchedulingAlgorithm = {
     schedulingMode match {
       case SchedulingMode.FAIR =>
@@ -101,7 +103,7 @@ private[spark] class Pool(
     }
     shouldRevive
   }
-
+  //目的是根据调度算法（taskSetSchedulingAlgorithm）对池中的任务集进行排序，并返回排序后的任务集队列
   override def getSortedTaskSetQueue: ArrayBuffer[TaskSetManager] = {
     val sortedTaskSetQueue = new ArrayBuffer[TaskSetManager]
     val sortedSchedulableQueue =
@@ -111,14 +113,14 @@ private[spark] class Pool(
     }
     sortedTaskSetQueue
   }
-
+  //增加正在运行的任务
   def increaseRunningTasks(taskNum: Int): Unit = {
     runningTasks += taskNum
     if (parent != null) {
       parent.increaseRunningTasks(taskNum)
     }
   }
-
+   //减少正在运行的任务
   def decreaseRunningTasks(taskNum: Int): Unit = {
     runningTasks -= taskNum
     if (parent != null) {

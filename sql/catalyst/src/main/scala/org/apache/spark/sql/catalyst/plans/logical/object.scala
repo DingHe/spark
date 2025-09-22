@@ -32,26 +32,26 @@ import org.apache.spark.sql.errors.QueryCompilationErrors
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.{GroupStateTimeout, OutputMode}
 import org.apache.spark.sql.types._
-
+//主要包含了与 Spark Catalyst 引擎中序列化和反序列化相关的操作。这些操作通常涉及将数据从 Spark SQL 表达式的内部表示转换为目标对象类型，或者将对象转换回 SQL 表达式的内部表示
 object CatalystSerde {
-  def deserialize[T : Encoder](child: LogicalPlan): DeserializeToObject = {
-    val deserializer = UnresolvedDeserializer(encoderFor[T].deserializer)
+  def deserialize[T : Encoder](child: LogicalPlan): DeserializeToObject = { //负责将一个 LogicalPlan 中的内容反序列化为目标对象 T，反序列化的过程实际上是从 Spark SQL 内部表示（Row）转换为一个类型为 T 的对象
+    val deserializer = UnresolvedDeserializer(encoderFor[T].deserializer)  //deserializer 代表如何将 Row 转换为 T 类型的对象，但在这个阶段，它是未解析的（UnresolvedDeserializer）
     DeserializeToObject(deserializer, generateObjAttr[T], child)
   }
-
+  //用于将目标对象 T 序列化成 Spark SQL 的内部表示。序列化是将 T 类型的对象转换为 Row 形式，以便存储或进一步处理
   def serialize[T : Encoder](child: LogicalPlan): SerializeFromObject = {
-    SerializeFromObject(encoderFor[T].namedExpressions, child)
+    SerializeFromObject(encoderFor[T].namedExpressions, child)  //提取出一组命名表达式（namedExpressions），这些表达式定义了如何将 T 类型的对象转换为 Spark SQL 的内部表示
   }
-
+  //用于生成一个与目标对象 T 类型相关的 Attribute。Attribute 是 Spark SQL 中表示数据列或字段的基本单位
   def generateObjAttr[T : Encoder]: Attribute = {
     val enc = encoderFor[T]
-    val dataType = enc.deserializer.dataType
-    val nullable = !enc.clsTag.runtimeClass.isPrimitive
-    AttributeReference("obj", dataType, nullable)()
+    val dataType = enc.deserializer.dataType  //提取出数据类型（dataType），表示 T 类型对象对应的 SQL 数据类型
+    val nullable = !enc.clsTag.runtimeClass.isPrimitive  //如果是原始类型，则 nullable 为 false，否则为 true，表示该类型的对象可以为 null
+    AttributeReference("obj", dataType, nullable)()  //返回一个 AttributeReference 对象，表示反序列化后的对象的属性
   }
 }
 
-/**
+/**  实现了该接口的节点会涉及到将数据从 Row 转换为应用程序对象
  * A trait for logical operators that produces domain objects as output.
  * The output of this operator is a single-field safe row containing the produced object.
  */
@@ -73,13 +73,13 @@ trait ObjectConsumer extends UnaryNode with ReferenceAllColumns[LogicalPlan] {
   def inputObjAttr: Attribute = child.output.head
 }
 
-/**
+/**  表示一个逻辑节点，用于将输入的 Row 转换为一个对象，使用给定的反序列化表达式
  * Takes the input row from child and turns it into object using the given deserializer expression.
  */
 case class DeserializeToObject(
-    deserializer: Expression,
-    outputObjAttr: Attribute,
-    child: LogicalPlan) extends UnaryNode with ObjectProducer {
+    deserializer: Expression,  //用于执行反序列化操作，将 Row 数据转换为目标对象
+    outputObjAttr: Attribute, //用于表示反序列化后的对象的输出结果
+    child: LogicalPlan) extends UnaryNode with ObjectProducer {  //表示数据的来源。它是当前节点的输入数据
   final override val nodePatterns: Seq[TreePattern] = Seq(DESERIALIZE_TO_OBJECT)
   override protected def withNewChildInternal(newChild: LogicalPlan): DeserializeToObject =
     copy(child = newChild)

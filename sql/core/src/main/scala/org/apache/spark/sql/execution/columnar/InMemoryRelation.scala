@@ -383,14 +383,14 @@ object InMemoryRelation {
     relation
   }
 }
-
+//Spark SQL 中表示内存缓存数据的逻辑计划节点（LogicalPlan）。该类实现了 LeafNode 和 MultiInstanceRelation 特质，表示它是一个没有子节点的计划节点，并且支持多实例的关系
 case class InMemoryRelation(
-    output: Seq[Attribute],
-    @transient cacheBuilder: CachedRDDBuilder,
-    override val outputOrdering: Seq[SortOrder])
+    output: Seq[Attribute],  //表示该节点的输出属性。每个 Attribute 是查询结果的一列，通常是数据库表的列
+    @transient cacheBuilder: CachedRDDBuilder,  //用来构建基于内存的缓存数据结构，并用于加速查询操作
+    override val outputOrdering: Seq[SortOrder])  //表示列的排序方式（升序或降序）
   extends logical.LeafNode with MultiInstanceRelation {
 
-  @volatile var statsOfPlanToCache: Statistics = null
+  @volatile var statsOfPlanToCache: Statistics = null  //用来存储与该计划相关的统计信息
 
   override def innerChildren: Seq[SparkPlan] = Seq(cachedPlan)
 

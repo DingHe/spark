@@ -30,15 +30,15 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 class BasicInMemoryTableCatalog extends TableCatalog {
   import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
-
+  //存储命名空间的并发映射。它的键是命名空间的列表，值是该命名空间的属性
   protected val namespaces: util.Map[List[String], Map[String, String]] =
     new ConcurrentHashMap[List[String], Map[String, String]]()
-
+  //存储表的并发映射。它的键是表的标识符 Identifier，值是 Table 对象，表示目录中所有的表
   protected val tables: util.Map[Identifier, Table] =
     new ConcurrentHashMap[Identifier, Table]()
-
+  //存储无效表标识符的集合。表示已经被标记为失效的表
   private val invalidatedTables: util.Set[Identifier] = ConcurrentHashMap.newKeySet()
-
+  //目录的名称。通过 initialize 方法进行初始化
   private var _name: Option[String] = None
 
   override def initialize(name: String, options: CaseInsensitiveStringMap): Unit = {
@@ -46,8 +46,9 @@ class BasicInMemoryTableCatalog extends TableCatalog {
   }
 
   override def name: String = _name.get
-
+  //列出指定命名空间下的所有表
   override def listTables(namespace: Array[String]): Array[Identifier] = {
+    //sameElements 方法会逐个比较两个数组的元素，只有在元素相同且顺序一致的情况下，才返回 true
     tables.keySet.asScala.filter(_.namespace.sameElements(namespace)).toArray
   }
 
@@ -114,13 +115,14 @@ class BasicInMemoryTableCatalog extends TableCatalog {
       advisoryPartitionSize: Option[Long],
       distributionStrictlyRequired: Boolean = true,
       numRowsPerSplit: Int = Int.MaxValue): Table = {
-    if (tables.containsKey(ident)) {
+    if (tables.containsKey(ident)) {  //如果表存在，则抛出异常
       throw new TableAlreadyExistsException(ident.asMultipartIdentifier)
     }
 
     InMemoryTableCatalog.maybeSimulateFailedTableCreation(properties)
 
     val tableName = s"$name.${ident.quoted}"
+    //创建内存表
     val table = new InMemoryTable(tableName, schema, partitions, properties, distribution,
       ordering, requiredNumPartitions, advisoryPartitionSize, distributionStrictlyRequired,
       numRowsPerSplit)
@@ -128,7 +130,7 @@ class BasicInMemoryTableCatalog extends TableCatalog {
     namespaces.putIfAbsent(ident.namespace.toList, Map())
     table
   }
-
+  //修改表
   override def alterTable(ident: Identifier, changes: TableChange*): Table = {
     val table = loadTable(ident).asInstanceOf[InMemoryTable]
     val properties = CatalogV2Util.applyPropertiesChanges(table.properties, changes)
@@ -146,9 +148,9 @@ class BasicInMemoryTableCatalog extends TableCatalog {
 
     newTable
   }
-
+  //删除表
   override def dropTable(ident: Identifier): Boolean = Option(tables.remove(ident)).isDefined
-
+  //重命名表
   override def renameTable(oldIdent: Identifier, newIdent: Identifier): Unit = {
     if (tables.containsKey(newIdent)) {
       throw new TableAlreadyExistsException(newIdent.asMultipartIdentifier)
@@ -161,7 +163,7 @@ class BasicInMemoryTableCatalog extends TableCatalog {
         throw new NoSuchTableException(oldIdent.asMultipartIdentifier)
     }
   }
-
+  //标识表是否无效
   def isTableInvalidated(ident: Identifier): Boolean = {
     invalidatedTables.contains(ident)
   }
@@ -172,18 +174,18 @@ class BasicInMemoryTableCatalog extends TableCatalog {
 }
 
 class InMemoryTableCatalog extends BasicInMemoryTableCatalog with SupportsNamespaces {
-
+  //支持默认值和生成列
   override def capabilities: java.util.Set[TableCatalogCapability] = {
     Set(
       TableCatalogCapability.SUPPORT_COLUMN_DEFAULT_VALUE,
       TableCatalogCapability.SUPPORTS_CREATE_TABLE_WITH_GENERATED_COLUMNS
     ).asJava
   }
-
+  //所有的名称空间
   protected def allNamespaces: Seq[Seq[String]] = {
     (tables.keySet.asScala.map(_.namespace.toSeq) ++ namespaces.keySet.asScala).toSeq.distinct
   }
-
+  //名称空间是否存在
   override def namespaceExists(namespace: Array[String]): Boolean = {
     allNamespaces.exists(_.startsWith(namespace))
   }

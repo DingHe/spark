@@ -41,7 +41,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.Utils
 
-/**
+/** 解析JSON的公共函数
  * Common functions for parsing JSON files
  */
 abstract class JsonDataSource extends Serializable {
@@ -93,15 +93,15 @@ object TextInputJsonDataSource extends JsonDataSource {
       sparkSession: SparkSession,
       inputPaths: Seq[FileStatus],
       parsedOptions: JSONOptions): StructType = {
-    val json: Dataset[String] = createBaseDataset(sparkSession, inputPaths, parsedOptions)
+    val json: Dataset[String] = createBaseDataset(sparkSession, inputPaths, parsedOptions)  //先按照文本的形式加载数据集，在执行SCHEMA推断
 
     inferFromDataset(json, parsedOptions)
   }
-
+  //主要用于从一个 JSON 类型的 Dataset 中推断出其结构类型 (StructType)  json JSON 数据集中的每一行通常都是一个 JSON 格式的字符串
   def inferFromDataset(json: Dataset[String], parsedOptions: JSONOptions): StructType = {
-    val sampled: Dataset[String] = JsonUtils.sample(json, parsedOptions)
-    val rdd: RDD[InternalRow] = sampled.queryExecution.toRdd
-    val rowParser = parsedOptions.encoding.map { enc =>
+    val sampled: Dataset[String] = JsonUtils.sample(json, parsedOptions)  //对输入的 json 数据集进行采样
+    val rdd: RDD[InternalRow] = sampled.queryExecution.toRdd  //将采样后的 Dataset 转换为一个 RDD[InternalRow]
+    val rowParser = parsedOptions.encoding.map { enc =>  //rowParser 是一个函数，负责将 JSON 数据解析为 InternalRow 对象
       CreateJacksonParser.internalRow(enc, _: JsonFactory, _: InternalRow)
     }.getOrElse(CreateJacksonParser.internalRow(_: JsonFactory, _: InternalRow))
 
@@ -109,7 +109,7 @@ object TextInputJsonDataSource extends JsonDataSource {
       new JsonInferSchema(parsedOptions).infer(rdd, rowParser)
     }
   }
-
+  //根据输入文件路径，创建DataSet
   private def createBaseDataset(
       sparkSession: SparkSession,
       inputPaths: Seq[FileStatus],
@@ -118,7 +118,7 @@ object TextInputJsonDataSource extends JsonDataSource {
       DataSource.apply(
         sparkSession,
         paths = inputPaths.map(_.getPath.toString),
-        className = classOf[TextFileFormat].getName,
+        className = classOf[TextFileFormat].getName,  //默认以TextFileFormat的形式加载数据
         options = parsedOptions.parameters ++ Map(DataSource.GLOB_PATHS_KEY -> "false")
       ).resolveRelation(checkFilesExist = false))
       .select("value").as(Encoders.STRING)

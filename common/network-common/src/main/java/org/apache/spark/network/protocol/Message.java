@@ -21,14 +21,14 @@ import io.netty.buffer.ByteBuf;
 
 import org.apache.spark.network.buffer.ManagedBuffer;
 
-/** An on-the-wire transmittable message. */
+/** An on-the-wire transmittable message. 要求实现该接口的类能够将消息编码为字节流，并定义消息的类型、主体以及是否将消息主体包含在消息的同一帧中*/
 public interface Message extends Encodable {
   /** Used to identify this request type. */
-  Type type();
+  Type type(); //消息类型由Type枚举定义，表示消息的不同类别（如请求、响应、失败等）
 
   /** An optional body for the message. */
-  ManagedBuffer body();
-
+  ManagedBuffer body(); //返回消息的主体部分
+  //指示消息主体是否应该与消息类型一起包含在同一帧中发送。如果返回 true，则消息主体将与消息头（消息类型）一起发送，否则消息主体会单独发送或以其他方式处理
   /** Whether to include the body of the message in the same frame as the message. */
   boolean isBodyInFrame();
 

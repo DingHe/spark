@@ -17,7 +17,7 @@
 
 package org.apache.spark.network.client;
 
-/**
+/** rpc响应的回掉类
  * A basic callback. This is extended by {@link RpcResponseCallback} and
  * {@link MergedBlockMetaResponseCallback} so that both RpcRequests and MergedBlockMetaRequests
  * can be handled in {@link TransportResponseHandler} a similar way.

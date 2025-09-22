@@ -31,13 +31,15 @@ import org.apache.spark.internal.Logging
  * Note: The event queue will grow indefinitely. So subclasses should make sure `onReceive` can
  * handle events in time to avoid the potential OOM.
  */
+//用于接收和处理事件。它的主要功能是通过一个单独的事件线程来异步处理队列中的事件。
 private[spark] abstract class EventLoop[E](name: String) extends Logging {
-
+  //阻塞队列，用于存放事件对象 E
   private val eventQueue: BlockingQueue[E] = new LinkedBlockingDeque[E]()
-
+  //表示事件循环是否已停止
   private val stopped = new AtomicBoolean(false)
 
   // Exposed for testing.
+  //该线程会不断地从事件队列中取出事件并调用 onReceive 方法来处理它们
   private[spark] val eventThread = new Thread(name) {
     setDaemon(true)
 

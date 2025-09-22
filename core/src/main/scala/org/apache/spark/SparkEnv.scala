@@ -55,35 +55,37 @@ import org.apache.spark.util.{RpcUtils, Utils}
  * Spark code finds the SparkEnv through a global variable, so all the threads can access the same
  * SparkEnv. It can be accessed by SparkEnv.get (e.g. after creating a SparkContext).
  */
+//持有 Spark 运行所需要的所有环境对象，包括序列化器、RPC 环境、块管理器、映射输出跟踪器等。
 @DeveloperApi
 class SparkEnv (
-    val executorId: String,
-    private[spark] val rpcEnv: RpcEnv,
-    val serializer: Serializer,
-    val closureSerializer: Serializer,
-    val serializerManager: SerializerManager,
-    val mapOutputTracker: MapOutputTracker,
-    val shuffleManager: ShuffleManager,
-    val broadcastManager: BroadcastManager,
-    val blockManager: BlockManager,
+    val executorId: String, //执行器的标识符，通常是执行器的唯一 ID
+    private[spark] val rpcEnv: RpcEnv, //提供了与 Spark 的其它组件（如 Driver 和 Executor）进行通信的基础设施
+    val serializer: Serializer, //用于序列化和反序列化数据的类。它是基于 Spark 配置进行实例化的
+    val closureSerializer: Serializer, //专门用于序列化 Spark 中闭包的序列化器
+    val serializerManager: SerializerManager, //责管理序列化器的类，提供序列化和反序列化的管理服务
+    val mapOutputTracker: MapOutputTracker, //负责跟踪 Map 阶段输出的类。它可以查询和获取某个分区的结果存储位置
+    val shuffleManager: ShuffleManager, //用于管理 shuffle 操作的类。它会处理所有的 shuffle 相关操作，如数据的存储、传输等。
+    val broadcastManager: BroadcastManager, //用于管理广播变量的类。广播变量是 Spark 中的一种共享变量，可以被多个任务读取，而不需要每个任务单独持有一份副本
+    val blockManager: BlockManager, //用于管理 Spark 存储的数据块的类，负责数据块的存储、读取和删除
     val securityManager: SecurityManager,
     val metricsSystem: MetricsSystem,
-    val memoryManager: MemoryManager,
-    val outputCommitCoordinator: OutputCommitCoordinator,
+    val memoryManager: MemoryManager, //管理 Spark 内存分配的类。它确保各个组件正确地分配内存资源。
+    val outputCommitCoordinator: OutputCommitCoordinator, //用于协调输出提交的类，主要用于支持 Spark 中的提交操作，如在任务失败时回滚操作。
     val conf: SparkConf) extends Logging {
 
-  @volatile private[spark] var isStopped = false
-  private val pythonWorkers = mutable.HashMap[(String, Map[String, String]), PythonWorkerFactory]()
+  @volatile private[spark] var isStopped = false //用于标识 Spark 环境是否已经停止
+  private val pythonWorkers = mutable.HashMap[(String, Map[String, String]), PythonWorkerFactory]() //存储 Python 工作进程工厂对象的映射，按 pythonExec 和环境变量来缓存工作进程
 
   // A general, soft-reference map for metadata needed during HadoopRDD split computation
   // (e.g., HadoopFileRDD uses this to cache JobConfs and InputFormats).
+  //用于缓存 Hadoop 相关作业元数据（如 HadoopFileRDD 的 JobConfs 和 InputFormats）。使用了软引用，帮助减少内存占用。
   private[spark] val hadoopJobMetadata =
     CacheBuilder.newBuilder().maximumSize(1000).softValues().build[String, AnyRef]().asMap()
-
+  //存储 Driver 临时文件目录路径的 Option 类型
   private[spark] var driverTmpDir: Option[String] = None
-
+  //存储执行器后端信息的 Option 类型
   private[spark] var executorBackend: Option[ExecutorBackend] = None
-
+  //停止 Spark 环境，关闭所有的子组件，包括 Python 工作进程、输出跟踪器、shuffle 管理器、广播管理器、块管理器等
   private[spark] def stop(): Unit = {
 
     if (!isStopped) {
@@ -114,7 +116,7 @@ class SparkEnv (
       }
     }
   }
-
+  //创建一个 Python 工作进程并返回 Socket 和端口信息。这个方法是线程安全的，使用了 synchronized 进行同步
   private[spark]
   def createPythonWorker(
       pythonExec: String,
@@ -124,7 +126,7 @@ class SparkEnv (
       pythonWorkers.getOrElseUpdate(key, new PythonWorkerFactory(pythonExec, envVars)).create()
     }
   }
-
+  //销毁指定的 Python 工作进程。
   private[spark]
   def destroyPythonWorker(pythonExec: String,
       envVars: Map[String, String], worker: Socket): Unit = {
@@ -133,7 +135,7 @@ class SparkEnv (
       pythonWorkers.get(key).foreach(_.stopWorker(worker))
     }
   }
-
+ //释放指定的 Python 工作进程。
   private[spark]
   def releasePythonWorker(pythonExec: String,
       envVars: Map[String, String], worker: Socket): Unit = {
@@ -161,7 +163,7 @@ object SparkEnv extends Logging {
     env
   }
 
-  /**
+  /** 创建并返回一个 Driver 的 SparkEnv 实例。此方法会从配置中读取相关参数，并初始化 Driver 的 RpcEnv、序列化器等。
    * Create a SparkEnv for the driver.
    */
   private[spark] def createDriverEnv(

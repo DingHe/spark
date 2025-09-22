@@ -29,9 +29,9 @@ import org.apache.spark.annotation.Private;
  * <p>
  * This writer stores bytes for one (mapper, reducer) pair, corresponding to one shuffle
  * block.
- *
  * @since 3.0.0
  */
+// 描述了在数据存储层面为特定 (mapper, reducer) 对（即一个 shuffle 分区块）提供写入能力的接口
 @Private
 public interface ShufflePartitionWriter {
 
@@ -52,6 +52,7 @@ public interface ShufflePartitionWriter {
    * {@link ShuffleMapOutputWriter#commitAllPartitions(long[])} and
    * {@link ShuffleMapOutputWriter#abort(Throwable)}.
    */
+  //打开并返回一个 OutputStream，用于将数据写入底层数据存储。
   OutputStream openStream() throws IOException;
 
   /**
@@ -82,6 +83,7 @@ public interface ShufflePartitionWriter {
    * {@link ShuffleMapOutputWriter#commitAllPartitions(long[])}, or
    * {@link ShuffleMapOutputWriter#abort(Throwable)}.
    */
+  //打开并返回一个 WritableByteChannelWrapper，用于从输入通道高效地将字节传输到底层数据存储。
   default Optional<WritableByteChannelWrapper> openChannelWrapper() throws IOException {
     return Optional.empty();
   }
@@ -94,5 +96,6 @@ public interface ShufflePartitionWriter {
    * stream might compress or encrypt the bytes before persisting the data to the backing
    * data store.
    */
+  //返回当前分区块写入的字节数
   long getNumBytesWritten();
 }

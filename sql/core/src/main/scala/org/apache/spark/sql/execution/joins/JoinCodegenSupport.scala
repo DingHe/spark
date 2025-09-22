@@ -34,12 +34,14 @@ trait JoinCodegenSupport extends CodegenSupport with BaseJoinExec {
    * @return Tuple of variable name for row of build side, generated code for condition,
    *         and generated code for variables of build side.
    */
+    //用于生成非等值条件（non-equi condition），这些条件用于过滤连接的行。
+  // 它特别适用于内连接（Inner Join）、左半连接（Left Semi Join）、左反连接（Left Anti Join）和全外连接（Full Outer Join）
   protected def getJoinCondition(
       ctx: CodegenContext,
-      streamVars: Seq[ExprCode],
-      streamPlan: SparkPlan,
-      buildPlan: SparkPlan,
-      buildRow: Option[String] = None): (String, String, Seq[ExprCode]) = {
+      streamVars: Seq[ExprCode], //流（stream）侧的变量
+      streamPlan: SparkPlan, //流侧的执行计划
+      buildPlan: SparkPlan,  //构建（build）侧的执行计划
+      buildRow: Option[String] = None): (String, String, Seq[ExprCode]) = { //buildRow: Option[String] = None：可选参数，表示构建侧的行变量名
     val buildSideRow = buildRow.getOrElse(ctx.freshName("buildRow"))
     val buildVars = genOneSideJoinVars(ctx, buildSideRow, buildPlan, setDefaultValue = false)
     // We want to evaluate the passed streamVars. However, evaluation modifies the contained

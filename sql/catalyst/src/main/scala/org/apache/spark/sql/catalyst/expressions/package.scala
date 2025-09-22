@@ -384,5 +384,7 @@ package object expressions  {
    * input will result in null output). We will use this information during constructing IsNotNull
    * constraints.
    */
+  // 当一个表达式实现了 NullIntolerant 特征时，它表示该表达式不能接受 null 值。
+  // 如果表达式的输入中包含 null，无论是什么样的操作或计算，最终结果都会是 null
   trait NullIntolerant extends Expression
 }

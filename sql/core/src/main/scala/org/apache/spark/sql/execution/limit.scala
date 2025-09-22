@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.util.collection.Utils
 
-/**
+/** 限制子节点的记录数
  * The operator takes limited number of elements from its child operator.
  */
 trait LimitExec extends UnaryExecNode {
@@ -39,16 +39,16 @@ trait LimitExec extends UnaryExecNode {
 /**
  * Take the first `limit` elements, collect them to a single partition and then to drop the
  * first `offset` elements.
- *
+ *  用于限制数据集输出的一个执行计划节点，特别是当用户进行 LIMIT 或 OFFSET 操作时，数据会被限制到一定数量，并且可以跳过一部分数据
  * This operator will be used when a logical `Limit` and/or `Offset` operation is the final operator
  * in an logical plan, which happens when the user is collecting results back to the driver.
- */
+ */ //limit：表示要收集的最大数据量  child：表示子执行计划，即 CollectLimitExec 操作的输入  offset：表示跳过前 offset 个元素
 case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) extends LimitExec {
   assert(limit >= 0 || (limit == -1 && offset > 0))
 
-  override def output: Seq[Attribute] = child.output
-  override def outputPartitioning: Partitioning = SinglePartition
-  override def executeCollect(): Array[InternalRow] = {
+  override def output: Seq[Attribute] = child.output //返回当前执行计划节点的输出属性
+  override def outputPartitioning: Partitioning = SinglePartition  //返回输出的分区策略。这里是 SinglePartition，表示所有数据都会被收集到一个分区
+  override def executeCollect(): Array[InternalRow] = {  //用于执行数据收集
     // Because CollectLimitExec collect all the output of child to a single partition, so we need
     // collect the first `limit` + `offset` elements and then to drop the first `offset` elements.
     // For example: limit is 1 and offset is 2 and the child output two partition.
@@ -63,7 +63,7 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
     } else {
       child.executeCollect().drop(offset)
     }
-  }
+  }  //用于序列化行数据的工具，这里使用的是 UnsafeRowSerializer，它专门用来序列化 InternalRow 类型的数据
   private val serializer: Serializer = new UnsafeRowSerializer(child.output.size)
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
@@ -72,12 +72,12 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
   override lazy val metrics = readMetrics ++ writeMetrics
   protected override def doExecute(): RDD[InternalRow] = {
     val childRDD = child.execute()
-    if (childRDD.getNumPartitions == 0) {
+    if (childRDD.getNumPartitions == 0) {  //如果 childRDD 的分区数为 0，返回一个空的 RDD
       new ParallelCollectionRDD(sparkContext, Seq.empty[InternalRow], 1, Map.empty)
     } else {
-      val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
+      val singlePartitionRDD = if (childRDD.getNumPartitions == 1) { //如果 childRDD 只有一个分区，则直接使用该分区
         childRDD
-      } else {
+      } else { //如果 childRDD 有多个分区，会先限制每个分区的数据（如果 limit > 0），然后根据 offset 进行跳过操作
         val locallyLimited = if (limit >= 0) {
           childRDD.mapPartitionsInternal(_.take(limit))
         } else {
@@ -271,19 +271,21 @@ case class GlobalLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0)
  * This could have been named TopK, but Spark's top operator does the opposite in ordering
  * so we name it TakeOrdered to avoid confusion.
  */
+// 用于执行排序、限制、偏移和投影操作的一个执行节点类。
+// 它的作用是首先根据排序顺序从输入中选取前 limit 个元素，然后丢弃前 offset 个元素，并根据需要执行投影操作
 case class TakeOrderedAndProjectExec(
-    limit: Int,
-    sortOrder: Seq[SortOrder],
-    projectList: Seq[NamedExpression],
-    child: SparkPlan,
-    offset: Int = 0) extends OrderPreservingUnaryExecNode {
-
-  override def output: Seq[Attribute] = {
+    limit: Int,  //表示返回前多少条记录
+    sortOrder: Seq[SortOrder],  //表示如何对数据进行排序的规则（如升序或降序）
+    projectList: Seq[NamedExpression],  //需要选择的字段或表达式，用于定义查询的最终输出
+    child: SparkPlan,  //子查询计划，表示该节点的输入（执行的数据来源）
+    offset: Int = 0) extends OrderPreservingUnaryExecNode {  //偏移量，表示从排序后的记录中跳过多少条记录
+    //继承自 OrderPreservingUnaryExecNode，意味着它是一个有一个子节点的执行节点，并且执行时会保持数据的顺序
+  override def output: Seq[Attribute] = {  //该执行节点的输出字段
     projectList.map(_.toAttribute)
   }
 
   override def executeCollect(): Array[InternalRow] = executeQuery {
-    val orderingSatisfies = SortOrder.orderingSatisfies(child.outputOrdering, sortOrder)
+    val orderingSatisfies = SortOrder.orderingSatisfies(child.outputOrdering, sortOrder)  //首先检查是否子节点的输出顺序与 sortOrder 满足排序条件
     val ord = new LazilyGeneratedOrdering(sortOrder, child.output)
     val limited = if (orderingSatisfies) {
       child.execute().mapPartitionsInternal(_.map(_.copy()).take(limit)).takeOrdered(limit)(ord)

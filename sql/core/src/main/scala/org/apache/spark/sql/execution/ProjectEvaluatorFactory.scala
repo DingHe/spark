@@ -33,9 +33,9 @@ class ProjectEvaluatorFactory(projectList: Seq[Expression], childOutput: Seq[Att
         partitionIndex: Int,
         inputs: Iterator[InternalRow]*): Iterator[InternalRow] = {
       assert(inputs.length == 1)
-      val project = UnsafeProjection.create(projectList, childOutput)
+      val project = UnsafeProjection.create(projectList, childOutput)  //生成投影对象
       project.initialize(partitionIndex)
-      inputs.head.map(project)
+      inputs.head.map(project)  //inputs的每一行按project处理
     }
   }
 }

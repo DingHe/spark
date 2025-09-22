@@ -51,11 +51,17 @@ import org.apache.spark.rdd.RDD
  * @param isBarrier whether this task belongs to a barrier stage. Spark must launch all the tasks
  *                  at the same time for a barrier stage.
  */
+// 主要作用是执行 Spark 作业中非最终阶段（non-final stage） 的计算，并为接下来的Shuffle 操作准备数据
+// 与 ResultTask 将结果返回给驱动程序不同，ShuffleMapTask 的计算结果并不会直接发送回驱动程序
+// 对一个 RDD 分区的数据进行计算
+// 根据指定的分区器（Partitioner），将计算结果划分为多个桶（buckets）
+// 将每个桶的数据写入到执行器（Executor）的本地磁盘，形成一个Map 输出文件
+// 将 Map 输出文件的元数据信息（如文件大小、位置等）封装成 MapStatus 对象，然后返回给驱动程序
 private[spark] class ShuffleMapTask(
     stageId: Int,
     stageAttemptId: Int,
-    taskBinary: Broadcast[Array[Byte]],
-    partition: Partition,
+    taskBinary: Broadcast[Array[Byte]], // 广播变量，包含了序列化后的 RDD 和Shuffle 依赖（ShuffleDependency） 对象。ShuffleDependency 包含了关于如何进行 Shuffle 的所有信息，例如分区器、聚合器等
+    partition: Partition, // 此任务所关联的 RDD 分区对象
     numPartitions: Int,
     @transient private var locs: Seq[TaskLocation],
     artifacts: JobArtifactSet,
@@ -81,12 +87,14 @@ private[spark] class ShuffleMapTask(
 
   override def runTask(context: TaskContext): MapStatus = {
     // Deserialize the RDD using the broadcast variable.
+    // 记录任务开始反序列化的时间（纳秒）和 CPU 时间，用于性能度量
     val threadMXBean = ManagementFactory.getThreadMXBean
     val deserializeStartTimeNs = System.nanoTime()
     val deserializeStartCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
       threadMXBean.getCurrentThreadCpuTime
     } else 0L
     val ser = SparkEnv.get.closureSerializer.newInstance()
+    // 使用闭包序列化器（closureSerializer）从广播变量 taskBinary 中反序列化出 RDD 和 ShuffleDependency
     val rddAndDep = ser.deserialize[(RDD[_], ShuffleDependency[_, _, _])](
       ByteBuffer.wrap(taskBinary.value), Thread.currentThread.getContextClassLoader)
     _executorDeserializeTimeNs = System.nanoTime() - deserializeStartTimeNs
@@ -98,9 +106,11 @@ private[spark] class ShuffleMapTask(
     val dep = rddAndDep._2
     // While we use the old shuffle fetch protocol, we use partitionId as mapId in the
     // ShuffleBlockId construction.
+    //新的 Shuffle Fetch 协议下，mapId 是任务尝试 ID，而在旧协议下则是分区 ID
     val mapId = if (SparkEnv.get.conf.get(config.SHUFFLE_USE_OLD_FETCH_PROTOCOL)) {
       partitionId
     } else context.taskAttemptId()
+    //整个任务最核心的步骤
     dep.shuffleWriterProcessor.write(rdd, dep, mapId, context, partition)
   }
 

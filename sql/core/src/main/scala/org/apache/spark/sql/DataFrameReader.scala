@@ -50,6 +50,7 @@ import org.apache.spark.unsafe.types.UTF8String
  *
  * @since 1.4.0
  */
+//主要用于从外部存储系统（如文件系统、数据库等）加载数据并创建 DataFrame
 @Stable
 class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
 
@@ -58,6 +59,7 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @since 1.4.0
    */
+  //用于指定数据源格式
   def format(source: String): DataFrameReader = {
     this.source = source
     this
@@ -70,8 +72,10 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @since 1.4.0
    */
+  //指定数据模式（StructType），这样 Spark 在读取数据时可以跳过自动推断模式的步骤，提高性能
   def schema(schema: StructType): DataFrameReader = {
     if (schema != null) {
+      //如果 schema 包含 char 或 varchar 类型，CharVarcharUtils.failIfHasCharVarchar(schema) 会抛出异常
       val replaced = CharVarcharUtils.failIfHasCharVarchar(schema).asInstanceOf[StructType]
       this.userSpecifiedSchema = Option(replaced)
     }
@@ -89,6 +93,7 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @since 2.3.0
    */
+  //允许用户以 DDL（数据定义语言）格式定义模式，spark.read.schema("name STRING, age INT").csv("data.csv")
   def schema(schemaString: String): DataFrameReader = {
     schema(StructType.fromDDL(schemaString))
   }
@@ -101,6 +106,7 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @since 1.4.0
    */
+  //为数据源设置选项，如 header=true、delimiter="," 等
   def option(key: String, value: String): DataFrameReader = {
     this.extraOptions = this.extraOptions + (key -> value)
     this
@@ -168,6 +174,7 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @since 1.4.0
    */
+  //适用于不需要路径的数据源（如 JDBC 数据库、Hive 表等）
   def load(): DataFrame = {
     load(Seq.empty: _*) // force invocation of `load(...varargs...)`
   }
@@ -178,6 +185,7 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @since 1.4.0
    */
+  //用于加载指定路径的数据
   def load(path: String): DataFrame = {
     // force invocation of `load(...varargs...)`
     if (sparkSession.sessionState.conf.legacyPathOptionBehavior) {
@@ -195,20 +203,21 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    */
   @scala.annotation.varargs
   def load(paths: String*): DataFrame = {
+    //如果数据源是 Hive，则抛出异常，因为 Spark 不允许直接从 Hive 数据源文件读取数据
     if (source.toLowerCase(Locale.ROOT) == DDLUtils.HIVE_PROVIDER) {
       throw QueryCompilationErrors.cannotOperateOnHiveDataSourceFilesError("read")
     }
-
+    //不是 legacy 模式，并且 extraOptions 里已经包含 "path" 或 "paths"，但 paths 参数依然非空，则抛出异常
     val legacyPathOptionBehavior = sparkSession.sessionState.conf.legacyPathOptionBehavior
     if (!legacyPathOptionBehavior &&
         (extraOptions.contains("path") || extraOptions.contains("paths")) && paths.nonEmpty) {
       throw QueryCompilationErrors.pathOptionNotSetCorrectlyWhenReadingError()
     }
-
+    //尝试使用 DataSource V2 进行数据加载
     DataSource.lookupDataSourceV2(source, sparkSession.sessionState.conf).flatMap { provider =>
       DataSourceV2Utils.loadV2Source(sparkSession, provider, userSpecifiedSchema, extraOptions,
         source, paths: _*)
-    }.getOrElse(loadV1Source(paths: _*))
+    }.getOrElse(loadV1Source(paths: _*))  //如果 V2 方式不可用，则调用 loadV1Source(paths: _*) 使用 DataSource V1 方式加载数据
   }
 
   private def loadV1Source(paths: String*) = {
@@ -333,7 +342,7 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    * Loads a JSON file and returns the results as a `DataFrame`.
    *
    * See the documentation on the overloaded `json()` method with varargs for more details.
-   *
+   * 根据path读取json文件并返回DataFrame，DataFrame就是Dataset[Row]
    * @since 1.4.0
    */
   def json(path: String): DataFrame = {
@@ -353,7 +362,7 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    * You can find the JSON-specific options for reading JSON files in
    * <a href="https://spark.apache.org/docs/latest/sql-data-sources-json.html#data-source-option">
    *   Data Source Option</a> in the version you use.
-   *
+   * 根据paths读取json文件，并返回DataFrame
    * @since 2.0.0
    */
   @scala.annotation.varargs
@@ -695,11 +704,11 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
   ///////////////////////////////////////////////////////////////////////////////////////
   // Builder pattern config options
   ///////////////////////////////////////////////////////////////////////////////////////
-
+  //默认parquet格式
   private var source: String = sparkSession.sessionState.conf.defaultDataSourceName
-
+  //用户指定的模式（StructType）
   private var userSpecifiedSchema: Option[StructType] = None
-
+  //存储额外的配置选项（Map[String, String]）
   private var extraOptions = CaseInsensitiveMap[String](Map.empty)
 
 }

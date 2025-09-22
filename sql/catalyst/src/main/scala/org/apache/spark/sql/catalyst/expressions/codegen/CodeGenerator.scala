@@ -59,6 +59,8 @@ import org.apache.spark.util.{LongAccumulator, NonFateSharingCache, ParentClassL
  * @param value A term for a (possibly primitive) value of the result of the evaluation. Not
  *              valid if `isNull` is set to `true`.
  */
+//表示一个表达式的评估代码
+//isNull：类型为 ExprValue，表示一个用于检查评估结果是否为 null 的布尔值
 case class ExprCode(var code: Block, var isNull: ExprValue, var value: ExprValue)
 
 object ExprCode {
@@ -85,6 +87,10 @@ object ExprCode {
  *                 particular subexpressions, instead of all at once. In the case, we need
  *                 to make sure we evaluate all children subexpressions too.
  */
+//用于表示子表达式消除（Subexpression Elimination）过程中的状态
+//eval：类型为 ExprCode，表示评估该子表达式所需的代码
+//children：类型为 Seq[SubExprEliminationState]，表示子表达式的子节点。
+// 每个子表达式在评估之前，应该先评估其子表达式，因此我们保留了一个子表达式的序列
 case class SubExprEliminationState(eval: ExprCode, children: Seq[SubExprEliminationState])
 
 object SubExprEliminationState {
@@ -107,6 +113,8 @@ object SubExprEliminationState {
  * @param exprCodesNeedEvaluate Some expression codes that need to be evaluated before
  *                              calling common subexpressions.
  */
+//用于在子表达式消除（Subexpression Elimination）过程中，管理和映射代码与公共子表达式的关系
+//ExpressionEquals 可能是一个标识符或表达式，表示两个表达式的等价性（即它们可能是相同的子表达式）
 case class SubExprCodes(
     states: Map[ExpressionEquals, SubExprEliminationState],
     exprCodesNeedEvaluate: Seq[ExprCode])
@@ -122,15 +130,18 @@ case class SubExprCodes(
  *                           the outer class, otherwise it contains the name of the
  *                           instance of the inner class in the outer class.
  */
+//用于表示关于新添加的函数的主要信息。它包含了函数的名称、所在内嵌类的名称和该内嵌类实例的名称（如果有的话）
 private[codegen] case class NewFunctionSpec(
-    functionName: String,
-    innerClassName: Option[String],
-    innerClassInstance: Option[String])
+    functionName: String,   //表示新添加的函数的名称
+    innerClassName: Option[String],  //表示函数是否被添加到了一个内嵌类（inner class）中
+    innerClassInstance: Option[String])  //表示如果函数被添加到内嵌类中，那么它所对应的内嵌类实例的名称
 
 /**
  * A context for codegen, tracking a list of objects that could be passed into generated Java
  * function.
  */
+// 主要用于代码生成的上下文，它跟踪了生成代码时可能需要的对象、状态以及初始化过程。
+// 具体来说，它关注于管理生成的代码中的引用、变量、以及 mutable 状态的数组
 class CodegenContext extends Logging {
 
   import CodeGenerator._
@@ -138,6 +149,7 @@ class CodegenContext extends Logging {
   /**
    * Holding a list of objects that could be used passed into generated class.
    */
+    //存放可能在生成的 Java 函数中使用的对象
   val references: mutable.ArrayBuffer[Any] = new mutable.ArrayBuffer[Any]()
 
   /**
@@ -148,6 +160,9 @@ class CodegenContext extends Logging {
    * This does not to store the object into field but refer it from the references field at the
    * time of use because number of fields in class is limited so we should reduce it.
    */
+   //向 references 列表中添加一个对象，并返回一个字符串，表示如何访问该对象。
+  // objName 是该对象的名称，obj 是对象本身，className 是类名
+  //返回的字符串是用于访问该对象的代码，例如 ((SomeClass) references[0])
   def addReferenceObj(objName: String, obj: Any, className: String = null): String = {
     val idx = references.length
     references += obj
@@ -164,12 +179,14 @@ class CodegenContext extends Logging {
    * `currentVars` to null, or set `currentVars(i)` to null for certain columns, before calling
    * `Expression.genCode`.
    */
+    //记录当前输入行的变量名，默认为i
   var INPUT_ROW = "i"
 
   /**
    * Holding a list of generated columns as input of current operator, will be used by
    * BoundReference to generate code.
    */
+    //持有上一个节点输出的列，作为当前节点的输入
   var currentVars: Seq[ExprCode] = null
 
   /**
@@ -185,6 +202,7 @@ class CodegenContext extends Logging {
    *
    * Exposed for tests only.
    */
+    //每个可变状态包含一个 Java 类型和一个变量名，例如 ("int", "count")
   private[catalyst] val inlinedMutableStates: mutable.ArrayBuffer[(String, String)] =
     mutable.ArrayBuffer.empty[(String, String)]
 
@@ -195,22 +213,28 @@ class CodegenContext extends Logging {
    *
    * Exposed for tests only.
    */
+    //用于将可变状态类型与对应的紧凑数组关联。
+  // 键是 Java 类型字符串，值是一个 MutableStateArrays 实例，它封装了具有相同 Java 类型的紧凑数组，数组的每一个元素都有对应的名称
   private[catalyst] val arrayCompactedMutableStates: mutable.Map[String, MutableStateArrays] =
     mutable.Map.empty[String, MutableStateArrays]
 
   // An array holds the code that will initialize each state
   // Exposed for tests only.
+  //存储初始化可变状态的代码数组，用于生成初始化每个状态的 Java 代码
   private[catalyst] val mutableStateInitCode: mutable.ArrayBuffer[String] =
     mutable.ArrayBuffer.empty[String]
 
   // Tracks the names of all the mutable states.
+  //可变状态的变量名
   private val mutableStateNames: mutable.HashSet[String] = mutable.HashSet.empty
 
   /**
    * This class holds a set of names of mutableStateArrays that is used for compacting mutable
    * states for a certain type, and holds the next available slot of the current compacted array.
    */
+  //主要解决的问题是如何高效地将可变状态压缩存储在数组中，并控制数组大小，以便于在生成代码时使用
   class MutableStateArrays {
+    //存储了所有与当前类型相关的数组名称。每个数组代表一个可变状态的压缩存储
     val arrayNames = mutable.ListBuffer.empty[String]
     createNewArray()
 
@@ -221,7 +245,7 @@ class CodegenContext extends Logging {
       mutableStateNames += newArrayName
       arrayNames.append(newArrayName)
     }
-
+    //用来追踪当前数组中下一个可用的位置（即数组的索引）
     def getCurrentIndex: Int = currentIndex
 
     /**
@@ -229,6 +253,8 @@ class CodegenContext extends Logging {
      * compacted array is controlled by the constant `MUTABLESTATEARRAY_SIZE_LIMIT`.
      * Once reaching the threshold, new compacted array is created.
      */
+      //如果当前数组的大小尚未达到上限 MUTABLESTATEARRAY_SIZE_LIMIT，则直接返回当前数组中的下一个位置
+      //如果当前数组已经满了，则会创建一个新的数组，并将 currentIndex 重置为 1
     def getNextSlot(): String = {
       if (currentIndex < MUTABLESTATEARRAY_SIZE_LIMIT) {
         val res = s"${arrayNames.last}[$currentIndex]"
@@ -248,6 +274,8 @@ class CodegenContext extends Logging {
    * `addImmutableStateIfNotExists`. Each entry contains the name of the mutable state as key and
    * its Java type and init code as value.
    */
+  //用于存储不可变状态的映射关系。这个映射将不可变状态的名称作为键，
+  // 映射到一个包含该状态的 Java 类型和初始化代码的元组（(String, String)）作为值
   private val immutableStates: mutable.Map[String, (String, String)] =
     mutable.Map.empty[String, (String, String)]
 
@@ -282,14 +310,16 @@ class CodegenContext extends Logging {
    *         When a variable is compacted into an array, the max size of the array for compaction
    *         is given by `MUTABLESTATEARRAY_SIZE_LIMIT`.
    */
+  //用于将可变状态作为字段添加到生成的 Java 类中。该方法根据一些条件决定是将字段内联（直接声明在外部类中）还是将其压缩到一个数组中
   def addMutableState(
-      javaType: String,
-      variableName: String,
-      initFunc: String => String = _ => "",
-      forceInline: Boolean = false,
-      useFreshName: Boolean = true): String = {
+      javaType: String, //表示字段的 Java 类型。可以是简短类型名称（如 InternalRow、UnsafeRow、UnsafeArrayData 等），也可以是完全限定的 Java 类型名称
+      variableName: String,  //表示字段的名称
+      initFunc: String => String = _ => "",  //用于初始化字段的函数。该函数接收字段名称作为参数并返回初始化代码
+      forceInline: Boolean = false, //是否强制将字段内联到外部类中。如果设置为 true，字段无论如何都会被内联
+      useFreshName: Boolean = true): String = { //是否使用新名称。如果为 true，则字段会使用一个新的名称
 
     // want to put a primitive type variable at outerClass for performance
+    //判断是否可以内联
     val canInlinePrimitive = isPrimitiveType(javaType) &&
       (inlinedMutableStates.length < OUTER_CLASS_VARIABLES_THRESHOLD)
     if (forceInline || canInlinePrimitive || javaType.contains("[][]")) {
@@ -299,7 +329,7 @@ class CodegenContext extends Logging {
       mutableStateInitCode += initCode
       mutableStateNames += varName
       varName
-    } else {
+    } else {  //如果不能内联，则将变量压缩到一个数组中
       val arrays = arrayCompactedMutableStates.getOrElseUpdate(javaType, new MutableStateArrays)
       val element = arrays.getNextSlot()
 
@@ -324,15 +354,18 @@ class CodegenContext extends Logging {
    * @param initFunc Function includes statement(s) to put into the init() method to initialize
    *                 this field. The argument is the name of the mutable state variable.
    */
+    //它用于将不可变状态添加到生成的类中，前提是该状态尚未存在。如果相同名称的不可变状态已经存在，方法将确保不会重复添加，并且验证其类型和初始化代码是否一致
   def addImmutableStateIfNotExists(
-      javaType: String,
-      variableName: String,
+      javaType: String, //要添加的不可变状态的 Java 类型
+      variableName: String, //不可变状态的名称
       initFunc: String => String = _ => ""): Unit = {
     val existingImmutableState = immutableStates.get(variableName)
     if (existingImmutableState.isEmpty) {
+      //首先检查 immutableStates 中是否已经存在具有相同名称的不可变状态
+      //如果该状态尚不存在，则调用 addMutableState 方法将其添加到生成的类中
       addMutableState(javaType, variableName, initFunc, useFreshName = false, forceInline = true)
       immutableStates(variableName) = (javaType, initFunc(variableName))
-    } else {
+    } else { //如果该状态已经存在，方法会检查其 Java 类型和初始化代码是否与现有的定义一致
       val (prevJavaType, prevInitCode) = existingImmutableState.get
       assert(prevJavaType == javaType, s"$variableName has already been defined with type " +
         s"$prevJavaType and now it is tried to define again with type $javaType.")
@@ -346,6 +379,7 @@ class CodegenContext extends Logging {
    * that the variable is safely stored, which is important for (potentially) byte array backed
    * data types like: UTF8String, ArrayData, MapData & InternalRow.
    */
+    //用于为 InternalRow 类型的数据添加一个缓冲变量
   def addBufferedState(dataType: DataType, variableName: String, initCode: String): ExprCode = {
     val value = addMutableState(javaType(dataType), variableName)
     val code = UserDefinedType.sqlType(dataType) match {
@@ -355,7 +389,8 @@ class CodegenContext extends Logging {
     }
     ExprCode(code, FalseLiteral, JavaCode.global(value, dataType))
   }
-
+  //用于生成类中所有的 可变状态（mutable state）的声明。
+  // 具体来说，它包括两种类型的可变状态：内联状态（inlined states）和 压缩数组状态（array compacted states）
   def declareMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
@@ -371,6 +406,8 @@ class CodegenContext extends Logging {
         } else {
           MUTABLESTATEARRAY_SIZE_LIMIT
         }
+        // if (javaType.contains("[]"))：检查 javaType 是否表示一个数组类型。
+        // 如果是二维数组（[][]），则生成二维数组的初始化代码；否则，生成一维数组或基本类型的初始化代码
         if (javaType.contains("[]")) {
           // initializer had an one-dimensional array variable
           val baseType = javaType.substring(0, javaType.length - 2)
@@ -384,7 +421,7 @@ class CodegenContext extends Logging {
 
     (inlinedStates ++ arrayStates).mkString("\n")
   }
-
+  //用于生成初始化 可变状态 的代码。其主要任务是为所有可变状态生成初始化代码，并确保生成的代码不会超过 JVM 方法大小限制（64KB）
   def initMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
@@ -392,6 +429,10 @@ class CodegenContext extends Logging {
 
     // The generated initialization code may exceed 64kb function size limit in JVM if there are too
     // many mutable states, so split it into multiple functions.
+    //拆分长代码
+    //expressions  所有需要拆分的初始化代码
+    //funcName：拆分后的方法名，这里是 "init"
+    //arguments：方法的参数，这里是空的 Nil
     splitExpressions(expressions = initCodes.toSeq, funcName = "init", arguments = Nil)
   }
 
@@ -399,12 +440,14 @@ class CodegenContext extends Logging {
    * Code statements to initialize states that depend on the partition index.
    * An integer `partitionIndex` will be made available within the scope.
    */
+  //存储与分区相关的初始化语句，分区通常在分布式计算中表示不同的数据分区，每个分区有自己的状态和初始化需求
   val partitionInitializationStatements: mutable.ArrayBuffer[String] = mutable.ArrayBuffer.empty
 
+  //将新的分区初始化语句添加到 partitionInitializationStatements 中
   def addPartitionInitializationStatement(statement: String): Unit = {
     partitionInitializationStatements += statement
   }
-
+  //将所有分区初始化语句组合成一个字符串，用换行符分隔
   def initPartition(): String = {
     partitionInitializationStatements.mkString("\n")
   }
@@ -422,16 +465,20 @@ class CodegenContext extends Logging {
    *  equivalentExpressions will match the tree containing `col1 + col2` and it will only
    *  be evaluated once.
    */
+  //存储等价表达式，避免重复生成代码
   private val equivalentExpressions: EquivalentExpressions = new EquivalentExpressions
 
   // Foreach expression that is participating in subexpression elimination, the state to use.
   // Visible for testing.
+  //映射每个表达式到一个 SubExprEliminationState，用于管理哪些表达式参与了子表达式消除。
+  // ExpressionEquals 很可能是一个表示表达式是否相等的类型
   private[expressions] var subExprEliminationExprs =
     Map.empty[ExpressionEquals, SubExprEliminationState]
 
   // The collection of sub-expression result resetting methods that need to be called on each row.
+  //存储子表达式计算的相关方法，这些方法会在每一行数据处理时调用，以确保子表达式只计算一次
   private val subexprFunctions = mutable.ArrayBuffer.empty[String]
-
+  //表示最外层类的名称，默认是 "OuterClass"
   val outerClassName = "OuterClass"
 
   /**
@@ -440,27 +487,35 @@ class CodegenContext extends Logging {
    * inner sub-classes. All other classes and instance names in this list will represent private,
    * inner sub-classes.
    */
+    //存储类的名称和实例名称。outerClassName 初始时放入列表中，后续可以在其上添加内嵌类
   private val classes: mutable.ListBuffer[(String, String)] =
     mutable.ListBuffer[(String, String)](outerClassName -> null)
 
   // A map holding the current size in bytes of each class to be generated.
+  //存储每个类的字节大小，初始时 outerClassName 的大小为 0。随着类的扩展（例如添加方法或变量），类的大小会变化
   private val classSize: mutable.Map[String, Int] =
     mutable.Map[String, Int](outerClassName -> 0)
 
   // Nested maps holding function names and their code belonging to each class.
+  //存储每个类的函数和对应的代码。每个类的函数都会存储在一个映射中
   private val classFunctions: mutable.Map[String, mutable.Map[String, String]] =
     mutable.Map(outerClassName -> mutable.Map.empty[String, String])
 
   // Verbatim extra code to be added to the OuterClass.
+  //用于存储需要附加到 OuterClass 的额外代码
   private val extraClasses: mutable.ListBuffer[String] = mutable.ListBuffer[String]()
 
   // Returns the size of the most recently added class.
+  //返回当前类的大小
   private def currClassSize(): Int = classSize(classes.head._1)
 
   // Returns the class name and instance name for the most recently added class.
+  //返回当前类的名称和实例名称
   private def currClass(): (String, String) = classes.head
 
   // Adds a new class. Requires the class' name, and its instance name.
+  //用于添加新类。新类会被添加到 classes 列表的前面，确保它是当前正在处理的类。
+  // 并且初始化该类的大小为 0，并为该类初始化一个空的函数映射
   private def addClass(className: String, classInstance: String): Unit = {
     classes.prepend(className -> classInstance)
     classSize += className -> 0
@@ -482,10 +537,12 @@ class CodegenContext extends Logging {
    * @return the name of the function, qualified by class if it will be inlined to a private,
    *         inner class
    */
+    //用于向生成的类中添加新函数的方法 addNewFunction。
+  // 它的作用是根据类的大小或者特定需求决定是否将函数内联到外部类（OuterClass）中，或者将其内联到一个新的内部类中。
   def addNewFunction(
-      funcName: String,
-      funcCode: String,
-      inlineToOuterClass: Boolean = false): String = {
+      funcName: String,  //函数名
+      funcCode: String,  //函数体
+      inlineToOuterClass: Boolean = false): String = { //是否放在最外层类
     val newFunction = addNewFunctionInternal(funcName, funcCode, inlineToOuterClass)
     newFunction match {
       case NewFunctionSpec(functionName, None, None) => functionName
@@ -501,8 +558,9 @@ class CodegenContext extends Logging {
       funcCode: String,
       inlineToOuterClass: Boolean): NewFunctionSpec = {
     val (className, classInstance) = if (inlineToOuterClass) {
-      outerClassName -> ""
+      outerClassName -> ""  //// 将函数内联到外部类
     } else if (currClassSize > GENERATED_CLASS_SIZE_THRESHOLD) {
+      //// 如果外部类太大，创建新的内嵌类
       val className = freshName("NestedClass")
       val classInstance = freshName("nestedClassInstance")
 
@@ -512,9 +570,9 @@ class CodegenContext extends Logging {
     } else {
       currClass()
     }
-
+    // 将函数添加到相应的类中
     addNewFunctionToClass(funcName, funcCode, className)
-
+    // 返回一个 NewFunctionSpec 对象，描述函数的类和实例信息
     if (className == outerClassName) {
       NewFunctionSpec(funcName, None, None)
     } else {
@@ -534,6 +592,7 @@ class CodegenContext extends Logging {
    * Declares all function code. If the added functions are too many, split them into nested
    * sub-classes to avoid hitting Java compiler constant pool limitation.
    */
+    //声明所有函数代码，并根据需要将它们分割成嵌套子类，以避免 Java 编译器常量池的限制
   def declareAddedFunctions(): String = {
     val inlinedFunctions = classFunctions(outerClassName).values
 
@@ -574,12 +633,14 @@ class CodegenContext extends Logging {
   /**
    * The map from a variable name to it's next ID.
    */
+    //变量名和id的映射
   private val freshNameIds = new mutable.HashMap[String, Int]
   freshNameIds += INPUT_ROW -> 1
 
   /**
    * A prefix used to generate fresh name.
    */
+    //变量名前缀
   var freshNamePrefix = ""
 
   /**
@@ -590,6 +651,7 @@ class CodegenContext extends Logging {
   /**
    * Returns a term name that is unique within this instance of a `CodegenContext`.
    */
+   //根据name生成对应的变量名
   def freshName(name: String): String = synchronized {
     val fullName = if (freshNamePrefix == "") {
       name
@@ -604,18 +666,21 @@ class CodegenContext extends Logging {
   /**
    * Creates an `ExprValue` representing a local java variable of required data type.
    */
+    //创建一个新的变量
   def freshVariable(name: String, dt: DataType): VariableValue =
     JavaCode.variable(freshName(name), dt)
 
   /**
    * Creates an `ExprValue` representing a local java variable of required Java class.
    */
+  //创建一个新的变量
   def freshVariable(name: String, javaClass: Class[_]): VariableValue =
     JavaCode.variable(freshName(name), javaClass)
 
   /**
    * Generates code for equal expression in Java.
    */
+    //生成两个表达式之间的相等性判断代码
   def genEqual(dataType: DataType, c1: String, c2: String): String = dataType match {
     case BinaryType => s"java.util.Arrays.equals($c1, $c2)"
     case FloatType =>
@@ -640,6 +705,7 @@ class CodegenContext extends Logging {
    * @param c1 name of the variable of expression 1's output
    * @param c2 name of the variable of expression 2's output
    */
+    //生成两个表达式之间的比较代码。它与 genEqual 类似，不同之处在于生成的是比较（例如 >、<）的代码
   def genComp(dataType: DataType, c1: String, c2: String): String = dataType match {
     // java boolean doesn't support > or < operator
     case BooleanType => s"($c1 == $c2 ? 0 : ($c1 ? 1 : -1))"
@@ -742,6 +808,7 @@ class CodegenContext extends Logging {
    * @param partialResult `ExprCode` representing the partial result which has to be updated
    * @param item `ExprCode` representing the new expression to evaluate for the result
    */
+    //生成了用于更新部分结果（partialResult）的代码，条件是新表达式（item）比当前的部分结果更小
   def reassignIfSmaller(dataType: DataType, partialResult: ExprCode, item: ExprCode): String = {
     s"""
        |if (!${item.isNull} && (${partialResult.isNull} ||
@@ -838,21 +905,24 @@ class CodegenContext extends Logging {
    * @param makeSplitFunction makes split function body, e.g. add preparation or cleanup.
    * @param foldFunctions folds the split function calls.
    */
+    //分割表达式代码的一个重要方法，主要用于在生成代码时将较长的函数拆分成多个较小的函数，以避免超出 JVM 的限制
   def splitExpressionsWithCurrentInputs(
-      expressions: Seq[String],
-      funcName: String = "apply",
-      extraArguments: Seq[(String, String)] = Nil,
-      returnType: String = "void",
-      makeSplitFunction: String => String = identity,
-      foldFunctions: Seq[String] => String = _.mkString("", ";\n", ";")): String = {
+      expressions: Seq[String], //待拆分的表达式代码的序列。这些表达式通常是代码生成过程中需要计算的各个表达式的字符串表示
+      funcName: String = "apply", //拆分后的函数名的基础名。默认为 apply，也就是生成的函数名将以 apply 为基础（可能后续会附加数字或者其他标识符）
+      extraArguments: Seq[(String, String)] = Nil, //额外的参数列表，每个元素包含类型和名称。这些是除当前输入（如 INPUT_ROW 或 currentVars）外，函数所需的其他参数
+      returnType: String = "void", //拆分后的函数返回类型。默认为 void，表示该函数没有返回值
+      makeSplitFunction: String => String = identity, //用来处理拆分函数的主体代码。这是一个将函数体字符串作为输入并返回处理后字符串的函数
+      foldFunctions: Seq[String] => String = _.mkString("", ";\n", ";")): String = { //将多个拆分后的函数合并为一个字符串的函数。默认将拆分的多个函数代码连接起来，每个函数代码之间用分号分隔
     // TODO: support whole stage codegen
     if (INPUT_ROW == null || currentVars != null) {
-      expressions.mkString("\n")
+      //currentVars != null：表示当前变量 currentVars 不为空，通常表示在全阶段代码生成路径下
+      //INPUT_ROW == null：表示当前没有 INPUT_ROW，即可能不在正常的代码生成路径中（比如整个阶段的代码生成路径）
+      expressions.mkString("\n")  //不拆分
     } else {
       splitExpressions(
         expressions,
         funcName,
-        ("InternalRow", INPUT_ROW) +: extraArguments,
+        ("InternalRow", INPUT_ROW) +: extraArguments, //("InternalRow", INPUT_ROW) 代表当前的输入是 INPUT_ROW（通常是当前行的数据），extraArguments 则是传入的其他参数
         returnType,
         makeSplitFunction,
         foldFunctions)
@@ -872,18 +942,20 @@ class CodegenContext extends Logging {
    * @param makeSplitFunction makes split function body, e.g. add preparation or cleanup.
    * @param foldFunctions folds the split function calls.
    */
+    //用于将长的代码表达式拆分成多个函数，以应对 JVM 方法大小和类常量池的限制
   def splitExpressions(
-      expressions: Seq[String],
-      funcName: String,
-      arguments: Seq[(String, String)],
-      returnType: String = "void",
-      makeSplitFunction: String => String = identity,
-      foldFunctions: Seq[String] => String = _.mkString("", ";\n", ";")): String = {
+      expressions: Seq[String],  //expressions：待拆分的代码表达式，通常是多个表达式的代码字符串
+      funcName: String,          //funcName：拆分后函数的基础名称，用来生成多个函数名
+      arguments: Seq[(String, String)],  //arguments：拆分后函数的参数，格式为 (类型, 名称) 的元组
+      returnType: String = "void", //返回类型，默认为 "void"
+      makeSplitFunction: String => String = identity, //生成拆分函数体的函数，默认是对每个块不做任何修改（identity）
+      foldFunctions: Seq[String] => String = _.mkString("", ";\n", ";")): String = { //将拆分后的函数调用折叠成最终的字符串，默认为将函数调用连接成一个大的字符串
     val blocks = buildCodeBlocks(expressions)
 
     if (blocks.length == 1) {
       // inline execution if only one block
       blocks.head
+      //只有一个代码块（即不需要拆分），则直接返回该代码块
     } else {
       if (Utils.isTesting) {
         // Passing global variables to the split method is dangerous, as any mutating to it is
@@ -893,7 +965,7 @@ class CodegenContext extends Logging {
             s"split function argument $name cannot be a global variable.")
         }
       }
-
+      //生成拆分函数
       val func = freshName(funcName)
       val argString = arguments.map { case (t, name) => s"$t $name" }.mkString(", ")
       val functions = blocks.zipWithIndex.map { case (body, i) =>
@@ -905,12 +977,12 @@ class CodegenContext extends Logging {
          """.stripMargin
         addNewFunctionInternal(name, code, inlineToOuterClass = false)
       }
-
+      //将生成的函数分为两类：外部类函数和内部类函数。没有指定 innerClassName 的函数会作为外部类的函数
       val (outerClassFunctions, innerClassFunctions) = functions.partition(_.innerClassName.isEmpty)
-
+      //生成调用外部类函数的代码
       val argsString = arguments.map(_._2).mkString(", ")
       val outerClassFunctionCalls = outerClassFunctions.map(f => s"${f.functionName}($argsString)")
-
+      //生成用于调用内部类中函数的代码
       val innerClassFunctionCalls = generateInnerClassesFunctionCalls(
         innerClassFunctions,
         func,
@@ -918,7 +990,7 @@ class CodegenContext extends Logging {
         returnType,
         makeSplitFunction,
         foldFunctions)
-
+      //合并所有函数调用
       foldFunctions(outerClassFunctionCalls ++ innerClassFunctionCalls)
     }
   }
@@ -929,9 +1001,10 @@ class CodegenContext extends Logging {
    *
    * @param expressions the codes to evaluate expressions.
    */
+    //目的是将一个较长的代码表达式（由多个字符串组成）拆分成多个较小的字符串块，每个块的长度不会超过指定的阈值
   private def buildCodeBlocks(expressions: Seq[String]): Seq[String] = {
-    val blocks = new ArrayBuffer[String]()
-    val blockBuilder = new StringBuilder()
+    val blocks = new ArrayBuffer[String]()  //用来存储拆分后的多个代码块
+    val blockBuilder = new StringBuilder()  //用来构建当前的代码块，逐个代码表达式拼接
     var length = 0
     val splitThreshold = SQLConf.get.methodSplitThreshold
     for (code <- expressions) {
@@ -940,11 +1013,14 @@ class CodegenContext extends Logging {
       // also not be too small, or it will have many function calls (for wide table), see the
       // results in BenchmarkWideTable.
       if (length > splitThreshold) {
+        //如果长度超过阀值，则加入blocks里面，清空builder，length = 0
         blocks += blockBuilder.toString()
         blockBuilder.clear()
         length = 0
       }
+      //否则把代码继续加到到builder里面
       blockBuilder.append(code)
+      //stripExtraNewLinesAndComments 方法去除多余的换行符和注释
       length += CodeFormatter.stripExtraNewLinesAndComments(code).length
     }
     blocks += blockBuilder.toString()
@@ -969,23 +1045,26 @@ class CodegenContext extends Logging {
    * @param foldFunctions folds the split function calls.
    * @return an [[Iterable]] containing the methods' invocations
    */
+    //通过对内嵌类的方法进行分组，避免了内嵌类方法的直接调用引起的常量池溢出和方法体过长的问题
   private def generateInnerClassesFunctionCalls(
-      functions: Seq[NewFunctionSpec],
-      funcName: String,
-      arguments: Seq[(String, String)],
-      returnType: String,
-      makeSplitFunction: String => String,
-      foldFunctions: Seq[String] => String): Iterable[String] = {
+      functions: Seq[NewFunctionSpec],  //一个包含多个 NewFunctionSpec 的序列。每个 NewFunctionSpec 定义了一个内嵌类中的方法
+      funcName: String,  //分割后的函数名的基础部分
+      arguments: Seq[(String, String)],  //参数列表，每个元素是一个二元组 (type, name)，表示函数的参数类型和名称。
+      returnType: String, //返回类型
+      makeSplitFunction: String => String,  //一个函数，用于在生成分割后的函数体时添加额外的逻辑（例如初始化或清理）
+      foldFunctions: Seq[String] => String): Iterable[String] = { //用于将多个函数调用折叠为一个大的函数调用
+    //每个内嵌类的所有方法都被聚合到一个序列中
     val innerClassToFunctions = mutable.LinkedHashMap.empty[(String, String), Seq[String]]
     functions.foreach(f => {
       val key = (f.innerClassName.get, f.innerClassInstance.get)
       val value = f.functionName +: innerClassToFunctions.getOrElse(key, Seq.empty[String])
       innerClassToFunctions.put(key, value)
     })
-
+    //参数定义
     val argDefinitionString = arguments.map { case (t, name) => s"$t $name" }.mkString(", ")
+    //调用参数
     val argInvocationString = arguments.map(_._2).mkString(", ")
-
+    //生成方法调用
     innerClassToFunctions.flatMap {
       case ((innerClassName, innerClassInstance), innerClassFunctions) =>
         // for performance reasons, the functions are prepended, instead of appended,
@@ -1030,7 +1109,7 @@ class CodegenContext extends Logging {
   /**
    * Perform a function which generates a sequence of ExprCodes with a given mapping between
    * expressions and common expressions, instead of using the mapping in current context.
-   */
+   */ //使用f函数生成代码
   def withSubExprEliminationExprs(
       newSubExprEliminationExprs: Map[ExpressionEquals, SubExprEliminationState])(
       f: => Seq[ExprCode]): Seq[ExprCode] = {
@@ -1094,25 +1173,25 @@ class CodegenContext extends Logging {
    *      for subexpressions, we iterate over each subexpression and put the mapping between
    *      (subexpression -> `SubExprEliminationState`) into the map. So in next subexpression
    *      evaluation, we can look for generated subexpressions and do replacement.
-   */
+   *///主要目的是优化子表达式的计算，避免重复计算相同的子表达式。它通过识别相同的子表达式并为其生成代码，来实现这一目标
   def subexpressionEliminationForWholeStageCodegen(expressions: Seq[Expression]): SubExprCodes = {
     // Create a clear EquivalentExpressions and SubExprEliminationState mapping
     val equivalentExpressions: EquivalentExpressions = new EquivalentExpressions
     val localSubExprEliminationExprsForNonSplit =
       mutable.HashMap.empty[ExpressionEquals, SubExprEliminationState]
-
+    //遍历传入的所有表达式（expressions）
     // Add each expression tree and compute the common subexpressions.
     expressions.foreach(equivalentExpressions.addExprTree(_))
 
     // Get all the expressions that appear at least twice and set up the state for subexpression
     // elimination.
-    val commonExprs = equivalentExpressions.getCommonSubexpressions
-
+    val commonExprs = equivalentExpressions.getCommonSubexpressions  //返回存在重复的表达式
+    //返回的是一个包含所有子表达式生成代码的序列
     val nonSplitCode = {
       val allStates = mutable.ArrayBuffer.empty[SubExprEliminationState]
       commonExprs.map { expr =>
         withSubExprEliminationExprs(localSubExprEliminationExprsForNonSplit.toMap) {
-          val eval = expr.genCode(this)
+          val eval = expr.genCode(this)  //生成表达式的代码
           // Collects other subexpressions from the children.
           val childrenSubExprs = mutable.ArrayBuffer.empty[SubExprEliminationState]
           expr.foreach { e =>
@@ -1292,9 +1371,10 @@ class CodegenContext extends Logging {
    *                      will be automatically created and used as the placeholder.
    * @param force whether to force registering the comments
    */
+    //目的是将注释内容加入生成的代码中，通常用于生成更加可读的代码，帮助开发人员理解生成的代码逻辑
    def registerComment(
-       text: => String,
-       placeholderId: String = "",
+       text: => String, //注释的内容
+       placeholderId: String = "", //注释占位符的标识符
        force: Boolean = false): Block = {
     if (force || SQLConf.get.codegenComments) {
       val name = if (placeholderId != "") {
@@ -1329,6 +1409,7 @@ abstract class GeneratedClass {
  */
 class CodeAndComment(val body: String, val comment: collection.Map[String, String])
   extends Serializable {
+  //body：源代码的主体，类型为 String
   override def equals(that: Any): Boolean = that match {
     case t: CodeAndComment if t.body == body => true
     case _ => false
@@ -1342,26 +1423,31 @@ class CodeAndComment(val body: String, val comment: collection.Map[String, Strin
  * helpers for referring to Catalyst types and building trees that perform evaluation of individual
  * expressions.
  */
+//专门用于生成字节码来执行表达式评估。它提供了一些方法来处理输入表达式，并将其转化为字节码执行的形式
 abstract class CodeGenerator[InType <: AnyRef, OutType <: AnyRef] extends Logging {
-
+  //值是 GenericInternalRow 类的名称
   protected val genericMutableRowType: String = classOf[GenericInternalRow].getName
 
   /**
    * Generates a class for a given input expression.  Called when there is not cached code
    * already available.
    */
+  //根据输入in表达式，生成类
   protected def create(in: InType): OutType
 
   /**
    * Canonicalizes an input expression. Used to avoid double caching expressions that differ only
    * cosmetically.
    */
+  //规范化表达式
   protected def canonicalize(in: InType): InType
 
   /** Binds an input expression to a given input schema */
+  //将输入表达式与给定的输入模式进行绑定
   protected def bind(in: InType, inputSchema: Seq[Attribute]): InType
 
   /** Generates the requested evaluator binding the given expression(s) to the inputSchema. */
+    //这两函数是类生成的入口
   def generate(expressions: InType, inputSchema: Seq[Attribute]): OutType =
     generate(bind(expressions, inputSchema))
 
@@ -1380,6 +1466,7 @@ abstract class CodeGenerator[InType <: AnyRef, OutType <: AnyRef] extends Loggin
 /**
  * Java bytecode statistics of a compiled class by Janino.
  */
+//用于字节码的统计
 case class ByteCodeStats(maxMethodCodeSize: Int, maxConstPoolSize: Int, numInnerClasses: Int)
 
 object ByteCodeStats {
@@ -1390,31 +1477,38 @@ object CodeGenerator extends Logging {
 
   // This is the default value of HugeMethodLimit in the OpenJDK HotSpot JVM,
   // beyond which methods will be rejected from JIT compilation
+  //JVM HotSpot 中默认的巨大方法限制，表示一个方法的字节码超过此大小时，该方法将被拒绝进行 JIT（即时）编译
   final val DEFAULT_JVM_HUGE_METHOD_LIMIT = 8000
 
   // The max valid length of method parameters in JVM.
+  //这是 JVM 中方法参数的最大长度，通常一个方法的参数列表不能超过 255 个
   final val MAX_JVM_METHOD_PARAMS_LENGTH = 255
 
   // The max number of constant pool entries in JVM.
+  //JVM 常量池的最大大小限制，最大为 65535
   final val MAX_JVM_CONSTANT_POOL_SIZE = 65535
 
   // This is the threshold over which the methods in an inner class are grouped in a single
   // method which is going to be called by the outer class instead of the many small ones
+  //个阈值表示当方法数目超过 3 时，应该将多个小方法合并成一个方法
   final val MERGE_SPLIT_METHODS_THRESHOLD = 3
 
   // The number of named constants that can exist in the class is limited by the Constant Pool
   // limit, 65,536. We cannot know how many constants will be inserted for a class, so we use a
   // threshold of 1000k bytes to determine when a function should be inlined to a private, inner
   // class.
+  //控制生成的类的大小阈值，当类的大小超过 1000000 字节时，将考虑将函数内联到一个私有的内部类中
   final val GENERATED_CLASS_SIZE_THRESHOLD = 1000000
 
   // This is the threshold for the number of global variables, whose types are primitive type or
   // complex type (e.g. more than one-dimensional array), that will be placed at the outer class
+  //控制外部类中变量的数量阈值，超过 10000 个变量时，可能需要将部分变量移动到外部类之外
   final val OUTER_CLASS_VARIABLES_THRESHOLD = 10000
 
   // This is the maximum number of array elements to keep global variables in one Java array
   // 32767 is the maximum integer value that does not require a constant pool entry in a Java
   // bytecode instruction
+  //表示在一个 Java 数组中保留的最大元素数量
   final val MUTABLESTATEARRAY_SIZE_LIMIT = 32768
 
   // The Java source code generated by whole-stage codegen on the Driver side is sent to each
@@ -1453,8 +1547,9 @@ object CodeGenerator extends Logging {
   /**
    * Compile the Java source code into a Java class, using Janino.
    */
+    //用于将 Java 源代码编译成 Java 类，使用了 Janino 这个轻量级的编译器
   private[this] def doCompile(code: CodeAndComment): (GeneratedClass, ByteCodeStats) = {
-    val evaluator = new ClassBodyEvaluator()
+    val evaluator = new ClassBodyEvaluator()  //Janino 提供的类，用于编译源代码并生成类
 
     // A special classloader used to wrap the actual parent classloader of
     // [[org.codehaus.janino.ClassBodyEvaluator]] (see CodeGenerator.doCompile). This classloader
@@ -1467,7 +1562,9 @@ object CodeGenerator extends Logging {
     val parentClassLoader = new ParentClassLoader(Utils.getContextOrSparkClassLoader)
     evaluator.setParentClassLoader(parentClassLoader)
     // Cannot be under package codegen, or fail with java.lang.InstantiationException
+    //设置编译后的类的名称为 GeneratedClass
     evaluator.setClassName("org.apache.spark.sql.catalyst.expressions.GeneratedClass")
+    //设置默认的导入类，用于生成的代码中
     evaluator.setDefaultImports(
       classOf[Platform].getName,
       classOf[InternalRow].getName,
@@ -1485,8 +1582,9 @@ object CodeGenerator extends Logging {
       classOf[InputMetrics].getName,
       QueryExecutionErrors.getClass.getName.stripSuffix("$")
     )
+    //生成的类该继承GeneratedClass类
     evaluator.setExtendedClass(classOf[GeneratedClass])
-
+    //启用调试信息，并格式化源代码，方便查看和调试
     logDebug({
       // Only add extra debugging info to byte code when we are going to print the source code.
       evaluator.setDebuggingInformation(true, true, false)
@@ -1494,6 +1592,7 @@ object CodeGenerator extends Logging {
     })
 
     val codeStats = try {
+      //尝试编译源代码 code.body，这是实际的编译步骤
       evaluator.cook("generated.java", code.body)
       updateAndGetCompilationStats(evaluator)
     } catch {
@@ -1511,7 +1610,7 @@ object CodeGenerator extends Logging {
 
     (evaluator.getClazz().getConstructor().newInstance().asInstanceOf[GeneratedClass], codeStats)
   }
-
+  //打印生成的代码
   private def logGeneratedCode(code: CodeAndComment): Unit = {
     val maxLines = SQLConf.get.loggingMaxLinesForCodegen
     if (Utils.isTesting) {
@@ -1526,6 +1625,7 @@ object CodeGenerator extends Logging {
    * # of inner classes) of generated classes by inspecting Janino classes.
    * Also, this method updates the metrics information.
    */
+    //用于分析通过 Janino 编译器生成的类的字节码统计信息，并更新相关的度量指标
   private def updateAndGetCompilationStats(evaluator: ClassBodyEvaluator): ByteCodeStats = {
     // First retrieve the generated classes.
     val classes = evaluator.getBytecodes.asScala
@@ -1583,6 +1683,7 @@ object CodeGenerator extends Logging {
    * aborted. See [[NonFateSharingCache]] for more details.
    */
   private val cache = {
+    //缓存的加载函数，当缓存中没有命中的项时，loadFunc 将会被调用来生成代码
     val loadFunc: ((HashableWeakReference, CodeAndComment)) => (GeneratedClass, ByteCodeStats) = {
       case (_, code) =>
         val startTime = System.nanoTime()
@@ -1596,6 +1697,7 @@ object CodeGenerator extends Logging {
         _compileTime.add(duration)
         result
     }
+    //loadFunc 被传递给 NonFateSharingCache 进行缓存管理
     NonFateSharingCache(loadFunc, SQLConf.get.codegenCacheMaxEntries)
   }
 
@@ -1619,13 +1721,15 @@ object CodeGenerator extends Logging {
   /**
    * Returns true if a Java type is Java primitive primitive type
    */
+    //判断是否是java原始类型
   def isPrimitiveType(jt: String): Boolean = primitiveTypes.contains(jt)
-
+   //判断是否是java原始类型，参数是DataType
   def isPrimitiveType(dt: DataType): Boolean = isPrimitiveType(javaType(dt))
 
   /**
    * Returns the specialized code to access a value from `inputRow` at `ordinal`.
    */
+    //旨在为给定的 inputRow 获取 ordinal 位置的数据，并根据数据类型返回相应的代码
   @tailrec
   def getValue(input: String, dataType: DataType, ordinal: String): String = {
     val jt = javaType(dataType)
@@ -1931,7 +2035,7 @@ object CodeGenerator extends Logging {
       case _ => "Object"
     }
   }
-
+  //根据Spark的数据类型返回对应的Java数据类型
   @tailrec
   def javaClass(dt: DataType): Class[_] = dt match {
     case BooleanType => java.lang.Boolean.TYPE
@@ -1969,7 +2073,7 @@ object CodeGenerator extends Logging {
   }
 
   def boxedType(dt: DataType): String = boxedType(javaType(dt))
-
+  //返回类的名称
   def typeName(clazz: Class[_]): String = {
     if (clazz.isArray) {
       typeName(clazz.getComponentType) + "[]"
@@ -2001,18 +2105,18 @@ object CodeGenerator extends Logging {
    * Returns the length of parameters for a Java method descriptor. `this` contributes one unit
    * and a parameter of type long or double contributes two units. Besides, for nullable parameter,
    * we also need to pass a boolean parameter for the null status.
-   */
+   *///返回一个 Int 类型的整数，表示 Java 方法描述符中参数的总长度
   def calculateParamLength(params: Seq[Expression]): Int = {
     def paramLengthForExpr(input: Expression): Int = {
       val javaParamLength = javaType(input.dataType) match {
-        case JAVA_LONG | JAVA_DOUBLE => 2
+        case JAVA_LONG | JAVA_DOUBLE => 2   //Long或者Double需要两参数
         case _ => 1
       }
       // For a nullable expression, we need to pass in an extra boolean parameter.
-      (if (input.nullable) 1 else 0) + javaParamLength
+      (if (input.nullable) 1 else 0) + javaParamLength  //如果表达式可空，则增加一个空值检测参数
     }
     // Initial value is 1 for `this`.
-    1 + params.map(paramLengthForExpr).sum
+    1 + params.map(paramLengthForExpr).sum //默认节点本身占一个参数
   }
 
   def calculateParamLengthFromExprValues(params: Seq[ExprValue]): Int = {
@@ -2024,7 +2128,7 @@ object CodeGenerator extends Logging {
     1 + params.map(paramLengthForExpr).sum
   }
 
-  /**
+  /** 方法参数不能超过Java默认的参数255
    * In Java, a method descriptor is valid only if it represents method parameters with a total
    * length less than a pre-defined constant.
    */

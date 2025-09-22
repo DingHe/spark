@@ -43,6 +43,7 @@ import org.apache.spark.util.Utils
  * @param taskResources Resource requests for tasks. Mapped from the resource
  *                      name (e.g., cores, memory, CPU) to its specific request.
  */
+//描述和管理RDD阶段的资源需求。通过这种方式，用户可以为不同的RDD阶段配置不同的资源要求，如内存、CPU等。
 @Evolving
 @Since("3.1.0")
 class ResourceProfile(
@@ -50,14 +51,14 @@ class ResourceProfile(
     val taskResources: Map[String, TaskResourceRequest]) extends Serializable with Logging {
 
   // _id is only a var for testing purposes
-  private var _id = ResourceProfile.getNextProfileId
+  private var _id = ResourceProfile.getNextProfileId  //表示资源配置的唯一标识符
   // This is used for any resources that use fractional amounts, the key is the resource name
   // and the value is the number of tasks that can share a resource address. For example,
   // if the user says task gpu amount is 0.5, that results in 2 tasks per resource address.
-  private var _executorResourceSlotsPerAddr: Option[Map[String, Int]] = None
-  private var _limitingResource: Option[String] = None
-  private var _maxTasksPerExecutor: Option[Int] = None
-  private var _coresLimitKnown: Boolean = false
+  private var _executorResourceSlotsPerAddr: Option[Map[String, Int]] = None //存储与每个资源地址相关的任务槽数
+  private var _limitingResource: Option[String] = None   //存储限制资源（例如，执行器核心数）决定最大任务数的资源类型
+  private var _maxTasksPerExecutor: Option[Int] = None //存储每个执行器可运行的最大任务数
+  private var _coresLimitKnown: Boolean = false   //表示执行器的核心数是否已知
 
   /**
    * A unique id of this ResourceProfile
@@ -75,25 +76,25 @@ class ResourceProfile(
   def executorResourcesJMap: JMap[String, ExecutorResourceRequest] = {
     executorResources.asJava
   }
-
+  //获取执行器的核心数
   // Note that some cluster managers don't set the executor cores explicitly so
   // be sure to check the Option as required
   private[spark] def getExecutorCores: Option[Int] = {
     executorResources.get(ResourceProfile.CORES).map(_.amount.toInt)
   }
-
+  //获取任务需要的cpus
   private[spark] def getTaskCpus: Option[Int] = {
     taskResources.get(ResourceProfile.CPUS).map(_.amount.toInt)
   }
-
+  //获取PySpark应用所需的内存
   private[spark] def getPySparkMemory: Option[Long] = {
     executorResources.get(ResourceProfile.PYSPARK_MEM).map(_.amount)
   }
-
+  //获取执行器需要的内存
   private[spark] def getExecutorMemory: Option[Long] = {
     executorResources.get(ResourceProfile.MEMORY).map(_.amount)
   }
-
+  //获取自定义的任务和执行器资源，这些资源不包括Spark默认的资源（如cpus、memory等）
   private[spark] def getCustomTaskResources(): Map[String, TaskResourceRequest] = {
     taskResources.filterKeys(k => !k.equals(ResourceProfile.CPUS)).toMap
   }
@@ -112,12 +113,13 @@ class ResourceProfile(
    * the correct number of times. ie task requirement amount=0.25 -> addrs["0", "0", "0", "0"]
    * and scheduler task amount=1. See ResourceAllocator.slotsPerAddress.
    */
+  //获取调度器所需的任务资源量
   private[spark] def getSchedulerTaskResourceAmount(resource: String): Int = {
     val taskAmount = taskResources.getOrElse(resource,
       throw new SparkException(s"Resource $resource doesn't exist in profile id: $id"))
    if (taskAmount.amount < 1) 1 else taskAmount.amount.toInt
   }
-
+  //根据资源名称和配置，返回每个资源地址上的槽位数
   private[spark] def getNumSlotsPerAddress(resource: String, sparkConf: SparkConf): Int = {
     _executorResourceSlotsPerAddr.getOrElse {
       calculateTasksAndLimitingResource(sparkConf)
@@ -156,6 +158,7 @@ class ResourceProfile(
 
   // executor cores config is not set for some masters by default and the default value
   // only applies to yarn/k8s
+  //确定是否需要检测执行器的cores
   private def shouldCheckExecutorCores(sparkConf: SparkConf): Boolean = {
     val master = sparkConf.getOption("spark.master")
     sparkConf.contains(EXECUTOR_CORES) ||
@@ -171,27 +174,34 @@ class ResourceProfile(
    * This function also sets the limiting resource, isCoresLimitKnown and number of slots per
    * resource address.
    */
+    //用于计算任务（task）资源限制和执行器（executor）资源限制的工具函数。
+  // 其目的是帮助计算每个执行器上可以运行的任务数，并确定限制资源（例如 CPU 或 GPU）以及每个资源地址上可以运行的任务数量。
   private def calculateTasksAndLimitingResource(sparkConf: SparkConf): Unit = synchronized {
     val shouldCheckExecCores = shouldCheckExecutorCores(sparkConf)
     var (taskLimit, limitingResource) = if (shouldCheckExecCores) {
       val cpusPerTask = taskResources.get(ResourceProfile.CPUS)
-        .map(_.amount).getOrElse(sparkConf.get(CPUS_PER_TASK).toDouble).toInt
+        .map(_.amount).getOrElse(sparkConf.get(CPUS_PER_TASK).toDouble).toInt   //计算每个任务需要的cpu数量
       assert(cpusPerTask > 0, "CPUs per task configuration has to be > 0")
-      val coresPerExecutor = getExecutorCores.getOrElse(sparkConf.get(EXECUTOR_CORES))
-      _coresLimitKnown = true
+      val coresPerExecutor = getExecutorCores.getOrElse(sparkConf.get(EXECUTOR_CORES))  //获取每个执行器的cpu数量
+      _coresLimitKnown = true  //表示执行器的 CPU 核心数已经知道
       ResourceUtils.validateTaskCpusLargeEnough(sparkConf, coresPerExecutor, cpusPerTask)
       val tasksBasedOnCores = coresPerExecutor / cpusPerTask
       // Note that if the cores per executor aren't set properly this calculation could be off,
       // we default it to just be 1 in order to allow checking of the rest of the custom
       // resources. We set the limit based on the other resources available.
       (tasksBasedOnCores, ResourceProfile.CPUS)
+      //tasksBasedOnCores 是最大任务数
+      //ResourceProfile.CPUS 是资源名称
     } else {
       (-1, "")
     }
+    //创建一个 mutable.HashMap 来存储每个资源的可分配任务数。初始时，设置 CORES 的任务数为 1
     val numPartsPerResourceMap = new mutable.HashMap[String, Int]
     numPartsPerResourceMap(ResourceProfile.CORES) = 1
+    //创建一个 taskResourcesToCheck 映射，包含所有需要检查的任务资源。通过 getCustomTaskResources 获取自定义任务资源并添加到映射中
     val taskResourcesToCheck = new mutable.HashMap[String, TaskResourceRequest]
     taskResourcesToCheck ++= this.getCustomTaskResources()
+    //获取自定义执行器资源配置
     val execResourceToCheck = this.getCustomExecutorResources()
     execResourceToCheck.foreach { case (rName, execReq) =>
       val taskReq = taskResources.get(rName).map(_.amount).getOrElse(0.0)

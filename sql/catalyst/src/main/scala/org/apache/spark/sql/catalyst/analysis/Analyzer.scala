@@ -138,19 +138,20 @@ object FakeV2SessionCatalog extends TableCatalog with FunctionCatalog with Suppo
  * @param outerPlan The query plan from the outer query that can be used to resolve star
  *                  expressions in a subquery.
  */
+//查询分析过程中保持一些状态，尤其是用于解析视图和子查询
 case class AnalysisContext(
-    catalogAndNamespace: Seq[String] = Nil,
-    nestedViewDepth: Int = 0,
-    maxNestedViewDepth: Int = -1,
+    catalogAndNamespace: Seq[String] = Nil, //表示用于视图解析的目录和命名空间。当解析关系（例如表）时，这个值会覆盖当前的目录和命名空间
+    nestedViewDepth: Int = 0,  //表示解析视图时的嵌套深度。用于控制视图解析的递归深度
+    maxNestedViewDepth: Int = -1, //表示允许的最大嵌套视图深度
     relationCache: mutable.Map[(Seq[String], Option[TimeTravelSpec]), LogicalPlan] =
-      mutable.Map.empty,
-    referredTempViewNames: Seq[Seq[String]] = Seq.empty,
+      mutable.Map.empty, //存储已解析的关系，键是（命名空间、时间旅行规范），值是解析后的逻辑计划。这个缓存确保一个表如果在查询中多次使用，只会被解析一次
+    referredTempViewNames: Seq[Seq[String]] = Seq.empty, //存储当前视图解析中引用的所有临时视图名称
     // 1. If we are resolving a view, this field will be restored from the view metadata,
     //    by calling `AnalysisContext.withAnalysisContext(viewDesc)`.
     // 2. If we are not resolving a view, this field will be updated everytime the analyzer
     //    lookup a temporary function. And export to the view metadata.
-    referredTempFunctionNames: mutable.Set[String] = mutable.Set.empty,
-    outerPlan: Option[LogicalPlan] = None)
+    referredTempFunctionNames: mutable.Set[String] = mutable.Set.empty, //存储当前解析视图中引用的所有临时函数名称
+    outerPlan: Option[LogicalPlan] = None) //存储外部查询的查询计划
 
 object AnalysisContext {
   private val value = new ThreadLocal[AnalysisContext]() {
@@ -161,7 +162,9 @@ object AnalysisContext {
   def reset(): Unit = value.remove()
 
   private def set(context: AnalysisContext): Unit = value.set(context)
-
+  //在解析视图时，使用视图的元数据（如viewDesc）来创建一个新的AnalysisContext，并将其设置为当前线程的上下文
+  // viewDesc: 视图的元数据，包含了视图相关的信息，如命名空间、临时视图名称等
+  // f: 传入的代码块，会在新的上下文中执行
   def withAnalysisContext[A](viewDesc: CatalogTable)(f: => A): A = {
     val originContext = value.get()
     val maxNestedViewDepth = if (originContext.maxNestedViewDepth == -1) {
@@ -199,30 +202,33 @@ object AnalysisContext {
  * Provides a logical query plan analyzer, which translates [[UnresolvedAttribute]]s and
  * [[UnresolvedRelation]]s into fully typed objects using information in a [[SessionCatalog]].
  */
+//解析查询中的未解析属性（UnresolvedAttribute）和未解析关系（UnresolvedRelation），并结合SessionCatalog中的信息，将它们转换为已解析的、类型正确的对象
+//catalogManager 用于查找和解析表、视图等元数据
 class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor[LogicalPlan]
   with CheckAnalysis with SQLConfHelper with ColumnResolutionHelper {
 
-  private val v1SessionCatalog: SessionCatalog = catalogManager.v1SessionCatalog
-
+  private val v1SessionCatalog: SessionCatalog = catalogManager.v1SessionCatalog //表示Session级别的传统目录，用于存储当前会话的表和视图等信息
+  //检查当前查询计划中的表达式ID是否唯一
   override protected def validatePlanChanges(
       previousPlan: LogicalPlan,
       currentPlan: LogicalPlan): Option[String] = {
     LogicalPlanIntegrity.validateExprIdUniqueness(currentPlan)
   }
-
+  //检查给定的名称（由多个部分组成）是否表示一个视图
   override def isView(nameParts: Seq[String]): Boolean = v1SessionCatalog.isView(nameParts)
 
   // Only for tests.
   def this(catalog: SessionCatalog) = {
     this(new CatalogManager(FakeV2SessionCatalog, catalog))
   }
-
+  // 执行查询计划并检查其正确性。如果查询计划已经被分析（analyzed），直接返回；
+  // 否则进行分析，并在分析过程中进行检查。如果分析过程中出现异常，抛出一个扩展的AnalysisException
   def executeAndCheck(plan: LogicalPlan, tracker: QueryPlanningTracker): LogicalPlan = {
-    if (plan.analyzed) return plan
+    if (plan.analyzed) return plan   //如果已经分析过，直接返回
     AnalysisHelper.markInAnalyzer {
-      val analyzed = executeAndTrack(plan, tracker)
+      val analyzed = executeAndTrack(plan, tracker)  //执行逻辑计划的分析
       try {
-        checkAnalysis(analyzed)
+        checkAnalysis(analyzed)  //检查分析后的逻辑计划并设置为已经分析
         analyzed
       } catch {
         case e: AnalysisException =>
@@ -230,7 +236,7 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
       }
     }
   }
-
+  //重写execute函数的逻辑
   override def execute(plan: LogicalPlan): LogicalPlan = {
     AnalysisContext.withNewAnalysisContext {
       executeSameContext(plan)
@@ -238,13 +244,14 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
   }
 
   private def executeSameContext(plan: LogicalPlan): LogicalPlan = super.execute(plan)
-
+  //提供SQL解析的规则，用于处理列名和表达式的解析，支持大小写不敏感的匹配
   def resolver: Resolver = conf.resolver
 
   /**
    * If the plan cannot be resolved within maxIterations, analyzer will throw exception to inform
    * user to increase the value of SQLConf.ANALYZER_MAX_ITERATIONS.
    */
+    //定义查询计划分析的固定迭代次数。如果超过最大迭代次数，分析器将抛出异常
   protected def fixedPoint =
     FixedPoint(
       conf.analyzerMaxIterations,
@@ -254,21 +261,21 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
   /**
    * Override to provide additional rules for the "Resolution" batch.
    */
-  val extendedResolutionRules: Seq[Rule[LogicalPlan]] = Nil
+  val extendedResolutionRules: Seq[Rule[LogicalPlan]] = Nil  //提供额外的规则，用于“解析”阶段，用户可以根据需要扩展它来处理特定的解析需求
 
   /**
    * Override to provide rules to do post-hoc resolution. Note that these rules will be executed
    * in an individual batch. This batch is to run right after the normal resolution batch and
    * execute its rules in one pass.
    */
-  val postHocResolutionRules: Seq[Rule[LogicalPlan]] = Nil
-
+  val postHocResolutionRules: Seq[Rule[LogicalPlan]] = Nil  //提供额外的后期解析规则。这些规则将在常规解析阶段后执行
+  //定义类型强制转换规则。根据SQLConf.ansiEnabled的设置，选择使用AnsiTypeCoercion或TypeCoercion中的规则
   private def typeCoercionRules(): List[Rule[LogicalPlan]] = if (conf.ansiEnabled) {
     AnsiTypeCoercion.typeCoercionRules
   } else {
     TypeCoercion.typeCoercionRules
   }
-
+  //定义早期处理阶段的规则批次。包括优化、CTE替换、绑定参数等。此阶段的规则处理为后续的解析和优化做好准备
   private def earlyBatches: Seq[Batch] = Seq(
     Batch("Substitution", fixedPoint,
       // This rule optimizes `UpdateFields` expression chains so looks more like optimization rule.
@@ -291,9 +298,9 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
     Batch("Keep Legacy Outputs", Once,
       KeepLegacyOutputs)
   )
-
+  //定义了整个分析过程中的多个批次（Batch）。每个批次包含不同的规则，用于不同阶段的处理
   override def batches: Seq[Batch] = earlyBatches ++ Seq(
-    Batch("Resolution", fixedPoint,
+    Batch("Resolution", fixedPoint,      //涉及解析表、列、函数等
       new ResolveCatalogs(catalogManager) ::
       ResolveInsertInto ::
       ResolveRelations ::
@@ -315,7 +322,7 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
       ResolveOrdinalInOrderByAndGroupBy ::
       ExtractGenerator ::
       ResolveGenerate ::
-      ResolveFunctions ::
+      ResolveFunctions ::   //解析函数
       ResolveTableSpec ::
       ResolveAliases ::
       ResolveSubquery ::
@@ -344,7 +351,7 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
         ResolveWithCTE,
         ExtractDistributedSequenceID) ++
       extendedResolutionRules : _*),
-    Batch("Remove TempResolvedColumn", Once, RemoveTempResolvedColumn),
+    Batch("Remove TempResolvedColumn", Once, RemoveTempResolvedColumn),  //移除无效信息：例如删除临时列、处理特殊命令等
     Batch("Post-Hoc Resolution", Once,
       Seq(ResolveCommandsWithIfExists) ++
       postHocResolutionRules: _*),
@@ -967,9 +974,9 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
         Expand(exprs, output, child)
     }
   }
-
+  //catalogAndNamespace是一个Seq，存储视图和名称空间
   private def isResolvingView: Boolean = AnalysisContext.get.catalogAndNamespace.nonEmpty
-  private def isReferredTempViewName(nameParts: Seq[String]): Boolean = {
+  private def isReferredTempViewName(nameParts: Seq[String]): Boolean = {  //检查是否已经存在视图nameParts
     AnalysisContext.get.referredTempViewNames.exists { n =>
       (n.length == nameParts.length) && n.zip(nameParts).forall {
         case (a, b) => resolver(a, b)
@@ -1085,7 +1092,7 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
       // `viewText` should be defined, or else we throw an error on the generation of the View
       // operator.
       case view @ View(desc, isTempView, child) if !child.resolved =>
-        // Resolve all the UnresolvedRelations and Views in the child.
+        // Resolve all the UnresolvedRelations and Views in the child.  解析所有子节点的UnresolvedRelations和Views
         val newChild = AnalysisContext.withAnalysisContext(desc) {
           val nestedViewDepth = AnalysisContext.get.nestedViewDepth
           val maxNestedViewDepth = AnalysisContext.get.maxNestedViewDepth
@@ -4020,6 +4027,7 @@ object UpdateOuterReferences extends Rule[LogicalPlan] {
  * remain with `hasTried` as false. We should strip [[TempResolvedColumn]], so that users can see
  * the reason why the expression is not resolved, e.g. type mismatch.
  */
+//TempResolvedColumn 是一个临时解析的列，它通常出现在 UnresolvedHaving、Filter 和 Sort 等节点中
 object RemoveTempResolvedColumn extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = {
     plan.resolveExpressionsWithPruning(_.containsPattern(TEMP_RESOLVED_COLUMN)) {

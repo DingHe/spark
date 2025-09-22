@@ -32,10 +32,12 @@ import org.apache.spark.sql.types.DataType
 /**
  * The base class for subquery that is used in SparkPlan.
  */
+//表示在 Spark 查询计划中用于执行子查询的表达式
 abstract class ExecSubqueryExpression extends PlanExpression[BaseSubqueryExec] {
   /**
    * Fill the expression with collected result from executed plan.
    */
+  //更新当前子查询表达式的结果
   def updateResult(): Unit
 
   /** Updates the expression with a new plan. */
@@ -46,6 +48,7 @@ object ExecSubqueryExpression {
   /**
    * Returns true when an expression contains a subquery
    */
+  //检查某个表达式是否包含子查询
   def hasSubquery(e: Expression): Boolean = {
     e.exists {
       case _: ExecSubqueryExpression => true
@@ -59,6 +62,7 @@ object ExecSubqueryExpression {
  *
  * This is the physical copy of ScalarSubquery to be used inside SparkPlan.
  */
+//标量子查询的物理计划
 case class ScalarSubquery(
     plan: BaseSubqueryExec,
     exprId: ExprId)
@@ -173,15 +177,20 @@ case class InSubqueryExec(
 /**
  * Plans subqueries that are present in the given [[SparkPlan]].
  */
+//用于将逻辑计划中的子查询（如 ScalarSubquery 和 InSubquery）转换为对应的执行计划 (SubqueryExec 和 InSubqueryExec)，以便在执行阶段正确处理子查询
 case class PlanSubqueries(sparkSession: SparkSession) extends Rule[SparkPlan] {
   def apply(plan: SparkPlan): SparkPlan = {
+    //查找并处理标量子查询（ScalarSubquery）和IN 子查询（InSubquery）
     plan.transformAllExpressionsWithPruning(_.containsAnyPattern(SCALAR_SUBQUERY, IN_SUBQUERY)) {
       case subquery: expressions.ScalarSubquery =>
+        //用新的 ScalarSubquery 替代原始表达式，保证执行时能处理子查询
         val executedPlan = QueryExecution.prepareExecutedPlan(sparkSession, subquery.plan)
         ScalarSubquery(
           SubqueryExec.createForScalarSubquery(
             s"scalar-subquery#${subquery.exprId.id}", executedPlan),
           subquery.exprId)
+      //values：需要与子查询结果匹配的主表列（可能是多列）
+      //query：子查询的逻辑执行计划
       case expressions.InSubquery(values, ListQuery(query, _, exprId, _, _, _)) =>
         val expr = if (values.length == 1) {
           values.head

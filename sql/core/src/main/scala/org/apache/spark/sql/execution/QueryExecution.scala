@@ -52,40 +52,42 @@ import org.apache.spark.util.Utils
  * While this is not a public class, we should avoid changing the function names for the sake of
  * changing them, because a lot of developers use the feature for debugging.
  */
+//主要用于执行SQL查询的工作流。它管理着从SQL查询的解析到执行计划生成的各个阶段
 class QueryExecution(
     val sparkSession: SparkSession,
-    val logical: LogicalPlan,
-    val tracker: QueryPlanningTracker = new QueryPlanningTracker,
+    val logical: LogicalPlan,  //SQL 查询的逻辑计划
+    val tracker: QueryPlanningTracker = new QueryPlanningTracker,  //追踪 SQL 查询执行过程中的各个阶段，帮助调试和性能分析
     val mode: CommandExecutionMode.Value = CommandExecutionMode.ALL) extends Logging {
 
   val id: Long = QueryExecution.nextExecutionId
 
+
   // TODO: Move the planner an optimizer into here from SessionState.
-  protected def planner = sparkSession.sessionState.planner
+  protected def planner = sparkSession.sessionState.planner  //将优化后的逻辑计划转换为物理计划
 
-  def assertAnalyzed(): Unit = analyzed
-
+  def assertAnalyzed(): Unit = analyzed   //分析阶段，使用Analyzer
+  //检查当前查询是否被支持，特别是在批处理模式下
   def assertSupported(): Unit = {
     if (sparkSession.sessionState.conf.isUnsupportedOperationCheckEnabled) {
       UnsupportedOperationChecker.checkForBatch(analyzed)
     }
   }
-
+  //查询已经经过分析阶段后的逻辑计划,懒加载，后面提交才执行
   lazy val analyzed: LogicalPlan = {
-    val plan = executePhase(QueryPlanningTracker.ANALYSIS) {
+    val plan = executePhase(QueryPlanningTracker.ANALYSIS) {  //分析阶段
       // We can't clone `logical` here, which will reset the `_analyzed` flag.
-      sparkSession.sessionState.analyzer.executeAndCheck(logical, tracker)
+      sparkSession.sessionState.analyzer.executeAndCheck(logical, tracker)  //使用Analyzer执行分析，并标志该逻辑计划已经分析
     }
     tracker.setAnalyzed(plan)
     plan
   }
-
+  //根据执行模式 (mode) 确定是否要“急切执行”命令。如果模式是 NON_ROOT，则会在遍历查询时执行命令；如果是 ALL，则会执行所有命令
   lazy val commandExecuted: LogicalPlan = mode match {
     case CommandExecutionMode.NON_ROOT => analyzed.mapChildren(eagerlyExecuteCommands)
     case CommandExecutionMode.ALL => eagerlyExecuteCommands(analyzed)
     case CommandExecutionMode.SKIP => analyzed
   }
-
+ //根据传入的命令类型返回命令的名称
   private def commandExecutionName(command: Command): String = command match {
     case _: CreateTableAsSelect => "create"
     case _: ReplaceTableAsSelect => "replace"
@@ -94,7 +96,7 @@ class QueryExecution(
     case _: OverwritePartitionsDynamic => "overwritePartitions"
     case _ => "command"
   }
-
+  //遍历查询计划中的命令节点，执行这些命令并返回 CommandResult。执行结果会被缓存在查询的执行计划中
   private def eagerlyExecuteCommands(p: LogicalPlan) = p transformDown {
     case c: Command =>
       // Since Command execution will eagerly take place here,
@@ -102,18 +104,20 @@ class QueryExecution(
       // with the rest of processing of the root plan being just outputting command results,
       // for eagerly executed commands we mark this place as beginning of execution.
       tracker.setReadyForExecution()
+      //创建QueryExecution对象，此时的LogicalPlan已经分析过
       val qe = sparkSession.sessionState.executePlan(c, CommandExecutionMode.NON_ROOT)
+      //commandExecutionName(c)返回当前命令的名称
       val result = SQLExecution.withNewExecutionId(qe, Some(commandExecutionName(c))) {
-        qe.executedPlan.executeCollect()
+        qe.executedPlan.executeCollect()   //真正的执行逻辑在这里
       }
       CommandResult(
         qe.analyzed.output,
         qe.commandExecuted,
         qe.executedPlan,
         result)
-    case other => other
+    case other => other   //非命令节点，直接返回
   }
-
+  //经过规范化的逻辑计划。规范化通常是为了优化缓存命中率。通过应用 planNormalizationRules 来生成
   // The plan that has been normalized by custom rules, so that it's more likely to hit cache.
   lazy val normalized: LogicalPlan = {
     val normalizationRules = sparkSession.sessionState.planNormalizationRules
@@ -130,7 +134,7 @@ class QueryExecution(
       normalized
     }
   }
-
+  //使用缓存的数据生成新的逻辑计划。它会确保缓存数据的有效性。
   lazy val withCachedData: LogicalPlan = sparkSession.withActive {
     assertAnalyzed()
     assertSupported()
@@ -140,11 +144,11 @@ class QueryExecution(
   }
 
   def assertCommandExecuted(): Unit = commandExecuted
-
+  //LogicalPlan 类型的属性，表示优化后的查询计划
   lazy val optimizedPlan: LogicalPlan = {
     // We need to materialize the commandExecuted here because optimizedPlan is also tracked under
     // the optimizing phase
-    assertCommandExecuted()
+    assertCommandExecuted()   //代表已经分析过
     executePhase(QueryPlanningTracker.OPTIMIZATION) {
       // clone the plan to avoid sharing the plan instance between different stages like analyzing,
       // optimizing and planning.
@@ -160,7 +164,7 @@ class QueryExecution(
   }
 
   def assertOptimized(): Unit = optimizedPlan
-
+  //生成物理计划 (SparkPlan) 的属性。物理计划是执行查询的最终计划，包含了具体的执行细节
   lazy val sparkPlan: SparkPlan = {
     // We need to materialize the optimizedPlan here because sparkPlan is also tracked under
     // the planning phase
@@ -168,6 +172,7 @@ class QueryExecution(
     executePhase(QueryPlanningTracker.PLANNING) {
       // Clone the logical plan here, in case the planner rules change the states of the logical
       // plan.
+      //使用planner把逻辑计划转为物理计划，返回第一个物理计划
       QueryExecution.createSparkPlan(sparkSession, planner, optimizedPlan.clone())
     }
   }
@@ -176,6 +181,7 @@ class QueryExecution(
 
   // executedPlan should not be used to initialize any SparkPlan. It should be
   // only used for execution.
+  //表示已经准备好执行的物理计划
   lazy val executedPlan: SparkPlan = {
     // We need to materialize the optimizedPlan here, before tracking the planning phase, to ensure
     // that the optimization time is not counted as part of the planning phase.
@@ -183,6 +189,7 @@ class QueryExecution(
     val plan = executePhase(QueryPlanningTracker.PLANNING) {
       // clone the plan to avoid sharing the plan instance between different stages like analyzing,
       // optimizing and planning.
+      //把物理计划执行前应用的规则应用到物理计划上，返回规则应用后的物理计划
       QueryExecution.prepareForExecution(preparations, sparkPlan.clone())
     }
     // Note: For eagerly executed command it might have already been called in
@@ -203,23 +210,24 @@ class QueryExecution(
    * Given QueryExecution is not a public class, end users are discouraged to use this: please
    * use `Dataset.rdd` instead where conversion will be applied.
    */
+    //返回一个 RDD[InternalRow]，表示查询的执行结果。注意这个 RDD 没有包含模式信息，且不推荐直接存储
   lazy val toRdd: RDD[InternalRow] = new SQLExecutionRDD(
     executedPlan.execute(), sparkSession.sessionState.conf)
 
   /** Get the metrics observed during the execution of the query plan. */
   def observedMetrics: Map[String, Row] = CollectMetricsExec.collect(executedPlan)
-
+  //物理计划执行前应用的规则
   protected def preparations: Seq[Rule[SparkPlan]] = {
     QueryExecution.preparations(sparkSession,
       Option(InsertAdaptiveSparkPlan(AdaptiveExecutionContext(sparkSession, this))), false)
   }
-
+  //执行查询的某个阶段，并通过 tracker.measurePhase 来跟踪时间和性能
   protected def executePhase[T](phase: String)(block: => T): T = sparkSession.withActive {
     QueryExecution.withInternalError(s"The Spark SQL phase $phase failed with an internal error.") {
       tracker.measurePhase(phase)(block)
     }
   }
-
+  //返回查询执行计划的简洁字符串表示
   def simpleString: String = {
     val concat = new PlanStringConcat()
     simpleString(false, SQLConf.get.maxToStringFields, concat.append)
@@ -351,6 +359,7 @@ class QueryExecution(
   /**
    * Redact the sensitive information in the given string.
    */
+    //对查询执行中的敏感信息进行屏蔽（如密码、敏感的路径等）
   private def withRedaction(message: String): String = {
     Utils.redact(sparkSession.sessionState.conf.stringRedactionPattern, message)
   }
@@ -421,7 +430,10 @@ class QueryExecution(
 object CommandExecutionMode extends Enumeration {
   val SKIP, NON_ROOT, ALL = Value
 }
-
+//SKIP  表示跳过命令的执行。它通常用于 EXPLAIN 或者嵌套在其他命令中的命令执行，避免在这些场景下命令立即执行。
+// 例如，如果一个查询是嵌套在另一个查询中运行，或者我们在调试查询计划时使用 EXPLAIN，就可以使用 SKIP 来避免不必要的命令执行
+//NON_ROOT  递归执行命令时使用，特别是在命令节点是查询树的非根节点时。使用这个模式可以避免在递归中出现无限递归的问题。它确保命令被执行，但不执行根节点的命令
+//ALL 表示所有的命令都应该被立即执行。这意味着任何命令（无论是在根节点还是非根节点）都会在查询过程中立即执行，适用于需要确保某些操作（如 INSERT 操作）立刻生效的情况
 object QueryExecution {
   private val _nextExecutionId = new AtomicLong(0)
 
@@ -433,19 +445,21 @@ object QueryExecution {
    * are correct, insert whole stage code gen, and try to reduce the work done by reusing exchanges
    * and subqueries.
    */
+  // 构建一系列规则，以便为执行计划（SparkPlan）做好准备。
+  // 这个方法会确保子查询被规划好、数据分区和排序是正确的、插入代码生成（code generation）等
   private[execution] def preparations(
       sparkSession: SparkSession,
-      adaptiveExecutionRule: Option[InsertAdaptiveSparkPlan] = None,
-      subquery: Boolean): Seq[Rule[SparkPlan]] = {
+      adaptiveExecutionRule: Option[InsertAdaptiveSparkPlan] = None, //用于自适应查询计划。自适应执行允许 Spark 动态调整查询执行计划以提高性能，特别是在执行过程中调整分区大小、排序等
+      subquery: Boolean): Seq[Rule[SparkPlan]] = { //指示当前是否是子查询。如果是子查询，则不应用一些需要在主查询中使用的优化规则
     // `AdaptiveSparkPlanExec` is a leaf node. If inserted, all the following rules will be no-op
     // as the original plan is hidden behind `AdaptiveSparkPlanExec`.
-    adaptiveExecutionRule.toSeq ++
+    adaptiveExecutionRule.toSeq ++  //toSeq 方法将 Option 类型的规则转换为一个空序列或包含规则的序列
     Seq(
-      CoalesceBucketsInJoin,
-      PlanDynamicPruningFilters(sparkSession),
-      PlanSubqueries(sparkSession),
-      RemoveRedundantProjects,
-      EnsureRequirements(),
+      CoalesceBucketsInJoin,  //优化规则，用于合并分桶（buckets）以优化 Join 操作
+      PlanDynamicPruningFilters(sparkSession),  //动态过滤规则。它会为查询计划插入动态修剪的过滤条件，通常用于优化基于数据的连接操作（如 Join）
+      PlanSubqueries(sparkSession), //确保子查询被正确地规划和优化
+      RemoveRedundantProjects,  //删除冗余的投影（Project）操作
+      EnsureRequirements(), //确保查询计划满足所需的物理要求。比如，确保某些操作（如 Join 或 Sort）的输入符合预期的分区要求和排序要求
       // `ReplaceHashWithSortAgg` needs to be added after `EnsureRequirements` to guarantee the
       // sort order of each node is checked to be valid.
       ReplaceHashWithSortAgg,
@@ -458,7 +472,7 @@ object QueryExecution {
       ApplyColumnarRulesAndInsertTransitions(
         sparkSession.sessionState.columnarRules, outputsColumnar = false),
       CollapseCodegenStages()) ++
-      (if (subquery) {
+      (if (subquery) {  //如果是子查询，则不应用 ReuseExchangeAndSubquery 规则
         Nil
       } else {
         Seq(ReuseExchangeAndSubquery)
@@ -469,6 +483,7 @@ object QueryExecution {
    * Prepares a planned [[SparkPlan]] for execution by inserting shuffle operations and internal
    * row format conversions as needed.
    */
+  //提交前进行准备工作，进行一些分区排序方面的处理，确保 SparkPlan各节点能够正确 执行
   private[execution] def prepareForExecution(
       preparations: Seq[Rule[SparkPlan]],
       plan: SparkPlan): SparkPlan = {
@@ -493,7 +508,7 @@ object QueryExecution {
       plan: LogicalPlan): SparkPlan = {
     // TODO: We use next(), i.e. take the first plan returned by the planner, here for now,
     //       but we will implement to choose the best plan.
-    planner.plan(ReturnAnswer(plan)).next()
+    planner.plan(ReturnAnswer(plan)).next()  //目前是直接返回第一个执行计划，以后会选择best
   }
 
   /**
@@ -541,6 +556,7 @@ object QueryExecution {
   /**
    * Catches asserts, null pointer exceptions, and converts them to internal errors.
    */
+  //执行block的代码，如果出现错误，则抛出msg异常信息
   private[sql] def withInternalError[T](msg: String)(block: => T): T = {
     try {
       block

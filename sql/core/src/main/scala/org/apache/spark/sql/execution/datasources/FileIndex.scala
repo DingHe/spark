@@ -40,7 +40,7 @@ case class FileStatusWithMetadata(fileStatus: FileStatus, metadata: Map[String, 
 /**
  * A collection of data files from a partitioned relation, along with the partition values in the
  * form of an [[InternalRow]].
- */
+ *///values 分区表达式   files  分区包含的文件
 case class PartitionDirectory(values: InternalRow, files: Seq[FileStatusWithMetadata])
 
 object PartitionDirectory {
@@ -53,6 +53,7 @@ object PartitionDirectory {
  * An interface for objects capable of enumerating the root paths of a relation as well as the
  * partitions of a relation subject to some pruning expressions.
  */
+//主要用于枚举存储数据的路径，并支持基于分区的裁剪（pruning）
 trait FileIndex {
 
   /**
@@ -60,6 +61,7 @@ trait FileIndex {
    * single root path from which partitions are discovered, or individual partitions may be
    * specified by each path.
    */
+  //返回根输入路径列表，Spark 从这些路径中加载数据文件
   def rootPaths: Seq[Path]
 
   /**
@@ -77,21 +79,25 @@ trait FileIndex {
    */
   def listFiles(
       partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Seq[PartitionDirectory]
+  //partitionFilters: Seq[Expression]  分区列的过滤条件 假设数据表按 date 分区，而查询包含 WHERE date = '2024-02-01'，那么 partitionFilters 可能只包含 date = '2024-02-01'，这样就能只扫描对应的分区，而不读取整个数据集
+  //dataFilters: Seq[Expression] 非分区列的过滤条件 执行引擎会在数据加载后应用这些过滤条件
+  //Seq[PartitionDirectory]：返回按照分区组织的文件列表
 
   /**
    * Returns the list of files that will be read when scanning this relation. This call may be
    * very expensive for large tables.
    * The strings returned are expected to be url-encoded paths.
    */
-  def inputFiles: Array[String]
+  def inputFiles: Array[String]  //返回所有需要读取的文件路径的数组
 
   /** Refresh any cached file listings */
-  def refresh(): Unit
+  def refresh(): Unit   //刷新缓存的文件列表，确保 Spark 获取最新的文件信息
 
   /** Sum of table file sizes, in bytes */
-  def sizeInBytes: Long
+  def sizeInBytes: Long  //返回表文件的总大小（单位：字节）
 
   /** Schema of the partitioning columns, or the empty schema if the table is not partitioned. */
+  //返回分区列的 Schema，如果表没有分区，则返回空 Schema
   def partitionSchema: StructType
 
   /**
@@ -102,6 +108,7 @@ trait FileIndex {
    * file listing time in some implementations and physical execution calls it in this method
    * to update the metrics.
    */
+    //返回文件列举（listing）操作的时间（单位：纳秒）
   def metadataOpsTimeNs: Option[Long] = None
 
   override def toString: String = s"${getClass.getName}(${rootPaths.mkString(",")})"

@@ -22,14 +22,14 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeSet, Expression}
 import org.apache.spark.sql.catalyst.plans.{AliasAwareOutputExpression, AliasAwareQueryOutputOrdering}
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, PartitioningCollection, UnknownPartitioning}
 
-/**
+/** 目的是在执行计划中，保持分区的一致性和正确性，尤其是当涉及到对输出表达式的别名重命名时
  * A trait that handles aliases in the `outputExpressions` to produce `outputPartitioning` that
  * satisfies distribution requirements.
  */
 trait PartitioningPreservingUnaryExecNode extends UnaryExecNode
   with AliasAwareOutputExpression {
   final override def outputPartitioning: Partitioning = {
-    val partitionings: Seq[Partitioning] = if (hasAlias) {
+    val partitionings: Seq[Partitioning] = if (hasAlias) { //如果当前执行计划节点包含别名（通过 hasAlias 判断），则会对当前子节点的分区信息进行展开
       flattenPartitioning(child.outputPartitioning).iterator.flatMap {
         case e: Expression =>
           // We need unique partitionings but if the input partitioning is
@@ -59,7 +59,7 @@ trait PartitioningPreservingUnaryExecNode extends UnaryExecNode
       case ps => PartitioningCollection(ps)
     }
   }
-
+  //用于展开分区信息，将可能的嵌套分区展开成一个平坦的分区列表
   private def flattenPartitioning(partitioning: Partitioning): Seq[Partitioning] = {
     partitioning match {
       case PartitioningCollection(childPartitionings) =>

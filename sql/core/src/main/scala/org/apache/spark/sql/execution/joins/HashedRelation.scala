@@ -1145,7 +1145,10 @@ case object HashedRelationWithAllNullKeys extends HashedRelation {
 
   override def estimatedSize: Long = 0
 }
-
+//广播数据作为哈希关系（HashedRelation）的具体实现。这个模式通常用于需要通过哈希表查找来加速连接操作的场景
+//key: Seq[Expression]：这是一个 Seq[Expression] 类型的参数，表示哈希关系的键，即用于构建哈希表的列
+//isNullAware: Boolean：这是一个可选的布尔值，默认为 false。如果设置为 true，表示该哈希关系在处理 NULL 值时会有特殊的行为，
+// 例如在 NULL 值匹配时执行特殊的连接操作（例如 null-aware 连接）
 /** The HashedRelationBroadcastMode requires that rows are broadcasted as a HashedRelation. */
 case class HashedRelationBroadcastMode(key: Seq[Expression], isNullAware: Boolean = false)
   extends BroadcastMode {

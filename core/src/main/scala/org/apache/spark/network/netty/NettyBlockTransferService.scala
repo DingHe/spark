@@ -45,18 +45,18 @@ import org.apache.spark.storage.{BlockId, StorageLevel}
 import org.apache.spark.storage.BlockManagerMessages.IsExecutorAlive
 import org.apache.spark.util.Utils
 
-/**
+/** 使用Netty作为网络传输协议来获取和上传数据块。这个类的设计目的是通过Netty进行高效的网络通信来传输Spark中的数据块。
  * A BlockTransferService that uses Netty to fetch a set of blocks at time.
  */
 private[spark] class NettyBlockTransferService(
     conf: SparkConf,
-    securityManager: SecurityManager,
-    serializerManager: SerializerManager,
-    bindAddress: String,
-    override val hostName: String,
-    _port: Int,
+    securityManager: SecurityManager, //如身份验证、加密等
+    serializerManager: SerializerManager, //Spark的序列化管理器，用于管理和提供序列化器
+    bindAddress: String, //该地址用来指定网络服务监听的IP地址或主机名
+    override val hostName: String, //当前服务器的主机名
+    _port: Int, //服务器监听的端口号
     numCores: Int,
-    driverEndPointRef: RpcEndpointRef = null)
+    driverEndPointRef: RpcEndpointRef = null) //Spark驱动的RPC端点引用，用于与驱动进行通信。
   extends BlockTransferService {
 
   // TODO: Don't use Java serialization, use a more cross-version compatible serialization format.
@@ -67,7 +67,7 @@ private[spark] class NettyBlockTransferService(
   private[this] var server: TransportServer = _
 
   override def init(blockDataManager: BlockDataManager): Unit = {
-    val rpcHandler = new NettyBlockRpcServer(conf.getAppId, serializer, blockDataManager)
+    val rpcHandler = new NettyBlockRpcServer(conf.getAppId, serializer, blockDataManager) //负责处理RPC请求
     var serverBootstrap: Option[TransportServerBootstrap] = None
     var clientBootstrap: Option[TransportClientBootstrap] = None
     this.transportConf = SparkTransportConf.fromSparkConf(conf, "shuffle", numCores)
@@ -86,7 +86,7 @@ private[spark] class NettyBlockTransferService(
       logger.info(s"Server created on $hostName $bindAddress:${server.getPort}")
     }
   }
-
+  //创建并绑定一个Netty服务器。
   /** Creates and binds the TransportServer, possibly trying multiple ports. */
   private def createServer(bootstraps: List[TransportServerBootstrap]): TransportServer = {
     def startService(port: Int): (TransportServer, Int) = {

@@ -42,7 +42,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.NextIterator
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
-
+//主要用于表示执行物理操作的计划
 object SparkPlan {
   /** The original [[LogicalPlan]] from which this [[SparkPlan]] is converted. */
   val LOGICAL_PLAN_TAG = TreeNodeTag[LogicalPlan]("logical_plan")
@@ -61,6 +61,7 @@ object SparkPlan {
  *
  * The naming convention is that physical operators end with "Exec" suffix, e.g. [[ProjectExec]].
  */
+//物理执行节点的基类
 abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializable {
   @transient final val session = SparkSession.getActiveSession.orNull
 
@@ -73,7 +74,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
       super.conf
     }
   }
-
+   //SparkPlan 的唯一 ID，通过调用 SparkPlan.newPlanId() 来生成
   val id: Int = SparkPlan.newPlanId()
 
   /**
@@ -81,6 +82,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    * can also support columnar execution (see `supportsColumnar`). Spark will decide
    * which execution to be called during query planning.
    */
+    //判断当前计划是否支持基于行的执行。如果支持列存储（通过 supportsColumnar），则返回 false，否则返回 true
   def supportsRowBased: Boolean = !supportsColumnar
 
   /**
@@ -88,12 +90,14 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    * can also support row-based execution (see `supportsRowBased`). Spark will decide
    * which execution to be called during query planning.
    */
+    //判断当前计划是否支持基于列的执行。默认为 false
   def supportsColumnar: Boolean = false
 
   /**
    * The exact java types of the columns that are output in columnar processing mode. This
    * is a performance optimization for code generation and is optional.
    */
+    //定义列存储模式下每列的 Java 类型，用于代码生成优化
   def vectorTypes: Option[Seq[String]] = None
 
   /** Overridden make copy also propagates sqlContext to copied plan. */
@@ -108,6 +112,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
   /**
    * @return The logical plan this plan is linked to.
    */
+    //返回与当前计划关联的逻辑计划（LogicalPlan）。如果没有找到，则返回 None
   def logicalLink: Option[LogicalPlan] =
     getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
       .orElse(getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG))
@@ -118,20 +123,20 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
   def setLogicalLink(logicalPlan: LogicalPlan): Unit = {
     setLogicalLink(logicalPlan, false)
   }
-
+  //设置逻辑记录连接，inherited表示是否继承父节点的信息
   private def setLogicalLink(logicalPlan: LogicalPlan, inherited: Boolean = false): Unit = {
     // Stop at a descendant which is the root of a sub-tree transformed from another logical node.
-    if (inherited && getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isDefined) {
+    if (inherited && getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isDefined) {   //如果已经定义，直接返回
       return
     }
 
-    val tag = if (inherited) {
+    val tag = if (inherited) {  //如果需要继承，则使用继承的标签
       SparkPlan.LOGICAL_PLAN_INHERITED_TAG
     } else {
       SparkPlan.LOGICAL_PLAN_TAG
     }
     setTagValue(tag, logicalPlan)
-    children.foreach(_.setLogicalLink(logicalPlan, true))
+    children.foreach(_.setLogicalLink(logicalPlan, true))  //递归为子节点设置
   }
 
   /**
@@ -188,6 +193,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    *
    * Concrete implementations of SparkPlan should override `doExecute`.
    */
+  //物理节点实际执行的地方
   final def execute(): RDD[InternalRow] = executeQuery {
     if (isCanonicalizedPlan) {
       throw SparkException.internalError("A canonicalized plan is not supposed to be executed.")
@@ -243,7 +249,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
     RDDOperationScope.withScope(sparkContext, nodeName, false, true) {
       prepare()
       waitForSubqueries()
-      query
+      query  //这里是实际传进来的代码
     }
   }
 
@@ -251,12 +257,13 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    * List of (uncorrelated scalar subquery, future holding the subquery result) for this plan node.
    * This list is populated by [[prepareSubqueries]], which is called in [[prepare]].
    */
-  @transient
+  @transient  //修饰符 @transient：这意味着该属性不会被 Spark 序列化
   private val runningSubqueries = new ArrayBuffer[ExecSubqueryExpression]
 
   /**
    * Finds scalar subquery expressions in this plan node and starts evaluating them.
    */
+  //查找当前执行计划中的标量子查询，并启动它们的执行（准备工作）
   protected def prepareSubqueries(): Unit = {
     expressions.foreach {
       _.collect {
@@ -270,6 +277,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
   /**
    * Blocks the thread until all subqueries finish evaluation and update the results.
    */
+  //阻塞当前线程，直到所有子查询完成评估并更新其结果
   protected def waitForSubqueries(): Unit = synchronized {
     // fill in the result of subqueries
     runningSubqueries.foreach { sub =>
@@ -286,10 +294,13 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
   /**
    * Prepares this SparkPlan for execution. It's idempotent.
    */
+    //作用是为执行做准备。它的设计是 幂等的，意味着无论调用多少次，结果都是相同的
   final def prepare(): Unit = {
     // doPrepare() may depend on it's children, we should call prepare() on all the children first.
+    //准备当前物理计划之前，必须先准备它的子计划（递归准备子节点
     children.foreach(_.prepare())
     synchronized {
+      //只有在当前物理计划还没有被准备过时，才会执行准备工作。prepared 是一个标志位，确保每个物理计划只会被准备一次
       if (!prepared) {
         prepareSubqueries()
         doPrepare()
@@ -308,6 +319,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    *
    * This will only be called once, protected by `this`.
    */
+    //由具体的子类实现，在Execute之前做初始化
   protected def doPrepare(): Unit = {}
 
   /**
@@ -315,6 +327,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    *
    * Overridden by concrete implementations of SparkPlan.
    */
+  //解释执行的实现逻辑
   protected def doExecute(): RDD[InternalRow]
 
   /**
@@ -359,21 +372,25 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
    * UnsafeRow is highly compressible (at least 8 bytes for any column), the byte array is also
    * compressed.
    */
+  //作用是将查询计划中的 UnsafeRow 数据序列化为压缩的字节数组，并返回一个包含这些字节数组的 RDD
   private def getByteArrayRdd(
       n: Int = -1, takeFromEnd: Boolean = false): RDD[(Long, ChunkedByteBuffer)] = {
+    //n：表示要返回的 UnsafeRow 数量。默认值是 -1，表示返回所有的行。如果 n 大于 0，则只返回最后 n 行
+    //takeFromEnd：布尔值，表示是否从末尾开始收集行数据。如果为 true，则从数据的末尾开始收集并返回
     execute().mapPartitionsInternal { iter =>
       var count = 0
-      val buffer = new Array[Byte](4 << 10)  // 4K
-      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+      val buffer = new Array[Byte](4 << 10)  // 一个 4KB 的字节缓冲区，用来暂存 UnsafeRow 数据的序列化内容
+      val codec = CompressionCodec.createCodec(SparkEnv.get.conf) //创建一个压缩编解码器（CompressionCodec）。Spark 会根据配置使用不同的压缩算法（如 Snappy 或 LZ4），以提高序列化效率
+      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate) //一个输出流，它会将字节写入内存缓冲区，并支持分块存储。当字节流达到一定大小时，它会将数据分块存储，以提高内存管理效率
       val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
 
       if (takeFromEnd && n > 0) {
         // To collect n from the last, we should anyway read everything with keeping the n.
         // Otherwise, we don't know where is the last from the iterator.
         var last: Seq[UnsafeRow] = Seq.empty[UnsafeRow]
-        val slidingIter = iter.map(_.copy()).sliding(n)
-        while (slidingIter.hasNext) { last = slidingIter.next().asInstanceOf[Seq[UnsafeRow]] }
+        val slidingIter = iter.map(_.copy()).sliding(n) //sliding(n) 会将迭代器转换为一个滑动窗口的迭代器，每次返回 n 行数据
+        while (slidingIter.hasNext) {
+          last = slidingIter.next().asInstanceOf[Seq[UnsafeRow]] } //保存最后 n 行的 UnsafeRow 数据
         var i = 0
         count = last.length
         while (i < count) {
@@ -392,7 +409,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
           count += 1
         }
       }
-      out.writeInt(-1)
+      out.writeInt(-1)  //写入一个特殊的标志值 -1，表示数据流的结束
       out.flush()
       out.close()
       Iterator((count, cbbos.toChunkedByteBuffer))
@@ -441,11 +458,12 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
   /**
    * Runs this query returning the result as an array.
    */
-  def executeCollect(): Array[InternalRow] = {
-    val byteArrayRdd = getByteArrayRdd()
+  //作用是执行查询并返回查询结果作为一个数组（Array[InternalRow]）
+  def executeCollect(): Array[InternalRow] = {  //返回一个 Array[InternalRow]，表示查询结果的所有行
+    val byteArrayRdd = getByteArrayRdd()  //返回一个包含压缩字节数据的 RDD
 
     val results = ArrayBuffer[InternalRow]()
-    byteArrayRdd.collect().foreach { countAndBytes =>
+    byteArrayRdd.collect().foreach { countAndBytes =>  //collect() 会触发整个计算过程，获取包含序列化字节数据的所有元素
       decodeUnsafeRows(countAndBytes._2).foreach(results.+=)
     }
     results.toArray
@@ -477,7 +495,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
 
   /**
    * Runs this query returning the first `n` rows as an array.
-   *
+   *  返回查询的前n条记录
    * This is modeled after `RDD.take` but never runs any job locally on the driver.
    */
   def executeTake(n: Int): Array[InternalRow] = executeTake(n, takeFromEnd = false)
@@ -495,7 +513,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
     }
     val limitScaleUpFactor = Math.max(conf.limitScaleUpFactor, 2)
     // TODO: refactor and reuse the code from RDD's take()
-    val childRDD = getByteArrayRdd(n, takeFromEnd)
+    val childRDD = getByteArrayRdd(n, takeFromEnd) //生成处理分区的代码，通过mapPartition函数实现业务逻辑，返回新的MapPartitionsRDD
 
     val buf = if (takeFromEnd) new ListBuffer[InternalRow] else new ArrayBuffer[InternalRow]
     val totalParts = childRDD.partitions.length
@@ -528,7 +546,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
       }
       val sc = sparkContext
       val res = sc.runJob(childRDD, (it: Iterator[(Long, ChunkedByteBuffer)]) =>
-        if (it.hasNext) it.next() else (0L, new ChunkedByteBuffer()), partsToScan)
+        if (it.hasNext) it.next() else (0L, new ChunkedByteBuffer()), partsToScan)   //真正提交MapPartitionsRDD到集群处理
 
       var i = 0
 
@@ -571,7 +589,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
     children.foreach(_.cleanupResources())
   }
 }
-
+//物理叶子节点
 trait LeafExecNode extends SparkPlan with LeafLike[SparkPlan] {
 
   override def producedAttributes: AttributeSet = outputSet
@@ -600,9 +618,9 @@ object UnaryExecNode {
     case _ => None
   }
 }
-
+//表示所有具有 单子节点 结构的执行节点。执行节点是 Spark SQL 查询计划的实际执行步骤
 trait UnaryExecNode extends SparkPlan with UnaryLike[SparkPlan] {
-
+  //生成该节点的详细字符串表示
   override def verboseStringWithOperatorId(): String = {
     val argumentString = argString(conf.maxToStringFields)
     val inputStr = s"${ExplainUtils.generateFieldString("Input", child.output)}"
@@ -621,7 +639,7 @@ trait UnaryExecNode extends SparkPlan with UnaryLike[SparkPlan] {
     }
   }
 }
-
+//两个子节点的物理执行节点
 trait BinaryExecNode extends SparkPlan with BinaryLike[SparkPlan] {
 
   override def verboseStringWithOperatorId(): String = {

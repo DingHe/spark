@@ -107,7 +107,7 @@ object MutableProjection
 
 /**
  * A projection that returns UnsafeRow.
- *
+ *  用于生成 UnsafeRow 的投影对象，它是一个抽象类，主要作用是将给定的 InternalRow 转换为 UnsafeRow，以便进行高效的数据操作
  * CAUTION: the returned projection object should *not* be assumed to be thread-safe.
  */
 abstract class UnsafeProjection extends Projection {
@@ -119,32 +119,33 @@ abstract class UnsafeProjection extends Projection {
  */
 object UnsafeProjection
     extends CodeGeneratorWithInterpretedFallback[Seq[Expression], UnsafeProjection] {
-
+  //生成一个基于代码生成的 UnsafeProjection 对象
+  //in 是一个 Expression 序列，这些表达式表示了数据的列操作
   override protected def createCodeGeneratedObject(in: Seq[Expression]): UnsafeProjection = {
     GenerateUnsafeProjection.generate(in, SQLConf.get.subexpressionEliminationEnabled)
   }
-
+  //如果代码生成方式不可用，则使用解释执行的方式来生成 UnsafeProjection 对象
   override protected def createInterpretedObject(in: Seq[Expression]): UnsafeProjection = {
     InterpretedUnsafeProjection.createProjection(in)
   }
 
   /**
    * Returns an UnsafeProjection for given StructType.
-   *
+   *  根据给定的 StructType 创建一个 UnsafeProjection 对象
    * CAUTION: the returned projection object is *not* thread-safe.
    */
   def create(schema: StructType): UnsafeProjection = create(schema.fields.map(_.dataType))
 
   /**
    * Returns an UnsafeProjection for given Array of DataTypes.
-   *
+   * 根据给定的字段数据类型数组（Array[DataType]）创建一个 UnsafeProjection 对象
    * CAUTION: the returned projection object is *not* thread-safe.
    */
   def create(fields: Array[DataType]): UnsafeProjection = {
     create(fields.zipWithIndex.map(x => BoundReference(x._2, x._1, true)))
   }
 
-  /**
+  /** 根据给定的表达式序列（Seq[Expression]）创建一个 UnsafeProjection 对象
    * Returns an UnsafeProjection for given sequence of bound Expressions.
    */
   def create(exprs: Seq[Expression]): UnsafeProjection = {

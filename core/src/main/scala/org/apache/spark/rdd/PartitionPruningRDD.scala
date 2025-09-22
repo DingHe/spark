@@ -21,7 +21,7 @@ import scala.reflect.ClassTag
 
 import org.apache.spark.{NarrowDependency, Partition, TaskContext}
 import org.apache.spark.annotation.DeveloperApi
-
+//parentSplit 表示当前分区的父分区，idx 分区在父 RDD 中的位置
 private[spark] class PartitionPruningRDDPartition(idx: Int, val parentSplit: Partition)
   extends Partition {
   override val index = idx

@@ -44,15 +44,19 @@ import org.apache.spark.util.collection.BitSet
  * The tree traverse APIs like `transform`, `foreach`, `collect`, etc. that are
  * inherited from `TreeNode`, do not traverse into query plans inside subqueries.
  */
+// 是 Spark SQL 中查询计划的抽象类。查询计划分为逻辑计划和物理计划，
+// 而 QueryPlan 类是一个通用的节点类，用于表示这两种计划结构中的单个节点。
+// 该类包含了查询计划节点的一些基本属性和方法，以及用于转换和操作表达式的 API
 abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
   extends TreeNode[PlanType] with SQLConfHelper {
   self: PlanType =>
-
+  //返回当前节点输出的所有属性（字段）
   def output: Seq[Attribute]
 
   /**
    * Returns the set of attributes that are output by this node.
    */
+    //懒加载（lazy）属性，表示当前节点的输出属性集合。它是 output 的集合形式，用于快速查找输出的属性
   @transient
   lazy val outputSet: AttributeSet = AttributeSet(output)
 
@@ -61,9 +65,11 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
    * and physical plans. In the logical plan it means global ordering of the data while in physical
    * it means ordering in each partition.
    */
+    //返回该计划生成的输出排序。在逻辑计划中，它表示数据的全局排序，而在物理计划中，它表示每个分区内的排序。默认返回空集合
   def outputOrdering: Seq[SortOrder] = Nil
 
   // Override `treePatternBits` to propagate bits for its expressions.
+  //覆盖了父类 TreeNode 的 treePatternBits，该属性用于获取当前节点及其表达式的树模式位集合
   override lazy val treePatternBits: BitSet = {
     val bits: BitSet = getDefaultTreePatternBits
     // Propagate expressions' pattern bits
@@ -77,18 +83,21 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
   /**
    * The set of all attributes that are input to this operator by its children.
    */
+    //返回当前节点输入的所有属性集合。它是当前节点子节点的输出集合
   def inputSet: AttributeSet =
     AttributeSet(children.flatMap(_.asInstanceOf[QueryPlan[PlanType]].output))
 
   /**
    * The set of all attributes that are produced by this node.
    */
+    //返回当前节点生成的属性集合。默认情况下为空集
   def producedAttributes: AttributeSet = AttributeSet.empty
 
   /**
    * All Attributes that appear in expressions from this operator.  Note that this set does not
    * include attributes that are implicitly referenced by being passed through to the output tuple.
    */
+    //表示当前节点及其表达式引用的所有属性。它通过从表达式中提取出所有引用的属性集合，并排除了 producedAttributes
   @transient
   lazy val references: AttributeSet = {
     AttributeSet.fromAttributeSets(expressions.map(_.references)) -- producedAttributes
@@ -98,12 +107,14 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
    * Returns true when the all the expressions in the current node as well as all of its children
    * are deterministic
    */
+    //示当前节点及其所有子节点的表达式是否都是确定性的
   lazy val deterministic: Boolean = expressions.forall(_.deterministic) &&
     children.forall(_.deterministic)
 
   /**
    * Attributes that are referenced by expressions but not provided by this node's children.
    */
+    //表示该节点表达式中涉及的但是其子节点输出中并不包含的属性
   final def missingInput: AttributeSet = references -- inputSet
 
   /**
@@ -202,9 +213,10 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
    * Apply a map function to each expression present in this query operator, and return a new
    * query operator based on the mapped expressions.
    */
+    //把函数应用到该表达式的所有元素上，如果有变化，则使用返回的结果构建新的表达式
   def mapExpressions(f: Expression => Expression): this.type = {
     var changed = false
-
+     //把函数f应用到表达式e上，如果有变化，则返回新的表达式
     @inline def transformExpression(e: Expression): Expression = {
       val newE = CurrentOrigin.withOrigin(e.origin) {
         f(e)
@@ -227,7 +239,7 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
       case other: AnyRef => other
       case null => null
     }
-
+    ////应用f函数到所有的元素，并把结果返回
     val newArgs = mapProductIterator(recursiveTransform)
 
     if (changed) makeCopy(newArgs).asInstanceOf[this.type] else this
@@ -265,14 +277,16 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
   }
 
   /** Returns all of the expressions present in this query plan operator. */
+  //从当前的查询计划中递归地提取出所有的表达式
   final def expressions: Seq[Expression] = {
     // Recursively find all expressions from a traversable.
+    //主要作用是将序列中的每个元素逐一检查并提取出其中的表达式（Expression）
     def seqToExpressions(seq: Iterable[Any]): Iterable[Expression] = seq.flatMap {
       case e: Expression => e :: Nil
       case s: Iterable[_] => seqToExpressions(s)
       case other => Nil
     }
-
+    //productIterator返回该节点的所有表达式，也就是case类的参数
     productIterator.flatMap {
       case e: Expression => e :: Nil
       case s: Some[_] => seqToExpressions(s.toSeq)
@@ -450,11 +464,11 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]]
          |""".stripMargin
     }
   }
-
+  //用于生成当前查询计划节点的格式化名称。它结合了查询计划的唯一标识符、节点名称以及可能的代码生成 ID
   protected def formattedNodeName: String = {
     val opId = Option(QueryPlan.localIdMap.get().get(this)).map(id => s"$id")
-      .getOrElse("unknown")
-    val codegenId =
+      .getOrElse("unknown")  //获取查询计划的id
+    val codegenId =  //codegenId 表示代码生成的 ID，通常用于表示优化过程中生成的代码的唯一标识符
       getTagValue(QueryPlan.CODEGEN_ID_TAG).map(id => s" [codegen id : $id]").getOrElse("")
     s"($opId) $nodeName$codegenId"
   }
@@ -638,8 +652,10 @@ object QueryPlan extends PredicateHelper {
    * is because [[ QueryPlan ]] also needs this, and it doesn't have access to `execution` package
    * from `catalyst`.
    */
+  //用于存储查询计划（QueryPlan）与其对应查询计划 ID 的映射关系
   val localIdMap: ThreadLocal[java.util.Map[QueryPlan[_], Int]] = ThreadLocal.withInitial(() =>
     new IdentityHashMap[QueryPlan[_], Int]())
+  //IdentityHashMap 是一个 Java 集合类，它使用对象的 引用比较（而不是 equals 方法）来判断两个键是否相等
 
   /**
    * Normalize the exprIds in the given expression, by updating the exprId in `AttributeReference`

@@ -45,7 +45,7 @@ import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.util.Utils;
 
-/**
+/** 主要任务是处理内存不足时的磁盘溢写（spill），并管理排序数据的存储
  * External sorter based on {@link UnsafeInMemorySorter}.
  */
 public final class UnsafeExternalSorter extends MemoryConsumer {
@@ -53,7 +53,7 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
   private static final Logger logger = LoggerFactory.getLogger(UnsafeExternalSorter.class);
 
   @Nullable
-  private final PrefixComparator prefixComparator;
+  private final PrefixComparator prefixComparator; //用于比较记录的前缀部分，前缀比较在某些排序算法中会加速排序操作，特别是在键值对排序时
 
   /**
    * {@link RecordComparator} may probably keep the reference to the records they compared last
@@ -62,11 +62,11 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
    * {@link TaskContext} and thus can not be garbage collected until the end of the task.
    */
   @Nullable
-  private final Supplier<RecordComparator> recordComparatorSupplier;
+  private final Supplier<RecordComparator> recordComparatorSupplier;  //用于比较记录的对象
 
   private final TaskMemoryManager taskMemoryManager;
   private final BlockManager blockManager;
-  private final SerializerManager serializerManager;
+  private final SerializerManager serializerManager; //负责对象的序列化和反序列化
   private final TaskContext taskContext;
 
   /** The buffer size to use when writing spills using DiskBlockObjectWriter */
@@ -578,19 +578,19 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
     spillWriter.close();
   }
 
-  /**
+  /** 处理在内存中排序数据的溢出（spill）过程。在 Spark 中，"spill" 是指当内存不足时，将数据写入磁盘以释放内存的过程
    * An UnsafeSorterIterator that support spilling.
    */
   class SpillableIterator extends UnsafeSorterIterator {
-    private UnsafeSorterIterator upstream;
-    private MemoryBlock lastPage = null;
-    private boolean loaded = false;
-    private int numRecords;
+    private UnsafeSorterIterator upstream; //一个引用指向上游的 UnsafeSorterIterator，即排序过程中当前在内存中的迭代器。SpillableIterator 将从这个上游迭代器中获取数据
+    private MemoryBlock lastPage = null; //追踪当前正在使用的页面
+    private boolean loaded = false; //标记数据是否已被加载。它用于判断当前迭代器是否已经加载了下一条记录
+    private int numRecords; //迭代器当前包含多少条数据
 
-    private Object currentBaseObject;
-    private long currentBaseOffset;
-    private int currentRecordLength;
-    private long currentKeyPrefix;
+    private Object currentBaseObject; //当前记录所在的内存对象。用于访问当前记录的数据
+    private long currentBaseOffset; //当前记录在内存中的偏移量。配合 currentBaseObject 使用，帮助确定记录的具体位置
+    private int currentRecordLength; //当前记录的长度，单位为字节
+    private long currentKeyPrefix; //当前记录的键前缀。通常用于多字段排序的优化
 
     SpillableIterator(UnsafeSorterIterator inMemIterator) {
       this.upstream = inMemIterator;
@@ -608,32 +608,32 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
     }
 
     public long spill() throws IOException {
-      UnsafeInMemorySorter inMemSorterToFree = null;
-      List<MemoryBlock> pagesToFree = new LinkedList<>();
+      UnsafeInMemorySorter inMemSorterToFree = null; //用来存储将被释放的内存排序器的引用
+      List<MemoryBlock> pagesToFree = new LinkedList<>(); //用于存储要释放的内存页面
       try {
         synchronized (this) {
-          if (inMemSorter == null) {
+          if (inMemSorter == null) { //检查当前是否存在内存排序器（inMemSorter）。如果 inMemSorter 为空，表示没有需要溢出的数据，因此直接返回 0，表示没有释放内存
             return 0L;
           }
 
           long currentPageNumber = upstream.getCurrentPageNumber();
 
           ShuffleWriteMetrics writeMetrics = new ShuffleWriteMetrics();
-          if (numRecords > 0) {
+          if (numRecords > 0) { //仍然有未返回的记录需要溢出到磁盘。此时，创建一个 UnsafeSorterSpillWriter 实例，该实例用于将数据写入磁盘。
             // Iterate over the records that have not been returned and spill them.
             final UnsafeSorterSpillWriter spillWriter = new UnsafeSorterSpillWriter(
                     blockManager, fileBufferSizeBytes, writeMetrics, numRecords);
             spillIterator(upstream, spillWriter);
             spillWriters.add(spillWriter);
             upstream = spillWriter.getReader(serializerManager);
-          } else {
+          } else { //如果没有未读取的记录（numRecords == 0），则设置 upstream 为 null，表示没有更多记录需要读取
             // Nothing to spill as all records have been read already, but do not return yet, as the
             // memory still has to be freed.
             upstream = null;
           }
 
           long released = 0L;
-          synchronized (UnsafeExternalSorter.this) {
+          synchronized (UnsafeExternalSorter.this) { //释放不再使用的内存页面
             // release the pages except the one that is used. There can still be a caller that
             // is accessing the current record. We free this page in that caller's next loadNext()
             // call.
@@ -657,7 +657,7 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
               allocatedPages.add(lastPage);
             }
           }
-
+         //更新内存和磁盘统计信息
           // in-memory sorter will not be used after spilling
           assert (inMemSorter != null);
           released += inMemSorter.getMemoryUsage();
@@ -792,7 +792,7 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
     }
   }
 
-  /**
+  /** 主要用于将多个 UnsafeSorterIterator 迭代器链式连接在一起，以便按顺序遍历它们的数据。它维护一个队列 (Queue<UnsafeSorterIterator>) 来存储这些迭代器，并提供了处理这些迭代器的方法，允许按顺序遍历所有的记录。
    * Chain multiple UnsafeSorterIterator together as single one.
    */
   static class ChainedIterator extends UnsafeSorterIterator implements Closeable {

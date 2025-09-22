@@ -47,10 +47,11 @@ import org.apache.spark.internal.Logging
  * @param tellMaster whether state changes for this block should be reported to the master. This
  *                   is true for most blocks, but is false for broadcast blocks.
  */
+//用于跟踪单个块（block）的元数据
 private[storage] class BlockInfo(
     val level: StorageLevel,
     val classTag: ClassTag[_],
-    val tellMaster: Boolean) {
+    val tellMaster: Boolean) { //是否向 Spark 的主节点报告该块的状态变化。对于大多数块，这个值为 true，但广播块会将其设置为 false
 
   /**
    * The size of the block (in bytes)
@@ -60,7 +61,7 @@ private[storage] class BlockInfo(
     _size = s
     checkInvariants()
   }
-  private[this] var _size: Long = 0
+  private[this] var _size: Long = 0  //块的大小（以字节为单位）
 
   /**
    * The number of times that this block has been locked for reading.
@@ -70,7 +71,7 @@ private[storage] class BlockInfo(
     _readerCount = c
     checkInvariants()
   }
-  private[this] var _readerCount: Int = 0
+  private[this] var _readerCount: Int = 0  //表示当前块被读取的次数
 
   /**
    * The task attempt id of the task which currently holds the write lock for this block, or
@@ -82,7 +83,7 @@ private[storage] class BlockInfo(
     _writerTask = t
     checkInvariants()
   }
-  private[this] var _writerTask: Long = BlockInfo.NO_WRITER
+  private[this] var _writerTask: Long = BlockInfo.NO_WRITER  //当前持有写锁的任务的任务尝试 ID。如果该块未被锁定为写，则其值为 NO_WRITER
 
   private def checkInvariants(): Unit = {
     // A block's reader count must be non-negative:
@@ -93,7 +94,7 @@ private[storage] class BlockInfo(
 
   checkInvariants()
 }
-
+//用于封装 BlockInfo 对象，并提供一个锁和条件变量来管理块信息的读写锁
 private class BlockInfoWrapper(
     val info: BlockInfo,
     private val lock: Lock,
@@ -139,6 +140,7 @@ private[storage] object BlockInfo {
  *
  * This class is thread-safe.
  */
+//块管理器的一部分，用于跟踪块的元数据，并管理块的锁。其锁机制使用了读写锁，确保每个任务在操作块时能正确地获取和释放锁
 private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false) extends Logging {
 
   private type TaskAttemptId = Long
@@ -148,13 +150,13 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
    * set-if-not-exists operation ([[lockNewBlockForWriting()]]) and are removed
    * by [[removeBlock()]].
    */
-  private[this] val blockInfoWrappers = new ConcurrentHashMap[BlockId, BlockInfoWrapper]
+  private[this] val blockInfoWrappers = new ConcurrentHashMap[BlockId, BlockInfoWrapper]  //存储块信息包装器的映射，BlockId 作为键，BlockInfoWrapper 作为值
 
   /**
    * Record invisible rdd blocks stored in the block manager, entries will be removed when blocks
    * are marked as visible or blocks are removed by [[removeBlock()]].
    */
-  private[this] val invisibleRDDBlocks = new mutable.HashSet[RDDBlockId]
+  private[this] val invisibleRDDBlocks = new mutable.HashSet[RDDBlockId] //记录不可见的 RDD 块
 
   /**
    * Stripe used to control multi-threaded access to block information.
@@ -165,19 +167,19 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
    * safe to modify it. The only way we can guarantee this is by having a unique lock per block ID
    * that has a longer lifespan than the blocks' info object.
    */
-  private[this] val locks = Striped.lock(1024)
+  private[this] val locks = Striped.lock(1024)      //用于控制多线程访问块信息的锁，每个块都有一个唯一的锁，避免了在 lockNewBlockForWriting 方法中的竞争条件
 
   /**
    * Tracks the set of blocks that each task has locked for writing.
    */
-  private[this] val writeLocksByTask = new ConcurrentHashMap[TaskAttemptId, util.Set[BlockId]]
+  private[this] val writeLocksByTask = new ConcurrentHashMap[TaskAttemptId, util.Set[BlockId]] //记录每个任务持有的写锁块集合
 
   /**
    * Tracks the set of blocks that each task has locked for reading, along with the number of times
    * that a block has been locked (since our read locks are re-entrant).
    */
   private[this] val readLocksByTask =
-    new ConcurrentHashMap[TaskAttemptId, ConcurrentHashMultiset[BlockId]]
+    new ConcurrentHashMap[TaskAttemptId, ConcurrentHashMultiset[BlockId]]  //记录每个任务持有的读锁块集合，并统计每个块被锁定的次数。
 
   // ----------------------------------------------------------------------------------------------
 
@@ -203,7 +205,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
       true
     }
   }
-
+  //使的块变成可见
   private[spark] def tryMarkBlockAsVisible(blockId: RDDBlockId): Unit = {
     if (trackingCacheVisibility) {
       invisibleRDDBlocks.synchronized {
@@ -212,7 +214,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
     }
   }
 
-  /**
+  /**在任务开始时注册该任务，使其能够使用 BlockInfoManager 管理块锁
    * Called at the start of a task in order to register that task with this [[BlockInfoManager]].
    * This must be called prior to calling any other BlockInfoManager methods from that task.
    */
@@ -221,7 +223,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
     readLocksByTask.putIfAbsent(taskAttemptId, ConcurrentHashMultiset.create())
   }
 
-  /**
+  /** 返回当前任务的任务尝试 ID
    * Returns the current task's task attempt id (which uniquely identifies the task), or
    * [[BlockInfo.NON_TASK_WRITER]] if called by a non-task thread.
    */
@@ -229,7 +231,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
     Option(TaskContext.get()).map(_.taskAttemptId()).getOrElse(BlockInfo.NON_TASK_WRITER)
   }
 
-  /**
+  /** 尝试获取某个块的锁，执行函数 f，并返回块的元数据
    * Helper for lock acquisistion.
    */
   private def acquireLock(
@@ -258,7 +260,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
     result
   }
 
-  /**
+  /** 在获取块的锁后执行指定的函数
    * Apply function `f` on the [[BlockInfo]] object and the aquisition [[Condition]] for `blockId`.
    * Function `f` will be executed while holding the lock for the [[BlockInfo]] object. If `blockId`
    * was not registered, an error will be thrown.
@@ -282,7 +284,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
    *
    * A single task can lock a block multiple times for reading, in which case each lock will need
    * to be released separately.
-   *
+   * 为块获取读锁。如果块已被其他任务写锁，则等待直到写锁释放
    * @param blockId the block to lock.
    * @param blocking if true (default), this call will block until the lock is acquired. If false,
    *                 this call will return immediately if the lock acquisition fails.
@@ -310,7 +312,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
    *
    * If another task has already locked this block for either reading or writing, then this call
    * will block until the other locks are released or will return immediately if `blocking = false`.
-   *
+   * 为块获取写锁。如果块已被其他任务锁定，则等待直到锁释放
    * @param blockId the block to lock.
    * @param blocking if true (default), this call will block until the lock is acquired. If false,
    *                 this call will return immediately if the lock acquisition fails.
@@ -333,7 +335,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
     }
   }
 
-  /**
+  /** 检查当前任务是否已经获取了块的写锁，如果没有，抛出异常
    * Throws an exception if the current task does not hold a write lock on the given block.
    * Otherwise, returns the block's BlockInfo.
    */
@@ -361,7 +363,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
     }
   }
 
-  /**
+  /** 锁降级，从写锁变成读锁
    * Downgrades an exclusive write lock to a shared read lock.
    */
   def downgradeLock(blockId: BlockId): Unit = {
@@ -381,7 +383,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
    * Release a lock on the given block.
    * In case a TaskContext is not propagated properly to all child threads for the task, we fail to
    * get the TID from TaskContext, so we have to explicitly pass the TID value to release the lock.
-   *
+   * 释放某个块的锁，解锁读锁或写锁
    * See SPARK-18406 for more discussion of this issue.
    */
   def unlock(blockId: BlockId, taskAttemptIdOption: Option[TaskAttemptId] = None): Unit = {
@@ -410,7 +412,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
 
   /**
    * Attempt to acquire the appropriate lock for writing a new block.
-   *
+   * 尝试为新的块获取写锁，并执行相关操作
    * This enforces the first-writer-wins semantics. If we are the first to write the block,
    * then just go ahead and acquire the write lock. Otherwise, if another thread is already
    * writing the block, then we wait for the write to finish before acquiring the read lock.
@@ -468,7 +470,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
     }
   }
 
-  /**
+  /** 释放给定任务持有的所有锁。
    * Release all lock held by the given task, clearing that task's pin bookkeeping
    * structures and updating the global pin counts. This method should be called at the
    * end of a task (either by a task completion handler or in `TaskRunner.run()`).
@@ -538,7 +540,7 @@ private[storage] class BlockInfoManager(trackingCacheVisibility: Boolean = false
 
   /**
    * Removes the given block and releases the write lock on it.
-   *
+   * 删除给定的块，并释放相应的锁
    * This can only be called while holding a write lock on the given block.
    */
   def removeBlock(blockId: BlockId): Unit = {

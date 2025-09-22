@@ -73,13 +73,13 @@ object DeserializerBuildHelper {
       path: Expression,
       clazz: Class[_]): Expression = {
     StaticInvoke(
-      clazz,
-      ObjectType(clazz),
-      "valueOf",
-      path :: Nil,
-      returnNullable = false)
+      clazz,       // 目标类（Java 类或 Scala 伴生对象）
+      ObjectType(clazz),  // 期望的返回类型
+      "valueOf",         // 方法名
+      path :: Nil,      // 传递给方法的参数表达式
+      returnNullable = false)  // 方法是否可能返回 null
   }
-
+  //创建String的反序列化器
   def createDeserializerForString(path: Expression, returnNullable: Boolean): Expression = {
     Invoke(path, "toString", ObjectType(classOf[java.lang.String]),
       returnNullable = returnNullable)
@@ -218,9 +218,9 @@ object DeserializerBuildHelper {
     enc match {
       case AgnosticEncoders.RowEncoder(fields) =>
         val children = fields.zipWithIndex.map { case (f, i) =>
-          createDeserializer(f.enc, GetStructField(input, i), walkedTypePath)
+          createDeserializer(f.enc, GetStructField(input, i), walkedTypePath)  //创建每个字段的反序列化器
         }
-        CreateExternalRow(children, enc.schema)
+        CreateExternalRow(children, enc.schema)   //创建外部行
       case _ =>
         val deserializer = createDeserializer(
           enc,
@@ -244,7 +244,7 @@ object DeserializerBuildHelper {
       enc: AgnosticEncoder[_],
       path: Expression,
       walkedTypePath: WalkedTypePath): Expression = enc match {
-    case _ if isNativeEncoder(enc) =>
+    case _ if isNativeEncoder(enc) =>  //如果原始类型，直接返回原始表达式
       path
     case _: BoxedLeafEncoder[_, _] =>
       createDeserializerForTypesSupportValueOf(path, enc.clsTag.runtimeClass)

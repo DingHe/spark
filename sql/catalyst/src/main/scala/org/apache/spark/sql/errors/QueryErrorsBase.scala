@@ -46,19 +46,19 @@ private[sql] trait QueryErrorsBase extends DataTypeErrorsBase {
   def toSQLConfVal(conf: String): String = {
     quoteByDefault(conf)
   }
-
+  //将数据源选项（option）转换为符合 SQL 语法的标准格式
   def toDSOption(option: String): String = {
     quoteByDefault(option)
   }
-
+ //将 SQL 表达式（Expression）转换为符合 SQL 语法的字符串
   def toSQLExpr(e: Expression): String = {
     quoteByDefault(toPrettySQL(e))
   }
-
+  //将 SQL schema 名称转换为符合 SQL 语法的标准格式
   def toSQLSchema(schema: String): String = {
     QuotingUtils.toSQLSchema(schema)
   }
-
+  //根据输入的值和数据类型（v: Any, t: DataType），将其转换为符合 SQL 语法的值表示。
   // Converts an error class parameter to its SQL representation
   def toSQLValue(v: Any, t: DataType): String = Literal.create(v, t) match {
     case Literal(null, _) => "NULL"

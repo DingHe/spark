@@ -28,25 +28,26 @@ import org.apache.spark.sql.sources.BaseRelation
 /**
  * Used to link a [[BaseRelation]] in to a logical query plan.
  */
+//用于将 BaseRelation（基础关系）链接到逻辑查询计划的一个类。它继承自 LeafNode，并实现了多个特性接口，如 MultiInstanceRelation 和 ExposesMetadataColumns
 case class LogicalRelation(
-    relation: BaseRelation,
-    output: Seq[AttributeReference],
-    catalogTable: Option[CatalogTable],
-    override val isStreaming: Boolean)
+    relation: BaseRelation, //底层的 BaseRelation 实现，代表了数据源的具体实现，比如 HadoopFsRelation（HDFS 关系）
+    output: Seq[AttributeReference], //查询计划中输出的列
+    catalogTable: Option[CatalogTable], //表示数据源对应的 CatalogTable
+    override val isStreaming: Boolean) //标识是否为流式数据源
   extends LeafNode with MultiInstanceRelation with ExposesMetadataColumns {
 
-  // Only care about relation when canonicalizing.
+  // Only care about relation when canonicalizing.  对 output 中的表达式进行标准化
   override def doCanonicalize(): LogicalPlan = copy(
     output = output.map(QueryPlan.normalizeExpressions(_, output)),
     catalogTable = None)
-
+  //首先尝试从 catalogTable 获取表的统计信息。如果有，使用它；否则，使用 relation 提供的字节大小（sizeInBytes）来创建默认的统计信息
   override def computeStats(): Statistics = {
     catalogTable
       .flatMap(_.stats.map(_.toPlanStats(output, conf.cboEnabled || conf.planStatsEnabled)))
       .getOrElse(Statistics(sizeInBytes = relation.sizeInBytes))
   }
 
-  /** Used to lookup original attribute capitalization */
+  /** Used to lookup original attribute capitalization 查找输出属性的原始大小写*/
   val attributeMap: AttributeMap[AttributeReference] = AttributeMap(output.map(o => (o, o)))
 
   /**
@@ -58,17 +59,17 @@ case class LogicalRelation(
   override def newInstance(): LogicalRelation = {
     this.copy(output = output.map(_.newInstance()))
   }
-
+  //刷新数据源的元数据或文件系统位置
   override def refresh(): Unit = relation match {
-    case fs: HadoopFsRelation => fs.location.refresh()
+    case fs: HadoopFsRelation => fs.location.refresh()  //只有hdfs需要刷新
     case _ =>  // Do nothing.
   }
-
+  //化的字符串表示，通常用于日志或调试
   override def simpleString(maxFields: Int): String = {
     s"Relation ${catalogTable.map(_.identifier.unquotedString).getOrElse("")}" +
       s"[${truncatedString(output, ",", maxFields)}] $relation"
   }
-
+  //用于输出元数据列。对于 HadoopFsRelation，它返回文件元数据列；否则返回空集合
   override lazy val metadataOutput: Seq[AttributeReference] = relation match {
     case relation: HadoopFsRelation =>
       metadataOutputWithOutConflicts(Seq(relation.fileFormat.createFileMetadataCol))

@@ -37,7 +37,7 @@ import org.apache.spark.network.shuffle.checksum.Cause;
 import org.apache.spark.network.shuffle.protocol.*;
 import org.apache.spark.network.util.TransportConf;
 
-/**
+/** 提供了读取shuffle文件和RDD块的接口，可以从执行器或外部服务中获取数据。
  * Provides an interface for reading both shuffle files and RDD blocks, either from an Executor
  * or external service.
  */
@@ -45,14 +45,14 @@ public abstract class BlockStoreClient implements Closeable {
   protected final Logger logger = LoggerFactory.getLogger(this.getClass());
 
   protected volatile TransportClientFactory clientFactory;
-  protected String appId;
+  protected String appId; //应用程序的ID，用于标识当前应用
   // Store the application attemptId
-  private String appAttemptId;
-  protected TransportConf transportConf;
+  private String appAttemptId; //应用尝试的ID，存储应用的尝试ID，区分同一应用的不同执行尝试
+  protected TransportConf transportConf; //配置网络传输的相关参数，如连接超时等
 
   /**
    * Send the diagnosis request for the corrupted shuffle block to the server.
-   *
+   * 用于向服务器发送诊断请求，检测发生损坏的shuffle块的原因
    * @param host the host of the remote node.
    * @param port the port of the remote node.
    * @param execId the executor id.
@@ -66,10 +66,10 @@ public abstract class BlockStoreClient implements Closeable {
   public Cause diagnoseCorruption(
       String host,
       int port,
-      String execId,
-      int shuffleId,
-      long mapId,
-      int reduceId,
+      String execId, //执行器的ID
+      int shuffleId, //损坏shuffle块的shuffle ID
+      long mapId, //损坏shuffle块的map ID
+      int reduceId, //损坏shuffle块的reduce ID
       long checksum,
       String algorithm) {
     try {
@@ -94,7 +94,7 @@ public abstract class BlockStoreClient implements Closeable {
    * Note that this API takes a sequence so the implementation can batch requests, and does not
    * return a future so the underlying implementation can invoke onBlockFetchSuccess as soon as
    * the data of a block is fetched, rather than waiting for all blocks to be fetched.
-   *
+   * 异步地从远程节点拉取一系列的块数据。通过回调BlockFetchingListener接收数据请求的状态，并可以根据需要选择是否将数据保存在内存或写入临时文件
    * @param host the host of the remote node.
    * @param port the port of the remote node.
    * @param execId the executor id.
@@ -111,9 +111,9 @@ public abstract class BlockStoreClient implements Closeable {
       String execId,
       String[] blockIds,
       BlockFetchingListener listener,
-      DownloadFileManager downloadFileManager);
+      DownloadFileManager downloadFileManager); //下载文件管理器，若为null，数据保存在内存中；若不为null，数据将保存到临时文件中
 
-  /**
+  /** 返回一个MetricSet，用于获取shuffle相关的度量指标。默认返回一个空的MetricSet
    * Get the shuffle MetricsSet from BlockStoreClient, this will be used in MetricsSystem to
    * get the Shuffle related metrics.
    */
@@ -121,7 +121,7 @@ public abstract class BlockStoreClient implements Closeable {
     // Return an empty MetricSet by default.
     return () -> Collections.emptyMap();
   }
-
+  //检查appId是否已初始化。若未初始化，则抛出异常
   protected void checkInit() {
     assert appId != null : "Called before init()";
   }
@@ -153,6 +153,8 @@ public abstract class BlockStoreClient implements Closeable {
    *                                 to its local directories if the request handler replies
    *                                 successfully. Otherwise, it contains a specific error.
    */
+  //请求本地磁盘目录，用于获取与当前BlockStoreClient相同主机上的执行器的本地目录。
+  // 该方法通过TransportClient向远程节点发送RPC请求，获取相关目录信息
   public void getHostLocalDirs(
       String host,
       int port,
@@ -198,7 +200,8 @@ public abstract class BlockStoreClient implements Closeable {
    * @param blockIds block ids to be pushed
    * @param buffers buffers to be pushed
    * @param listener the listener to receive block push status.
-   *
+   * 异步地将一系列的shuffle块推送到远程节点。推送的数据将与其他客户端推送的数据一起合并，生成每个shuffle分区的合并文件。
+   * 该方法当前抛出UnsupportedOperationException，表示该方法未实现
    * @since 3.1.0
    */
   public void pushBlocks(
@@ -214,7 +217,7 @@ public abstract class BlockStoreClient implements Closeable {
    * Invoked by Spark driver to notify external shuffle services to finalize the shuffle merge
    * for a given shuffle. This allows the driver to start the shuffle reducer stage after properly
    * finishing the shuffle merge process associated with the shuffle mapper stage.
-   *
+   * 由Spark驱动程序调用，通知外部shuffle服务完成给定shuffle的合并过程，允许驱动程序在合并过程完成后开始shuffle还原阶段。此方法当前抛出UnsupportedOperationException，表示未实现
    * @param host host of shuffle server
    * @param port port of shuffle server.
    * @param shuffleId shuffle ID of the shuffle to be finalized
@@ -235,7 +238,7 @@ public abstract class BlockStoreClient implements Closeable {
 
   /**
    * Get the meta information of a merged block from the remote shuffle service.
-   *
+   * 获取合并块的元数据信息。此方法获取给定shuffle合并ID的合并块元数据。该方法当前抛出UnsupportedOperationException，表示未实现
    * @param host the host of the remote node.
    * @param port the port of the remote node.
    * @param shuffleId shuffle id.
@@ -258,7 +261,7 @@ public abstract class BlockStoreClient implements Closeable {
 
   /**
    * Remove the shuffle merge data in shuffle services
-   *
+   * 从shuffle服务中移除shuffle合并数据。此方法当前抛出UnsupportedOperationException，表示未实现
    * @param host the host of the remote node.
    * @param port the port of the remote node.
    * @param shuffleId shuffle id.

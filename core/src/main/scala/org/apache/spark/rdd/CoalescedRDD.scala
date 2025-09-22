@@ -34,11 +34,11 @@ import org.apache.spark.util.Utils
  * @param preferredLocation the preferred location for this partition
  */
 private[spark] case class CoalescedRDDPartition(
-    index: Int,
-    @transient rdd: RDD[_],
-    parentsIndices: Array[Int],
-    @transient preferredLocation: Option[String] = None) extends Partition {
-  var parents: Seq[Partition] = parentsIndices.map(rdd.partitions(_))
+    index: Int, //表示这个合并后的分区在当前 CoalescedRDDPartition 中的索引
+    @transient rdd: RDD[_], //表示这个分区所属的 RDD。由于标记了 @transient，它会在序列化时被忽略，避免在分布式任务中传输不必要的数据
+    parentsIndices: Array[Int], //表示父 RDD 中被合并到当前分区的分区索引。这是一个整数数组，标记了所有合并到该分区的父 RDD 分区的索引
+    @transient preferredLocation: Option[String] = None) extends Partition { //表示当前分区的首选位置。如果没有首选位置，它的值为 None，否则为 Some(location)
+  var parents: Seq[Partition] = parentsIndices.map(rdd.partitions(_)) //表示合并后的分区包含的父分区。根据 parentsIndices 计算得来，将这些索引映射到实际的父分区
 
   @throws(classOf[IOException])
   private def writeObject(oos: ObjectOutputStream): Unit = Utils.tryOrIOException {
@@ -52,6 +52,7 @@ private[spark] case class CoalescedRDDPartition(
    * their getPreferredLocs.
    * @return locality of this coalesced partition between 0 and 1
    */
+    //该方法计算父分区中包含 preferredLocation 的分区比例。返回一个介于 0 和 1 之间的浮动值，表示合并后分区的局部性
   def localFraction: Double = {
     val loc = parents.count { p =>
       val parentPreferredLocations = rdd.context.getPreferredLocs(rdd, p.index).map(_.host)
@@ -72,8 +73,8 @@ private[spark] case class CoalescedRDDPartition(
  * @param partitionCoalescer [[PartitionCoalescer]] implementation to use for coalescing
  */
 private[spark] class CoalescedRDD[T: ClassTag](
-    @transient var prev: RDD[T],
-    maxPartitions: Int,
+    @transient var prev: RDD[T], //需要合并的父RDD
+    maxPartitions: Int, //合并后RDD的目标分区数量
     partitionCoalescer: Option[PartitionCoalescer] = None)
   extends RDD[T](prev.context, Nil) {  // Nil since we implement getDependencies
 
@@ -152,7 +153,8 @@ private[spark] class CoalescedRDD[T: ClassTag](
  * in terms of balance, the algorithm will assign partitions according to locality.
  * (contact alig for questions)
  */
-
+//目的是根据一定的策略将父 RDD 的分区合并为较少的分区。
+//balanceSlack：控制平衡与本地性之间的权衡。比如 balanceSlack = 0.10 表示允许最大 10% 的不平衡，以优先考虑本地性
 private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
   extends PartitionCoalescer {
 
@@ -165,13 +167,13 @@ private class DefaultPartitionCoalescer(val balanceSlack: Double = 0.10)
   val rnd = new scala.util.Random(7919) // keep this class deterministic
 
   // each element of groupArr represents one coalesced partition
-  val groupArr = ArrayBuffer[PartitionGroup]()
+  val groupArr = ArrayBuffer[PartitionGroup]() //用于存储分区组（PartitionGroup）。每个 PartitionGroup 代表一个合并后的分区
 
   // hash used to check whether some machine is already in groupArr
-  val groupHash = mutable.Map[String, ArrayBuffer[PartitionGroup]]()
+  val groupHash = mutable.Map[String, ArrayBuffer[PartitionGroup]]()  //用于将机器的名称（key）与分区组（PartitionGroup）关联，以便跟踪每个机器上的分区
 
   // hash used for the first maxPartitions (to avoid duplicates)
-  val initialHash = mutable.Set[Partition]()
+  val initialHash = mutable.Set[Partition]() //一个 Set，用于确保每个分区只被分配到一个分区组中
 
   var noLocality = true  // if true if no preferredLocations exists for parent RDD
 

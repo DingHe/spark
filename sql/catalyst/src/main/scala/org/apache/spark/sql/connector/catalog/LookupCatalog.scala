@@ -24,6 +24,8 @@ import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 /**
  * A trait to encapsulate catalog lookup function and helpful extractors.
  */
+// 它主要负责从多部分的标识符（通常是表、视图、函数等的名称）中解析和查找不同类型的 CatalogPlugin（即 Spark 中的目录插件）。
+// 它包含了多个帮助性的提取器（extractors），用于从多部分标识符中提取出相关的 catalog 和 identifier，并做一些必要的查找和处理
 private[sql] trait LookupCatalog extends Logging {
 
   protected val catalogManager: CatalogManager
@@ -31,6 +33,7 @@ private[sql] trait LookupCatalog extends Logging {
   /**
    * Returns the current catalog set.
    */
+    //获取当前的 CatalogPlugin，它代表了当前 Spark 会话中使用的目录插件
   def currentCatalog: CatalogPlugin = catalogManager.currentCatalog
 
   /**
@@ -38,10 +41,12 @@ private[sql] trait LookupCatalog extends Logging {
    *
    * This does not substitute the default catalog if no catalog is set in the identifier.
    */
+  //该提取器尝试将标识符分解为一个可选的 CatalogPlugin 和剩余的标识符部分
   private object CatalogAndMultipartIdentifier {
     def unapply(parts: Seq[String]): Some[(Option[CatalogPlugin], Seq[String])] = parts match {
       case Seq(_) =>
-        Some((None, parts))
+        Some((None, parts))  //如果标识符只有一个部分，则没有提供 catalog 名称，返回 None
+      //如果标识符的第一个部分是 catalog 名称，则尝试获取对应的 CatalogPlugin，并将剩余部分作为标识符返回。如果找不到该 catalog，则返回 None
       case Seq(catalogName, tail @ _*) =>
         try {
           Some((Some(catalogManager.catalog(catalogName)), tail))
@@ -55,6 +60,7 @@ private[sql] trait LookupCatalog extends Logging {
   /**
    * Extract session catalog and identifier from a multi-part identifier.
    */
+  //该提取器将一个多部分的标识符分解为 session catalog 和 identifier（通常用于从会话级别的目录中查找）
   object SessionCatalogAndIdentifier {
 
     def unapply(parts: Seq[String]): Option[(CatalogPlugin, Identifier)] = parts match {

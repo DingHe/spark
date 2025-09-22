@@ -27,27 +27,27 @@ import org.apache.spark.sql.catalyst.util.IntervalStringStyles.ANSI_STYLE
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.UTF8StringBuilder
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
-
+//主要用于处理 SQL 查询中不同数据类型的格式化，包括基本类型、集合类型（如数组、映射、结构体）等
 trait ToStringBase { self: UnaryExpression with TimeZoneAwareExpression =>
-
+  //格式化日期
   private lazy val dateFormatter = DateFormatter()
-  private lazy val timestampFormatter = TimestampFormatter.getFractionFormatter(zoneId)
-  private lazy val timestampNTZFormatter = TimestampFormatter.getFractionFormatter(ZoneOffset.UTC)
+  private lazy val timestampFormatter = TimestampFormatter.getFractionFormatter(zoneId)  //格式化时间戳
+  private lazy val timestampNTZFormatter = TimestampFormatter.getFractionFormatter(ZoneOffset.UTC)  //格式化 TimestampNTZType（即无时区的时间戳）类型的值，使用 UTC 时区
 
   // The brackets that are used in casting structs and maps to strings
-  protected def leftBracket: String
+  protected def leftBracket: String  //定义了在将结构体、数组、映射等转换为字符串时，左右两侧的括号形式。例如，结构体或数组可能会被转换为 [...] 或 {...}
   protected def rightBracket: String
 
   // The string value to use to represent null elements in array/struct/map.
-  protected def nullString: String
+  protected def nullString: String  //定义如何表示 null 值的字符串
 
-  protected def useDecimalPlainString: Boolean
+  protected def useDecimalPlainString: Boolean  //决定是否使用普通的十进制字符串表示法（而不是科学计数法）来格式化 DecimalType 类型
 
-  protected def useHexFormatForBinary: Boolean
-
+  protected def useHexFormatForBinary: Boolean  //用于决定是否将二进制数据格式化为十六进制格式。如果为 true，则二进制数据会被转化为十六进制字符串
+  //接受一个类型为 T 的函数并将其转化为一个接受 Any 类型输入的函数。它的作用是允许 castToString 方法在调用时对不同数据类型进行转换
   // Makes the function accept Any type input by doing `asInstanceOf[T]`.
   @inline private def acceptAny[T](func: T => Any): Any => Any = i => func(i.asInstanceOf[T])
-
+  //函数根据不同的数据类型将值转换为对应的字符串表示。它根据输入的数据类型选择不同的处理逻辑
   // Returns a function to convert a value to pretty string. The function assumes input is not null.
   protected final def castToString(from: DataType): Any => Any = from match {
     case CalendarIntervalType =>
@@ -166,7 +166,7 @@ trait ToStringBase { self: UnaryExpression with TimeZoneAwareExpression =>
   }
 
   // Returns a function to generate code to convert a value to pretty string. It assumes the input
-  // is not null.
+  // is not null.  //返回的是可以生成代码的函数。这意味着，Spark 在执行时会编译这个代码片段以提高性能
   @scala.annotation.tailrec
   protected final def castToStringCode(
       from: DataType, ctx: CodegenContext): (ExprValue, ExprValue) => Block = {
@@ -261,7 +261,7 @@ trait ToStringBase { self: UnaryExpression with TimeZoneAwareExpression =>
         (c, evPrim) => code"$evPrim = UTF8String.fromString(String.valueOf($c));"
     }
   }
-
+  //用于向 UTF8StringBuilder 中追加一个表示 null 的字符串
   private def appendNull(buffer: ExprValue, isFirstElement: Boolean): Block = {
     if (nullString.isEmpty) {
       EmptyBlock
@@ -271,7 +271,7 @@ trait ToStringBase { self: UnaryExpression with TimeZoneAwareExpression =>
       code"""$buffer.append(" $nullString");"""
     }
   }
-
+  //用于将一个 ArrayType 类型的数组转换为字符串表示，支持对数组中每个元素进行格式化并拼接成最终的字符串
   private def writeArrayToStringBuilder(
       et: DataType,
       array: ExprValue,
@@ -312,7 +312,7 @@ trait ToStringBase { self: UnaryExpression with TimeZoneAwareExpression =>
        |$buffer.append("]");
      """.stripMargin
   }
-
+  //用于将一个 MapType 类型的映射转换为字符串表示，格式化每个键值对并拼接成最终字符串
   private def writeMapToStringBuilder(
       kt: DataType,
       vt: DataType,
@@ -372,7 +372,7 @@ trait ToStringBase { self: UnaryExpression with TimeZoneAwareExpression =>
        |$buffer.append("$rightBracket");
      """.stripMargin
   }
-
+  //用于将一个 StructType 类型的结构体转换为字符串表示。每个字段会被递归地转化为字符串，最终拼接成完整的结构体字符串表示
   private def writeStructToStringBuilder(
       st: Seq[DataType],
       row: ExprValue,

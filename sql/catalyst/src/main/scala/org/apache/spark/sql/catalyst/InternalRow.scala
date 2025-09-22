@@ -23,18 +23,18 @@ import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
-/**
+/** InternalRow 是 Spark SQL 中用于表示数据行的抽象类。它是一个包含若干列数据的结构，主要用于 Spark 内部的数据处理。这个类在 Spark 的 Catalyst 优化器中用于表示 SQL 表的行数据，存储方式非常高效
  * An abstract class for row used internally in Spark SQL, which only contains the columns as
  * internal types.
  */
 abstract class InternalRow extends SpecializedGetters with Serializable {
 
-  def numFields: Int
+  def numFields: Int //表中列的数量
 
   // This is only use for test and will throw a null pointer exception if the position is null.
-  def getString(ordinal: Int): String = getUTF8String(ordinal).toString
+  def getString(ordinal: Int): String = getUTF8String(ordinal).toString //返回指定列索引（ordinal）的字符串值
 
-  def setNullAt(i: Int): Unit
+  def setNullAt(i: Int): Unit //设置指定列为 null
 
   /**
    * Updates the value at column `i`. Note that after updating, the given value will be kept in this
@@ -65,7 +65,7 @@ abstract class InternalRow extends SpecializedGetters with Serializable {
    * Make a copy of the current [[InternalRow]] object.
    */
   def copy(): InternalRow
-
+  //判断行是否存在某一列为null
   /** Returns true if there are any NULL values in this row. */
   def anyNull: Boolean = {
     val len = numFields
@@ -79,7 +79,7 @@ abstract class InternalRow extends SpecializedGetters with Serializable {
 
   /* ---------------------- utility methods for Scala ---------------------- */
 
-  /**
+  /** 通过 get 方法获取每一列的值，并根据列的类型存储在 values 数组中
    * Return a Scala Seq representing the row. Elements are placed in the same order in the Seq.
    */
   def toSeq(fieldTypes: Seq[DataType]): Seq[Any] = {
@@ -99,12 +99,12 @@ abstract class InternalRow extends SpecializedGetters with Serializable {
 }
 
 object InternalRow {
-  /**
+  /** 创建一个新的 InternalRow 对象
    * This method can be used to construct a [[InternalRow]] with the given values.
    */
   def apply(values: Any*): InternalRow = new GenericInternalRow(values.toArray)
 
-  /**
+  /** 将一个 Seq 类型的值转换为 InternalRow 对象
    * This method can be used to construct a [[InternalRow]] from a [[Seq]] of values.
    */
   def fromSeq(values: Seq[Any]): InternalRow = new GenericInternalRow(values.toArray)
@@ -112,7 +112,7 @@ object InternalRow {
   /** Returns an empty [[InternalRow]]. */
   val empty = apply()
 
-  /**
+  /** 根据数据类型复制给定的值。如果是 UTF8String、InternalRow、ArrayData 或 MapData 类型，方法会创建这些对象的副本，否则返回原值
    * Copies the given value if it's string/struct/array/map type.
    */
   def copyValue(value: Any): Any = value match {
@@ -123,7 +123,8 @@ object InternalRow {
     case _ => value
   }
 
-  /**
+  /** 根据列的数据类型返回一个访问器，用于从 InternalRow 中获取指定列的数据。
+   * 同时InternalRow也是SpecializedGetters的实现
    * Returns an accessor for an `InternalRow` with given data type. The returned accessor
    * actually takes a `SpecializedGetters` input because it can be generalized to other classes
    * that implements `SpecializedGetters` (e.g., `ArrayData`) too.
@@ -164,7 +165,7 @@ object InternalRow {
     }
   }
 
-  /**
+  /** 根据数据类型，对应数据类型的写入器
    * Returns a writer for an `InternalRow` with given data type.
    */
   @scala.annotation.tailrec

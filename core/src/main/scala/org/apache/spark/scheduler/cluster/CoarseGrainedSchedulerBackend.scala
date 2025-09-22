@@ -50,25 +50,26 @@ import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils, Utils}
  * coarse-grained Mesos mode or standalone processes for Spark's standalone deploy mode
  * (spark.deploy.*).
  */
+//用于与集群进行通信的调度后端类，特别是在执行器连接后，保持每个执行器的生命周期，避免每次任务完成后都启动新的执行器
 private[spark]
 class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: RpcEnv)
   extends ExecutorAllocationClient with SchedulerBackend with Logging {
 
   // Use an atomic variable to track total number of cores in the cluster for simplicity and speed
-  protected val totalCoreCount = new AtomicInteger(0)
+  protected val totalCoreCount = new AtomicInteger(0)  //用于追踪集群中总的 CPU 核心数
   // Total number of executors that are currently registered
-  protected val totalRegisteredExecutors = new AtomicInteger(0)
+  protected val totalRegisteredExecutors = new AtomicInteger(0)  //当前已注册的执行器数量
   protected val conf = scheduler.sc.conf
-  private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)
-  private val defaultAskTimeout = RpcUtils.askRpcTimeout(conf)
+  private val maxRpcMessageSize = RpcUtils.maxMessageSizeBytes(conf)  //表示 Spark RPC 消息的最大大小
+  private val defaultAskTimeout = RpcUtils.askRpcTimeout(conf)        //默认的 RPC 请求超时
   // Submit tasks only after (registered resources / total expected resources)
   // is equal to at least this value, that is double between 0 and 1.
   private val _minRegisteredRatio =
-    math.min(1, conf.get(SCHEDULER_MIN_REGISTERED_RESOURCES_RATIO).getOrElse(0.0))
+    math.min(1, conf.get(SCHEDULER_MIN_REGISTERED_RESOURCES_RATIO).getOrElse(0.0))  //调度任务之前，必须满足的执行器注册比例。这个值介于 0 和 1 之间
   // Submit tasks after maxRegisteredWaitingTime milliseconds
   // if minRegisteredRatio has not yet been reached
   private val maxRegisteredWaitingTimeNs = TimeUnit.MILLISECONDS.toNanos(
-    conf.get(SCHEDULER_MAX_REGISTERED_RESOURCE_WAITING_TIME))
+    conf.get(SCHEDULER_MAX_REGISTERED_RESOURCE_WAITING_TIME))  //等待已注册执行器达到 _minRegisteredRatio 所需的最大时间
   private val createTimeNs = System.nanoTime()
 
   // Accessing `executorDataMap` in the inherited methods from ThreadSafeRpcEndpoint doesn't need
@@ -76,18 +77,18 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   // protected by `CoarseGrainedSchedulerBackend.this`. Besides, `executorDataMap` should only
   // be modified in the inherited methods from ThreadSafeRpcEndpoint with protection by
   // `CoarseGrainedSchedulerBackend.this`.
-  private val executorDataMap = new HashMap[String, ExecutorData]
+  private val executorDataMap = new HashMap[String, ExecutorData] //用来存储执行器的相关信息，key 是执行器 ID，value 是 ExecutorData 对象
 
   // Number of executors for each ResourceProfile requested by the cluster
   // manager, [[ExecutorAllocationManager]]
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
-  private val requestedTotalExecutorsPerResourceProfile = new HashMap[ResourceProfile, Int]
+  private val requestedTotalExecutorsPerResourceProfile = new HashMap[ResourceProfile, Int] //存储每个资源配置文件（ResourceProfile）请求的总执行器数
 
   // Profile IDs to the times that executors were requested for.
   // The operations we do on queue are all amortized constant cost
   // see https://www.scala-lang.org/api/2.13.x/scala/collection/mutable/ArrayDeque.html
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
-  private val execRequestTimes = new HashMap[Int, Queue[(Int, Long)]]
+  private val execRequestTimes = new HashMap[Int, Queue[(Int, Long)]]  //存储执行器请求的时间戳信息，按资源配置文件 ID 分类
 
   private val listenerBus = scheduler.sc.listenerBus
 
@@ -95,13 +96,13 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   // the executor ID to whether it was explicitly killed by the driver (and thus shouldn't
   // be considered an app-related failure). Visible for testing only.
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
-  private[scheduler] val executorsPendingToRemove = new HashMap[String, Boolean]
+  private[scheduler] val executorsPendingToRemove = new HashMap[String, Boolean]  //存储待移除执行器的 ID 和是否由驱动显式请求删除的标记
 
   // Executors that have been lost, but for which we don't yet know the real exit reason.
-  protected val executorsPendingLossReason = new HashSet[String]
+  protected val executorsPendingLossReason = new HashSet[String] //存储失去连接的执行器 ID，等待确认其退出原因
 
   // Executors which are being decommissioned. Maps from executorId to ExecutorDecommissionInfo.
-  protected val executorsPendingDecommission = new HashMap[String, ExecutorDecommissionInfo]
+  protected val executorsPendingDecommission = new HashMap[String, ExecutorDecommissionInfo]  //存储退役的执行器信息
 
   // Unknown Executors which are being decommissioned. This could be caused by unregistered executor
   // This executor should be decommissioned after registration.
@@ -110,45 +111,46 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   protected val unknownExecutorsPendingDecommission =
     CacheBuilder.newBuilder()
       .maximumSize(conf.get(SCHEDULER_MAX_RETAINED_UNKNOWN_EXECUTORS))
-      .build[String, (ExecutorDecommissionInfo, Boolean, Boolean)]()
+      .build[String, (ExecutorDecommissionInfo, Boolean, Boolean)]()  //存储未知执行器的退役信息
 
   // A map of ResourceProfile id to map of hostname with its possible task number running on it
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
-  protected var rpHostToLocalTaskCount: Map[Int, Map[String, Int]] = Map.empty
+  protected var rpHostToLocalTaskCount: Map[Int, Map[String, Int]] = Map.empty   //按资源配置文件 ID 和主机名分类，存储每个主机上等待执行的任务数
 
   // The number of pending tasks per ResourceProfile id which is locality required
   @GuardedBy("CoarseGrainedSchedulerBackend.this")
-  protected var numLocalityAwareTasksPerResourceProfileId = Map.empty[Int, Int]
+  protected var numLocalityAwareTasksPerResourceProfileId = Map.empty[Int, Int]  //按资源配置文件 ID 分类，存储每个资源配置文件 ID 的局部任务数量
 
   // The num of current max ExecutorId used to re-register appMaster
-  @volatile protected var currentExecutorIdCounter = 0
+  @volatile protected var currentExecutorIdCounter = 0 //当前执行器的 ID 计数器，确保执行器 ID 的唯一性
 
   // Current set of delegation tokens to send to executors.
-  private val delegationTokens = new AtomicReference[Array[Byte]]()
+  private val delegationTokens = new AtomicReference[Array[Byte]]()  //存储当前的 Hadoop 委托令牌，用于安全通信
 
   // The token manager used to create security tokens.
-  private var delegationTokenManager: Option[HadoopDelegationTokenManager] = None
+  private var delegationTokenManager: Option[HadoopDelegationTokenManager] = None  //管理 Hadoop 委托令牌的可选对象
 
   private val reviveThread =
-    ThreadUtils.newDaemonSingleThreadScheduledExecutor("driver-revive-thread")
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("driver-revive-thread")  //用于定期恢复调度 offer，从而实现延迟调度
 
   private val cleanupService: Option[ScheduledExecutorService] =
     conf.get(EXECUTOR_DECOMMISSION_FORCE_KILL_TIMEOUT).map { _ =>
-      ThreadUtils.newDaemonSingleThreadScheduledExecutor("cleanup-decommission-execs")
+      ThreadUtils.newDaemonSingleThreadScheduledExecutor("cleanup-decommission-execs")  //如果启用执行器降级强制杀死超时，则使用定时任务线程清理这些执行器
     }
-
+  //处理 Spark 驱动程序与执行器之间的通信
   class DriverEndpoint extends IsolatedThreadSafeRpcEndpoint with Logging {
 
-    override val rpcEnv: RpcEnv = CoarseGrainedSchedulerBackend.this.rpcEnv
+    override val rpcEnv: RpcEnv = CoarseGrainedSchedulerBackend.this.rpcEnv  //驱动程序的 RPC 环境引用
 
-    protected val addressToExecutorId = new HashMap[RpcAddress, String]
+    protected val addressToExecutorId = new HashMap[RpcAddress, String]  //将执行器的 RPC 地址映射到其执行器 ID
 
     // Spark configuration sent to executors. This is a lazy val so that subclasses of the
     // scheduler can modify the SparkConf object before this view is created.
+    // 用来存储Spark配置的惰性加载，过滤出以" spark." 开头的配置项
     private lazy val sparkProperties = scheduler.sc.conf.getAll
       .filter { case (k, _) => k.startsWith("spark.") }
       .toSeq
-
+    // 执行器日志的URL处理器
     private val logUrlHandler: ExecutorLogUrlHandler = new ExecutorLogUrlHandler(
       conf.get(UI.CUSTOM_EXECUTOR_LOG_URL))
 
@@ -157,52 +159,57 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       val reviveIntervalMs = conf.get(SCHEDULER_REVIVE_INTERVAL).getOrElse(1000L)
 
       reviveThread.scheduleAtFixedRate(() => Utils.tryLogNonFatalError {
+        //// 定期触发资源复活（revive offers）以支持延迟调度
         Option(self).foreach(_.send(ReviveOffers))
       }, 0, reviveIntervalMs, TimeUnit.MILLISECONDS)
     }
-
+    // 处理接收到的消息
     override def receive: PartialFunction[Any, Unit] = {
+      // 处理任务状态更新，更新调度器的状态
       case StatusUpdate(executorId, taskId, state, data, taskCpus, resources) =>
         scheduler.statusUpdate(taskId, state, data.value)
         if (TaskState.isFinished(state)) {
           executorDataMap.get(executorId) match {
             case Some(executorInfo) =>
+              // 如果执行器状态更新，释放对应的资源
               executorInfo.freeCores += taskCpus
               resources.foreach { case (k, v) =>
                 executorInfo.resourcesInfo.get(k).foreach { r =>
-                  r.release(v.addresses)
+                  r.release(v.addresses)  // 释放资源
                 }
               }
-              makeOffers(executorId)
+              makeOffers(executorId)  // 重新生成资源报价
             case None =>
               // Ignoring the update since we don't know about the executor.
               logWarning(s"Ignored task status update ($taskId state $state) " +
                 s"from unknown executor with ID $executorId")
           }
         }
-
+      // 处理Shuffle操作完成
       case ShufflePushCompletion(shuffleId, shuffleMergeId, mapIndex) =>
         scheduler.dagScheduler.shufflePushCompleted(shuffleId, shuffleMergeId, mapIndex)
-
+        // 处理ReviveOffers消息，生成资源报价
       case ReviveOffers =>
         makeOffers()
-
+      // 杀死指定任务
       case KillTask(taskId, executorId, interruptThread, reason) =>
         executorDataMap.get(executorId) match {
           case Some(executorInfo) =>
+            // 向执行器发送KillTask消息
             executorInfo.executorEndpoint.send(
               KillTask(taskId, executorId, interruptThread, reason))
+          // 如果执行器不存在，忽略该请求
           case None =>
             // Ignoring the task kill since the executor is not registered.
             logWarning(s"Attempted to kill task $taskId for unknown executor $executorId.")
         }
-
+      // 终止指定主机上的所有执行器
       case KillExecutorsOnHost(host) =>
         scheduler.getExecutorsAliveOnHost(host).foreach { execs =>
           killExecutors(execs.toSeq, adjustTargetNumExecutors = false, countFailures = false,
             force = true)
         }
-
+      // 将指定主机上的所有执行器标记为退役
       case DecommissionExecutorsOnHost(host) =>
         val reason = ExecutorDecommissionInfo(s"Decommissioning all executors on $host.")
         scheduler.getExecutorsAliveOnHost(host).foreach { execs =>
@@ -211,26 +218,26 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           decommissionExecutors(execsWithReasons, adjustTargetNumExecutors = false,
             triggeredByExecutor = false)
         }
-
+      // 更新代理令牌
       case UpdateDelegationTokens(newDelegationTokens) =>
         updateDelegationTokens(newDelegationTokens)
-
+      // 移除执行器并通知它停止自己
       case RemoveExecutor(executorId, reason) =>
         // We will remove the executor's state and cannot restore it. However, the connection
         // between the driver and the executor may be still alive so that the executor won't exit
         // automatically, so try to tell the executor to stop itself. See SPARK-13519.
         executorDataMap.get(executorId).foreach(_.executorEndpoint.send(StopExecutor))
         removeExecutor(executorId, reason)
-
+      // 移除worker节点
       case RemoveWorker(workerId, host, message) =>
         removeWorker(workerId, host, message)
-
+      // 启动新的执行器
       case LaunchedExecutor(executorId) =>
         executorDataMap.get(executorId).foreach { data =>
           data.freeCores = data.totalCores
         }
         makeOffers(executorId)
-
+      // 处理额外进程的添加
       case MiscellaneousProcessAdded(time: Long,
           processId: String, info: MiscellaneousProcessDetails) =>
         listenerBus.post(SparkListenerMiscellaneousProcessAdded(time, processId, info))
@@ -238,11 +245,12 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       case e =>
         logError(s"Received unexpected message. ${e}")
     }
-
+    // 处理带有回复的RPC消息
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-
+      // 处理执行器注册请求
       case RegisterExecutor(executorId, executorRef, hostname, cores, logUrls,
           attributes, resources, resourceProfileId) =>
+        // 如果执行器已经注册，返回错误
         if (executorDataMap.contains(executorId)) {
           context.sendFailure(new IllegalStateException(s"Duplicate executor ID: $executorId"))
         } else if (scheduler.excludedNodes.contains(hostname) ||
@@ -250,16 +258,18 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           // If the cluster manager gives us an executor on an excluded node (because it
           // already started allocating those resources before we informed it of our exclusion,
           // or if it ignored our exclusion), then we reject that executor immediately.
+          // 如果执行器所在的主机被排除，拒绝注册
           logInfo(s"Rejecting $executorId as it has been excluded.")
           context.sendFailure(
             new IllegalStateException(s"Executor is excluded due to failures: $executorId"))
         } else {
           // If the executor's rpc env is not listening for incoming connections, `hostPort`
           // will be null, and the client connection should be used to contact the executor.
+          // 处理正常的注册流程
           val executorAddress = if (executorRef.address != null) {
               executorRef.address
             } else {
-              context.senderAddress
+              context.senderAddress  // 如果RPC地址为空，使用上下文中的发送者地址
             }
           logInfo(s"Registered executor $executorRef ($executorAddress) with ID $executorId, " +
             s" ResourceProfileId $resourceProfileId")
@@ -269,6 +279,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           val resourcesInfo = resources.map { case (rName, info) =>
             // tell the executor it can schedule resources up to numSlotsPerAddress times,
             // as configured by the user, or set to 1 as that is the default (1 task/resource)
+            // 为执行器创建资源信息
             val numParts = scheduler.sc.resourceProfileManager
               .resourceProfileFromId(resourceProfileId).getNumSlotsPerAddress(rName, conf)
             (info.name, new ExecutorResourceInfo(info.name, info.addresses, numParts))
@@ -289,7 +300,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
               }
             }
           }
-
+          // 创建ExecutorData对象，存储执行器的状态信息
           val data = new ExecutorData(executorRef, executorAddress, hostname,
             0, cores, logUrlHandler.applyPattern(logUrls, attributes), attributes,
             resourcesInfo, resourceProfileId, registrationTs = System.currentTimeMillis(),
@@ -313,23 +324,24 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
             })
           context.reply(true)
         }
-
+      // 处理停止驱动程序的请求
       case StopDriver =>
         context.reply(true)
         stop()
-
+      // 处理停止所有执行器的请求
       case StopExecutors =>
         logInfo("Asking each executor to shut down")
         for ((_, executorData) <- executorDataMap) {
           executorData.executorEndpoint.send(StopExecutor)
         }
         context.reply(true)
-
+      // 处理移除worker节点
       case RemoveWorker(workerId, host, message) =>
         removeWorker(workerId, host, message)
         context.reply(true)
 
       // Do not change this code without running the K8s integration suites
+      // 处理执行器退役
       case ExecutorDecommissioning(executorId) =>
         logWarning(s"Received executor $executorId decommissioned message")
         context.reply(
@@ -355,21 +367,23 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     }
 
     // Make fake resource offers on all executors
+    //该方法的作用是模拟向所有活跃执行器发出资源申请（offers），并根据这些资源创建并启动任务
     private def makeOffers(): Unit = {
       // Make sure no executor is killed while some task is launching on it
       val taskDescs = withLock {
         // Filter out executors under killing
-        val activeExecutors = executorDataMap.filterKeys(isExecutorActive)
+        val activeExecutors = executorDataMap.filterKeys(isExecutorActive)  //过滤出所有活跃的执行器
         val workOffers = activeExecutors.map {
+          //资源申请表示执行器上的可用资源以及它能够提供的资源池
           case (id, executorData) => buildWorkerOffer(id, executorData)
         }.toIndexedSeq
-        scheduler.resourceOffers(workOffers, true)
+        scheduler.resourceOffers(workOffers, true)  //调用TaskScheduler根据workOffers资源分配任务
       }
       if (taskDescs.nonEmpty) {
         launchTasks(taskDescs)
       }
     }
-
+    //构建一个 WorkerOffer 对象，表示给定的 executor 提供的资源
     private def buildWorkerOffer(executorId: String, executorData: ExecutorData) = {
       val resources = executorData.resourcesInfo.map { case (rName, rInfo) =>
         (rName, rInfo.availableAddrs.toBuffer)
@@ -411,7 +425,9 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
     }
 
     // Launch tasks returned by a set of resource offers
+    // 根据资源提供的任务描述序列来启动任务
     private def launchTasks(tasks: Seq[Seq[TaskDescription]]): Unit = {
+      //tasks 是一个包含任务描述的二维序列。外层序列表示一个资源提供的任务集合，内层序列表示具体的任务描述（TaskDescription）
       for (task <- tasks.flatten) {
         val serializedTask = TaskDescription.encode(task)
         if (serializedTask.limit() >= maxRpcMessageSize) {
@@ -431,6 +447,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           val executorData = executorDataMap(task.executorId)
           // Do resources allocation here. The allocated resources will get released after the task
           // finishes.
+          //表示这些核心已经分配给当前任务
           executorData.freeCores -= task.cpus
           task.resources.foreach { case (rName, rInfo) =>
             assert(executorData.resourcesInfo.contains(rName))
@@ -439,7 +456,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
 
           logDebug(s"Launching task ${task.taskId} on executor id: ${task.executorId} hostname: " +
             s"${executorData.executorHost}.")
-
+          //表示与 executor 的通信端点。通过它发送 LaunchTask 消息，告诉 executor 启动任务
           executorData.executorEndpoint.send(LaunchTask(new SerializableBuffer(serializedTask)))
         }
       }
@@ -523,7 +540,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       shouldDisable
     }
   }
-
+   //驱动器的endpoint
   val driverEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME, createDriverEndpoint())
 
   protected def minRegisteredRatio: Double = _minRegisteredRatio
@@ -623,7 +640,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
       }
     }
   }
-
+  //创建驱动器的endpoint
   protected def createDriverEndpoint(): DriverEndpoint = new DriverEndpoint()
 
   def stopExecutors(): Unit = {
@@ -725,7 +742,7 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
   def getExecutorsWithRegistrationTs(): Map[String, Long] = synchronized {
     executorDataMap.mapValues(v => v.registrationTs).toMap
   }
-
+  //判断执行器是否还有效
   override def isExecutorActive(id: String): Boolean = synchronized {
     executorDataMap.contains(id) &&
       !executorsPendingToRemove.contains(id) &&

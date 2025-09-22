@@ -31,22 +31,22 @@ import org.apache.spark.util.Utils
 
 /**
  * An abstract memory manager that enforces how memory is shared between execution and storage.
- *
+ * 执行内存是指shuffle、关联、排序和聚合使用的内存。存储内存主要是用于缓存和内部数据传播。每个JVM中有一个MemoryManager。
  * In this context, execution memory refers to that used for computation in shuffles, joins,
  * sorts and aggregations, while storage memory refers to that used for caching and propagating
  * internal data across the cluster. There exists one MemoryManager per JVM.
  */
 private[spark] abstract class MemoryManager(
     conf: SparkConf,
-    numCores: Int,
-    onHeapStorageMemory: Long,
-    onHeapExecutionMemory: Long) extends Logging {
+    numCores: Int, //表示JVM中可用的核心数
+    onHeapStorageMemory: Long, //堆内存中用于存储的内存大小
+    onHeapExecutionMemory: Long) extends Logging { //堆内存中用于执行的内存大小
 
   require(onHeapExecutionMemory > 0, "onHeapExecutionMemory must be > 0")
 
   // -- Methods related to memory allocation policies and bookkeeping ------------------------------
 
-  @GuardedBy("this")
+  @GuardedBy("this")  //存储内存、执行内存的堆内和堆外内存池
   protected val onHeapStorageMemoryPool = new StorageMemoryPool(this, MemoryMode.ON_HEAP)
   @GuardedBy("this")
   protected val offHeapStorageMemoryPool = new StorageMemoryPool(this, MemoryMode.OFF_HEAP)
@@ -54,15 +54,15 @@ private[spark] abstract class MemoryManager(
   protected val onHeapExecutionMemoryPool = new ExecutionMemoryPool(this, MemoryMode.ON_HEAP)
   @GuardedBy("this")
   protected val offHeapExecutionMemoryPool = new ExecutionMemoryPool(this, MemoryMode.OFF_HEAP)
-
+  //堆内存中的存储和执行内存池设置了初始大小
   onHeapStorageMemoryPool.incrementPoolSize(onHeapStorageMemory)
   onHeapExecutionMemoryPool.incrementPoolSize(onHeapExecutionMemory)
 
-  protected[this] val maxOffHeapMemory = conf.get(MEMORY_OFFHEAP_SIZE)
+  protected[this] val maxOffHeapMemory = conf.get(MEMORY_OFFHEAP_SIZE)  //配置的最大堆外内存
   protected[this] val offHeapStorageMemory =
-    (maxOffHeapMemory * conf.get(MEMORY_STORAGE_FRACTION)).toLong
+    (maxOffHeapMemory * conf.get(MEMORY_STORAGE_FRACTION)).toLong  //堆外内存用于存储的最大值
 
-  offHeapExecutionMemoryPool.incrementPoolSize(maxOffHeapMemory - offHeapStorageMemory)
+  offHeapExecutionMemoryPool.incrementPoolSize(maxOffHeapMemory - offHeapStorageMemory)  //“最大堆外内存”减去“最大堆外存储内存”就是“最大堆外执行内存”
   offHeapStorageMemoryPool.incrementPoolSize(offHeapStorageMemory)
 
   /**
@@ -70,13 +70,13 @@ private[spark] abstract class MemoryManager(
    * depending on the MemoryManager implementation.
    * In this model, this is equivalent to the amount of memory not occupied by execution.
    */
-  def maxOnHeapStorageMemory: Long
+  def maxOnHeapStorageMemory: Long //最大堆内存储内存
 
   /**
    * Total available off heap memory for storage, in bytes. This amount can vary over time,
    * depending on the MemoryManager implementation.
    */
-  def maxOffHeapStorageMemory: Long
+  def maxOffHeapStorageMemory: Long   //最大堆外存储内存
 
   /**
    * Set the [[MemoryStore]] used by this manager to evict cached blocks.
@@ -89,7 +89,7 @@ private[spark] abstract class MemoryManager(
 
   /**
    * Acquire N bytes of memory to cache the given block, evicting existing ones if necessary.
-   *
+   * 为存储块申请内存
    * @return whether all N bytes were successfully granted.
    */
   def acquireStorageMemory(blockId: BlockId, numBytes: Long, memoryMode: MemoryMode): Boolean
@@ -100,7 +100,7 @@ private[spark] abstract class MemoryManager(
    * This extra method allows subclasses to differentiate behavior between acquiring storage
    * memory and acquiring unroll memory. For instance, the memory management model in Spark
    * 1.5 and before places a limit on the amount of space that can be freed from unrolling.
-   *
+   * 为解压操作申请内存
    * @return whether all N bytes were successfully granted.
    */
   def acquireUnrollMemory(blockId: BlockId, numBytes: Long, memoryMode: MemoryMode): Boolean
@@ -108,7 +108,7 @@ private[spark] abstract class MemoryManager(
   /**
    * Try to acquire up to `numBytes` of execution memory for the current task and return the
    * number of bytes obtained, or 0 if none can be allocated.
-   *
+   * 尝试分配一定量的执行内存，如果内存不足，可以阻塞等待
    * This call may block until there is enough free memory in some situations, to make sure each
    * task has a chance to ramp up to at least 1 / 2N of the total memory pool (where N is the # of
    * active tasks) before it is forced to spill. This can happen if the number of tasks increase
@@ -120,7 +120,7 @@ private[spark] abstract class MemoryManager(
       taskAttemptId: Long,
       memoryMode: MemoryMode): Long
 
-  /**
+  /** 释放执行内存
    * Release numBytes of execution memory belonging to the given task.
    */
   private[memory]
@@ -136,7 +136,7 @@ private[spark] abstract class MemoryManager(
 
   /**
    * Release all memory for the given task and mark it as inactive (e.g. when a task ends).
-   *
+   * 释放执行内存
    * @return the number of bytes freed.
    */
   private[memory] def releaseAllExecutionMemoryForTask(taskAttemptId: Long): Long = synchronized {
@@ -144,7 +144,7 @@ private[spark] abstract class MemoryManager(
       offHeapExecutionMemoryPool.releaseAllMemoryForTask(taskAttemptId)
   }
 
-  /**
+  /** 释放存储内存
    * Release N bytes of storage memory.
    */
   def releaseStorageMemory(numBytes: Long, memoryMode: MemoryMode): Unit = synchronized {
@@ -154,7 +154,7 @@ private[spark] abstract class MemoryManager(
     }
   }
 
-  /**
+  /** 释放存储内存
    * Release all storage memory acquired.
    */
   final def releaseAllStorageMemory(): Unit = synchronized {
@@ -162,56 +162,56 @@ private[spark] abstract class MemoryManager(
     offHeapStorageMemoryPool.releaseAllMemory()
   }
 
-  /**
+  /** 释放解压内存
    * Release N bytes of unroll memory.
    */
   final def releaseUnrollMemory(numBytes: Long, memoryMode: MemoryMode): Unit = synchronized {
     releaseStorageMemory(numBytes, memoryMode)
   }
 
-  /**
+  /** 当前使用的执行内存
    * Execution memory currently in use, in bytes.
    */
   final def executionMemoryUsed: Long = synchronized {
     onHeapExecutionMemoryPool.memoryUsed + offHeapExecutionMemoryPool.memoryUsed
   }
 
-  /**
+  /** 当前使用的存储内存
    * Storage memory currently in use, in bytes.
    */
   final def storageMemoryUsed: Long = synchronized {
     onHeapStorageMemoryPool.memoryUsed + offHeapStorageMemoryPool.memoryUsed
   }
 
-  /**
+  /** 当前使用的堆内执行内存
    *  On heap execution memory currently in use, in bytes.
    */
   final def onHeapExecutionMemoryUsed: Long = synchronized {
     onHeapExecutionMemoryPool.memoryUsed
   }
 
-  /**
+  /** 当前使用的堆外执行内存
    *  Off heap execution memory currently in use, in bytes.
    */
   final def offHeapExecutionMemoryUsed: Long = synchronized {
     offHeapExecutionMemoryPool.memoryUsed
   }
 
-  /**
+  /** 当前使用的堆内存储内存
    *  On heap storage memory currently in use, in bytes.
    */
   final def onHeapStorageMemoryUsed: Long = synchronized {
     onHeapStorageMemoryPool.memoryUsed
   }
 
-  /**
+  /** 当前使用的堆外存储内存
    *  Off heap storage memory currently in use, in bytes.
    */
   final def offHeapStorageMemoryUsed: Long = synchronized {
     offHeapStorageMemoryPool.memoryUsed
   }
 
-  /**
+  /** 获取指定任务的执行内存
    * Returns the execution memory consumption, in bytes, for the given task.
    */
   private[memory] def getExecutionMemoryUsageForTask(taskAttemptId: Long): Long = synchronized {
@@ -221,7 +221,7 @@ private[spark] abstract class MemoryManager(
 
   // -- Fields related to Tungsten managed memory -------------------------------------------------
 
-  /**
+  /** 是否启动堆外内存
    * Tracks whether Tungsten memory will be allocated on the JVM heap or off-heap using
    * sun.misc.Unsafe.
    */
@@ -243,7 +243,7 @@ private[spark] abstract class MemoryManager(
    * If user didn't explicitly set "spark.buffer.pageSize", we figure out the default value
    * by looking at the number of cores available to the process, and the total amount of memory,
    * and then divide it by a factor of safety.
-   *
+   * 默认页面大小
    * SPARK-37593 If we are using G1GC, it's better to take the LONG_ARRAY_OFFSET
    * into consideration so that the requested memory size is power of 2
    * and can be divided by G1 heap region size to reduce memory waste within one G1 region.
@@ -266,7 +266,7 @@ private[spark] abstract class MemoryManager(
       chosenPageSize
     }
   }
-
+  //每页内存大小
   val pageSizeBytes: Long = conf.get(BUFFER_PAGESIZE).getOrElse(defaultPageSizeBytes)
 
   /**

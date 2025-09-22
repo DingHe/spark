@@ -39,7 +39,8 @@ import org.apache.spark.util.collection.ExternalAppendOnlyMap.HashComparator
  * :: DeveloperApi ::
  * An append-only map that spills sorted content to disk when there is insufficient space for it
  * to grow.
- *
+ * ExternalAppendOnlyMap 是 Apache Spark 中用于内存溢出时将数据写入磁盘的一个集合类，
+ * 主要用于 Shuffle 操作中。当内存中的数据量超出限制时，它会将数据溢出到磁盘，以确保系统能够处理更多的数据
  * This map takes two passes over the data:
  *
  *   (1) Values are merged into combiners, which are sorted and spilled to disk as necessary
@@ -53,9 +54,9 @@ import org.apache.spark.util.collection.ExternalAppendOnlyMap.HashComparator
  */
 @DeveloperApi
 class ExternalAppendOnlyMap[K, V, C](
-    createCombiner: V => C,
-    mergeValue: (C, V) => C,
-    mergeCombiners: (C, C) => C,
+    createCombiner: V => C, //用于创建组合器的函数
+    mergeValue: (C, V) => C, //用于将值合并到组合器中的函数
+    mergeCombiners: (C, C) => C, //用于合并两个组合器的函数
     serializer: Serializer = SparkEnv.get.serializer,
     blockManager: BlockManager = SparkEnv.get.blockManager,
     context: TaskContext = TaskContext.get(),
@@ -83,10 +84,10 @@ class ExternalAppendOnlyMap[K, V, C](
   /**
    * Exposed for testing
    */
-  @volatile private[collection] var currentMap = new SizeTrackingAppendOnlyMap[K, C]
+  @volatile private[collection] var currentMap = new SizeTrackingAppendOnlyMap[K, C]   //存储数据的map
   private val spilledMaps = new ArrayBuffer[DiskMapIterator]
   private val sparkConf = SparkEnv.get.conf
-  private val diskBlockManager = blockManager.diskBlockManager
+  private val diskBlockManager = blockManager.diskBlockManager   //磁盘块文件管理器
 
   /**
    * Size of object batches when reading/writing from serializers.
@@ -97,7 +98,7 @@ class ExternalAppendOnlyMap[K, V, C](
    * NOTE: Setting this too low can cause excessive copying when serializing, since some serializers
    * grow internal data structures by growing + copying every time the number of objects doubles.
    */
-  private val serializerBatchSize = sparkConf.get(config.SHUFFLE_SPILL_BATCH_SIZE)
+  private val serializerBatchSize = sparkConf.get(config.SHUFFLE_SPILL_BATCH_SIZE)  //shuffle时批次大小
 
   // Number of bytes spilled in total
   private var _diskBytesSpilled = 0L

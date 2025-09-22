@@ -46,7 +46,7 @@ public interface Table {
    * A name to identify this table. Implementations should provide a meaningful name, like the
    * database and table name from catalog, or the location of files for this table.
    */
-  String name();
+  String name();  //表名
 
   /**
    * Returns the schema of this table. If the table is not readable and doesn't have a schema, an
@@ -55,12 +55,13 @@ public interface Table {
    * This is deprecated. Please override {@link #columns} instead.
    */
   @Deprecated
-  StructType schema();
+  StructType schema();  //表结构
 
   /**
    * Returns the columns of this table. If the table is not readable and doesn't have a schema, an
    * empty array can be returned here.
    */
+  //表的列
   default Column[] columns() {
     return CatalogV2Util.structTypeToV2Columns(schema());
   }
@@ -68,6 +69,7 @@ public interface Table {
   /**
    * Returns the physical partitioning of this table.
    */
+  //表的物理分区
   default Transform[] partitioning() {
     return new Transform[0];
   }
@@ -75,6 +77,7 @@ public interface Table {
   /**
    * Returns the string map of table properties.
    */
+  //表的属性
   default Map<String, String> properties() {
     return Collections.emptyMap();
   }

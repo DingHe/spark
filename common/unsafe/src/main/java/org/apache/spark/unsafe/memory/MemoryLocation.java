@@ -26,9 +26,9 @@ import javax.annotation.Nullable;
 public class MemoryLocation {
 
   @Nullable
-  Object obj;
+  Object obj; //表示内存的基地址。如果内存是堆外内存，这个字段可能为 null
 
-  long offset;
+  long offset; //表示内存的偏移量。对于堆内存来说，它表示相对于 obj 的偏移量；对于堆外内存，是内存的地址
 
   public MemoryLocation(@Nullable Object obj, long offset) {
     this.obj = obj;

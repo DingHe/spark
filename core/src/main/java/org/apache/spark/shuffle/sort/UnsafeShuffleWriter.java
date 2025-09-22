@@ -522,10 +522,10 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       throw new RuntimeException(e);
     }
   }
-
+  //核心作用是将一个传统的 Java I/O 输出流（OutputStream）适配（wrap）为一个 NIO 的可写字节通道（WritableByteChannel）
   private static final class StreamFallbackChannelWrapper implements WritableByteChannelWrapper {
     private final WritableByteChannel channel;
-
+    //Channels.newChannel把传统的流包装成NIO的通道对象
     StreamFallbackChannelWrapper(OutputStream fallbackStream) {
       this.channel = Channels.newChannel(fallbackStream);
     }

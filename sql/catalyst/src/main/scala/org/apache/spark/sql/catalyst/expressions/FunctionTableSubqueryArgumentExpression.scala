@@ -33,9 +33,11 @@ import org.apache.spark.sql.types.DataType
  * a table subquery that may itself refer to one or more tables in its own
  * FROM clause.
  */
+//表值函数（Table-Valued Functions，TVF）是一种数据库函数，它返回一个表作为结果，而不是单一的值
+
 case class FunctionTableSubqueryArgumentExpression(
-    plan: LogicalPlan,
-    outerAttrs: Seq[Expression] = Seq.empty,
+    plan: LogicalPlan, //表示该表值函数（TVF）调用的子查询计划
+    outerAttrs: Seq[Expression] = Seq.empty, //外部引用的表达式序列，这些表达式来自外部查询并可能用于该子查询中
     exprId: ExprId = NamedExpression.newExprId)
   extends SubqueryExpression(plan, outerAttrs, exprId, Seq.empty, None) with Unevaluable {
 

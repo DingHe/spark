@@ -46,15 +46,17 @@ trait KeepAnalyzedQuery extends Command {
 /**
  * Base trait for DataSourceV2 write commands
  */
+// 用于处理与 DataSourceV2 相关的写入命令。DataSourceV2 是 Spark 中用于支持不同数据源的新架构，
+// 在进行写入操作时，V2WriteCommand 提供了标准的逻辑操作框架
 trait V2WriteCommand extends UnaryCommand with KeepAnalyzedQuery {
-  def table: NamedRelation
-  def query: LogicalPlan
-  def isByName: Boolean
+  def table: NamedRelation   //目标表，表示要进行写入操作的表
+  def query: LogicalPlan     //需要写入的数据的查询计划
+  def isByName: Boolean      //示是否通过列名来匹配数据。通常在列顺序不一致的情况下，isByName 会设为 true，这时列会按照名字进行匹配
 
   override def child: LogicalPlan = query
 
   override lazy val resolved: Boolean = table.resolved && query.resolved && outputResolved
-
+  //检查表和查询计划的输出是否匹配，并且输出列是否已经解析
   def outputResolved: Boolean = {
     assert(table.resolved && query.resolved,
       "`outputResolved` can only be called when `table` and `query` are both resolved.")

@@ -179,11 +179,12 @@ object GenerateOrdering extends CodeGenerator[Seq[SortOrder], BaseOrdering] with
 /**
  * A lazily generated row ordering comparator.
  */
-class LazilyGeneratedOrdering(val ordering: Seq[SortOrder])
+//懒加载的行排序比较器（Ordering[InternalRow]），它用于根据给定的排序规则对数据行进行排序。它实现了 Ordering[InternalRow] 接口，意味着它可以对 InternalRow 类型的数据进行排序
+class LazilyGeneratedOrdering(val ordering: Seq[SortOrder])  //ordering 排序规则序列，每个 SortOrder 表示排序的一个维度
   extends Ordering[InternalRow] with KryoSerializable {
 
   def this(ordering: Seq[SortOrder], inputSchema: Seq[Attribute]) =
-    this(bindReferences(ordering, inputSchema))
+    this(bindReferences(ordering, inputSchema))  //bindReferences(ordering, inputSchema) 会根据输入的 schema 将排序规则中的字段绑定到实际的数据字段（即引用）
 
   @transient
   private[this] var generatedOrdering = GenerateOrdering.generate(ordering)

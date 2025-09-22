@@ -35,21 +35,23 @@ import org.apache.spark.storage.{BlockId, BlockManager, ShuffleBlockBatchId, Shu
 /**
  * Serves requests to open blocks by simply registering one chunk per block requested.
  * Handles opening and uploading arbitrary BlockManager blocks.
- *
+ * 主要用于处理基于 Netty 的远程过程调用（RPC）请求。它提供了处理不同类型的消息和数据流的功能，
+ * 特别是在 Spark 中用于块存储（Block Storage）和 Shuffle 数据的管理。具体来说，
+ * 这个服务器负责处理 OpenBlocks、FetchShuffleBlocks、UploadBlock 等请求，并通过 Netty 将数据块的传输过程串联起来
  * Opened blocks are registered with the "one-for-one" strategy, meaning each Transport-layer Chunk
  * is equivalent to one Spark-level shuffle block.
  */
 class NettyBlockRpcServer(
-    appId: String,
+    appId: String, //应用程序 ID，用于标识当前的 Spark 应用程序
     serializer: Serializer,
-    blockManager: BlockDataManager)
+    blockManager: BlockDataManager) //负责处理 Spark 数据块的存储和管理。
   extends RpcHandler with Logging {
 
-  private val streamManager = new OneForOneStreamManager()
+  private val streamManager = new OneForOneStreamManager()  //每个请求的块都对应一个独立的流。
 
   override def receive(
-      client: TransportClient,
-      rpcMessage: ByteBuffer,
+      client: TransportClient, //发起请求的 TransportClient
+      rpcMessage: ByteBuffer, //包含请求数据的 ByteBuffer，是客户端发送的请求
       responseContext: RpcResponseCallback): Unit = {
     val message = try {
       BlockTransferMessage.Decoder.fromByteBuffer(rpcMessage)
@@ -71,7 +73,7 @@ class NettyBlockRpcServer(
     logTrace(s"Received request: $message")
 
     message match {
-      case openBlocks: OpenBlocks =>
+      case openBlocks: OpenBlocks =>  //处理打开块的请求，将请求中的块 ID 映射到 BlockManager 上的实际数据块，并注册一个流进行传输
         val blocksNum = openBlocks.blockIds.length
         val blocks = (0 until blocksNum).map { i =>
           val blockId = BlockId.apply(openBlocks.blockIds(i))
@@ -84,7 +86,7 @@ class NettyBlockRpcServer(
         logTrace(s"Registered streamId $streamId with $blocksNum buffers")
         responseContext.onSuccess(new StreamHandle(streamId, blocksNum).toByteBuffer)
 
-      case fetchShuffleBlocks: FetchShuffleBlocks =>
+      case fetchShuffleBlocks: FetchShuffleBlocks =>  //处理 Shuffle 块的获取请求，支持批量获取 Shuffle 块
         val blocks = fetchShuffleBlocks.mapIds.zipWithIndex.flatMap { case (mapId, index) =>
           if (!fetchShuffleBlocks.batchFetchEnabled) {
             fetchShuffleBlocks.reduceIds(index).map { reduceId =>
@@ -115,7 +117,7 @@ class NettyBlockRpcServer(
         responseContext.onSuccess(
           new StreamHandle(streamId, numBlockIds).toByteBuffer)
 
-      case uploadBlock: UploadBlock =>
+      case uploadBlock: UploadBlock => //处理上传块的请求，将接收到的块数据存储在 BlockManager 中。如果存储失败，返回错误信息
         // StorageLevel and ClassTag are serialized as bytes using our JavaSerializer.
         val (level, classTag) = deserializeMetadata(uploadBlock.metadata)
         val data = new NioManagedBuffer(ByteBuffer.wrap(uploadBlock.blockData))
@@ -133,7 +135,7 @@ class NettyBlockRpcServer(
           responseContext.onFailure(exception)
         }
 
-      case getLocalDirs: GetLocalDirsForExecutors =>
+      case getLocalDirs: GetLocalDirsForExecutors =>   //返回指定执行器的本地磁盘目录，用于存储数据块
         val isIncorrectAppId = getLocalDirs.appId != appId
         val execNum = getLocalDirs.execIds.length
         if (isIncorrectAppId || execNum != 1) {
@@ -155,7 +157,7 @@ class NettyBlockRpcServer(
           }
         }
 
-      case diagnose: DiagnoseCorruption =>
+      case diagnose: DiagnoseCorruption =>  //用于诊断 Shuffle 块的损坏问题，检查块的校验和是否一致
         val cause = blockManager.diagnoseShuffleBlockCorruption(
           ShuffleBlockId(diagnose.shuffleId, diagnose.mapId, diagnose.reduceId ),
           diagnose.checksum,
@@ -163,7 +165,7 @@ class NettyBlockRpcServer(
         responseContext.onSuccess(new CorruptionCause(cause).toByteBuffer)
     }
   }
-
+  //用于接收数据流（上传的数据流）。客户端通过流的形式上传大块数据时会调用此方法。
   override def receiveStream(
       client: TransportClient,
       messageHeader: ByteBuffer,
@@ -178,7 +180,7 @@ class NettyBlockRpcServer(
     // do all the processing in the netty thread.
     blockManager.putBlockDataAsStream(blockId, level, classTag)
   }
-
+  //用于反序列化上传块的元数据（例如存储级别和类标签），并返回一个元组
   private def deserializeMetadata[T](metadata: Array[Byte]): (StorageLevel, ClassTag[T]) = {
     serializer
       .newInstance()

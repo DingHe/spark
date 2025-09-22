@@ -37,24 +37,24 @@ import org.apache.spark.sql.types.{LongType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.ThreadUtils
 import org.apache.spark.util.random.{BernoulliCellSampler, PoissonSampler}
-
-/** Physical plan for Project. */
+//projectList: Seq[NamedExpression] 表示投影操作中所选择的字段或表达式  child: SparkPlan  表示投影操作的输入，即执行计划中的上游操作
+/** Physical plan for Project. 物理计划中的一个“投影”（Project）操作*/
 case class ProjectExec(projectList: Seq[NamedExpression], child: SparkPlan)
   extends UnaryExecNode
     with CodegenSupport
     with PartitioningPreservingUnaryExecNode
     with OrderPreservingUnaryExecNode {
 
-  override def output: Seq[Attribute] = projectList.map(_.toAttribute)
-
+  override def output: Seq[Attribute] = projectList.map(_.toAttribute)  //输出中包含的字段
+  //获取执行计划中输入数据的 RDD,递归调用子节点的输入RDD
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     child.asInstanceOf[CodegenSupport].inputRDDs()
   }
-
+  //ProjectExec的实现直接返回子节点的代码
   protected override def doProduce(ctx: CodegenContext): String = {
     child.asInstanceOf[CodegenSupport].produce(ctx, this)
   }
-
+  //用于确定哪些输入属性在计算过程中被多次引用，因此需要在投影操作之前进行评估
   override def usedInputs: AttributeSet = {
     // only the attributes those are used at least twice should be evaluated before this plan,
     // otherwise we could defer the evaluation until output attribute is actually used.
@@ -64,11 +64,11 @@ case class ProjectExec(projectList: Seq[NamedExpression], child: SparkPlan)
     val usedMoreThanOnce = usedExprIds.groupBy(id => id).filter(_._2.size > 1).keySet
     references.filter(a => usedMoreThanOnce.contains(a.exprId))
   }
-
+  //主要任务是生成执行投影操作的代码  input: Seq[ExprCode]：表示输入数据的代码，通常是当前分区的输入数据  row: ExprCode：表示输入数据的一行，用来生成投影后的输出行
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
-    val exprs = bindReferences[Expression](projectList, child.output)
+    val exprs = bindReferences[Expression](projectList, child.output) //将 projectList 中的所有表达式与子节点 child 的输出列进行绑定，确保表达式引用了正确的列或字段
     val (subExprsCode, resultVars, localValInputs) = if (conf.subexpressionEliminationEnabled) {
-      // subexpression elimination
+      // subexpression elimination  如果启用了子表达式消除，则该部分代码会尝试将相同的子表达式共享计算，避免重复计算
       val subExprs = ctx.subexpressionEliminationForWholeStageCodegen(exprs)
       val genVars = ctx.withSubExprEliminationExprs(subExprs.states) {
         exprs.map(_.genCode(ctx))
@@ -78,12 +78,12 @@ case class ProjectExec(projectList: Seq[NamedExpression], child: SparkPlan)
     } else {
       ("", exprs.map(_.genCode(ctx)), Seq.empty)
     }
-
+    //非确定性表达式的处理
     // Evaluation of non-deterministic expressions can't be deferred.
     val nonDeterministicAttrs = projectList.filterNot(_.deterministic).map(_.toAttribute)
     s"""
        |// common sub-expressions
-       |${evaluateVariables(localValInputs)}
+       |${evaluateVariables(localValInputs)}  //生成本地变量的初始化代码
        |$subExprsCode
        |${evaluateRequiredVariables(output, resultVars, AttributeSet(nonDeterministicAttrs))}
        |${consume(ctx, resultVars)}
@@ -136,15 +136,15 @@ trait GeneratePredicateHelper extends PredicateHelper {
       ctx, inputAttrs, inputExprCode, outputAttrs, notNullPreds, otherPreds,
       nonNullAttrExprIds)
   }
-
+  //生成谓词判断的代码
   protected def generatePredicateCode(
       ctx: CodegenContext,
-      inputAttrs: Seq[Attribute],
-      inputExprCode: Seq[ExprCode],
-      outputAttrs: Seq[Attribute],
-      notNullPreds: Seq[Expression],
-      otherPreds: Seq[Expression],
-      nonNullAttrExprIds: Seq[ExprId]): String = {
+      inputAttrs: Seq[Attribute], //输入的属性
+      inputExprCode: Seq[ExprCode],//输入变量的代码
+      outputAttrs: Seq[Attribute], //输出属性
+      notNullPreds: Seq[Expression],//非空谓词
+      otherPreds: Seq[Expression], //其他谓词
+      nonNullAttrExprIds: Seq[ExprId]): String = { //非空的属性ID
     /**
      * Generates code for `c`, using `in` for input attributes and `attrs` for nullability.
      */
@@ -178,7 +178,7 @@ trait GeneratePredicateHelper extends PredicateHelper {
     // TODO: revisit this. We can consider reordering predicates as well.
     val generatedIsNotNullChecks = new Array[Boolean](notNullPreds.length)
     val extraIsNotNullAttrs = mutable.Set[Attribute]()
-    val generated = otherPreds.map { c =>
+    val generated = otherPreds.map { c =>   //生成其他谓词判断的代码
       val nullChecks = c.references.map { r =>
         val idx = notNullPreds.indexWhere { n => n.asInstanceOf[IsNotNull].child.semanticEquals(r)}
         if (idx != -1 && !generatedIsNotNullChecks(idx)) {
@@ -225,7 +225,7 @@ case class FilterExec(condition: Expression, child: SparkPlan)
     case IsNotNull(a) => isNullIntolerant(a) && a.references.subsetOf(child.outputSet)
     case _ => false
   }
-
+  //非空属性
   // The columns that will filtered out by `IsNotNull` could be considered as not nullable.
   private val notNullAttributes = notNullPreds.flatMap(_.references).distinct.map(_.exprId)
 
@@ -237,15 +237,15 @@ case class FilterExec(condition: Expression, child: SparkPlan)
 
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
-
+  //递归获取子节点的输入RDD
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     child.asInstanceOf[CodegenSupport].inputRDDs()
   }
-
+  //直接调用子类生成代码
   protected override def doProduce(ctx: CodegenContext): String = {
     child.asInstanceOf[CodegenSupport].produce(ctx, this)
   }
-
+  //消费子节点生成的代码
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
     val numOutput = metricTerm(ctx, "numOutputRows")
 
@@ -260,7 +260,7 @@ case class FilterExec(condition: Expression, child: SparkPlan)
       }
       ev
     }
-
+    //代码生成的逻辑：先通过谓词判断，如果没通过，则继续continue，否则下一个节点继续消费
     // Note: wrap in "do { } while(false);", so the generated checks can jump out with "continue;"
     s"""
        |do {
@@ -772,15 +772,15 @@ object CoalesceExec {
  * Parent class for different types of subquery plans
  */
 abstract class BaseSubqueryExec extends SparkPlan {
-  def name: String
-  def child: SparkPlan
+  def name: String  //子查询执行计划的名称，需要由子类实现
+  def child: SparkPlan  //表示子查询的子执行计划，即当前子查询执行计划所依赖的子计划
 
-  override def output: Seq[Attribute] = child.output
+  override def output: Seq[Attribute] = child.output  //返回子查询的输出属性，这些属性由子查询的子计划决定
 
-  override def outputPartitioning: Partitioning = child.outputPartitioning
+  override def outputPartitioning: Partitioning = child.outputPartitioning  //分区方式
 
-  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
-
+  override def outputOrdering: Seq[SortOrder] = child.outputOrdering  //排序方式
+  //用于生成查询计划的树形结构字符串，特别地，子查询在 EXPLAIN FORMATTED 模式下会被单独显示，而不是作为主查询的一部分
   override def generateTreeString(
       depth: Int,
       lastChildren: java.util.ArrayList[Boolean],
@@ -815,6 +815,10 @@ abstract class BaseSubqueryExec extends SparkPlan {
 /**
  * Physical plan for a subquery.
  */
+//子查询的物理执行计划，它封装了一个子查询的执行逻辑
+// name  子查询的名称，用于标识当前执行的子查询。通常用于调试或日志记录
+// child  子查询的子执行计划。它是另一个 SparkPlan 类型的对象，代表子查询的执行逻辑
+//maxNumRows  控制从子查询中最多收集多少行数据
 case class SubqueryExec(name: String, child: SparkPlan, maxNumRows: Option[Int] = None)
   extends BaseSubqueryExec with UnaryExecNode {
 
@@ -835,7 +839,7 @@ case class SubqueryExec(name: String, child: SparkPlan, maxNumRows: Option[Int] 
         val beforeCollect = System.nanoTime()
         // Note that we use .executeCollect() because we don't want to convert data to Scala types
         val rows: Array[InternalRow] = if (maxNumRows.isDefined) {
-          child.executeTake(maxNumRows.get)
+          child.executeTake(maxNumRows.get)   //执行子查询
         } else {
           child.executeCollect()
         }

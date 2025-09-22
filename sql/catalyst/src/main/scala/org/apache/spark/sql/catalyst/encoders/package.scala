@@ -26,7 +26,7 @@ package object encoders {
    * into Spark SQL rows.  The implicit encoder should always be unresolved (i.e. have no attribute
    * references from a specific schema.)  This requirement allows us to preserve whether a given
    * object type is being bound by name or by ordinal when doing resolution.
-   */
+   *///implicitly[Encoder[A]]  用于从隐式作用域中查找并获取类型为 A 的隐式值。在这里，它会查找类型为 Encoder[A] 的隐式编码器
   def encoderFor[A : Encoder]: ExpressionEncoder[A] = implicitly[Encoder[A]] match {
     case e: ExpressionEncoder[A] =>
       e.assertUnresolved()

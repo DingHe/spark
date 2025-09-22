@@ -40,6 +40,7 @@ private[sql] object Catalogs {
    * @throws CatalogNotFoundException if the plugin class cannot be found
    * @throws org.apache.spark.SparkException if the plugin class cannot be instantiated
    */
+  //根据配置信息，加载对应的catalog实现类
   @throws[CatalogNotFoundException]
   @throws[SparkException]
   def load(name: String, conf: SQLConf): CatalogPlugin = {

@@ -48,7 +48,7 @@ import org.apache.spark.sql.execution.aggregate.TypedAggregateExpression
  * @tparam BUF The type of the intermediate value of the reduction.
  * @tparam OUT The type of the final output result.
  * @since 1.6.0
- */
+ *///IN 输入类型，BUF reduce的中间结果  OUT 最终的输出结果
 abstract class Aggregator[-IN, BUF, OUT] extends Serializable {
 
   /**

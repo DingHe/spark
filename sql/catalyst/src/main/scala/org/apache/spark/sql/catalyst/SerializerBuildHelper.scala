@@ -36,6 +36,9 @@ object SerializerBuildHelper {
   private def nullOnOverflow: Boolean = !SQLConf.get.ansiEnabled
 
   def createSerializerForBoolean(inputObject: Expression): Expression = {
+    //第一个参数是调用的类
+    //第二个是方法
+    //第三个是返回值
     Invoke(inputObject, "booleanValue", BooleanType)
   }
 
@@ -62,7 +65,7 @@ object SerializerBuildHelper {
   def createSerializerForDouble(inputObject: Expression): Expression = {
     Invoke(inputObject, "doubleValue", DoubleType)
   }
-
+  //创建字符串的序列化表达式
   def createSerializerForString(inputObject: Expression): Expression = {
     StaticInvoke(
       classOf[UTF8String],
@@ -245,16 +248,16 @@ object SerializerBuildHelper {
   }
 
   private def argumentsForFieldSerializer(
-      fieldName: String,
-      serializerForFieldValue: Expression): Seq[Expression] = {
+      fieldName: String,  //字段名
+      serializerForFieldValue: Expression): Seq[Expression] = {  //字段值序列化表达式
     expressions.Literal(fieldName) :: serializerForFieldValue :: Nil
   }
-
+  //创建对象的序列化器
   def createSerializerForObject(
       inputObject: Expression,
       fields: Seq[(String, Expression)]): Expression = {
     val nonNullOutput = CreateNamedStruct(fields.flatMap { case(fieldName, fieldExpr) =>
-      argumentsForFieldSerializer(fieldName, fieldExpr)
+      argumentsForFieldSerializer(fieldName, fieldExpr)  //把字段名和字段值序列化器转为Seq，用于构建CreateNamedStruct
     })
     if (inputObject.nullable) {
       val nullOutput = expressions.Literal.create(null, nonNullOutput.dataType)
@@ -276,7 +279,7 @@ object SerializerBuildHelper {
    * Returns an expression for serializing an object into its Spark SQL form. The mapping
    * between the external and internal representations is described by encoder `enc`. The
    * input object is located at ordinal 0 of a row, i.e., `BoundReference(0, _)`.
-   */
+   */ //lenientExternalDataTypeFor(enc)返回enc的数据类型
   def createSerializer(enc: AgnosticEncoder[_]): Expression = {
     val input = BoundReference(0, lenientExternalDataTypeFor(enc), nullable = enc.nullable)
     createSerializer(enc, input)
@@ -288,7 +291,7 @@ object SerializerBuildHelper {
    * by encoder `enc`.
    */
   private def createSerializer(enc: AgnosticEncoder[_], input: Expression): Expression = enc match {
-    case _ if isNativeEncoder(enc) => input
+    case _ if isNativeEncoder(enc) => input   //原始数据类型，直接返回BoundReference表达式
     case BoxedBooleanEncoder => createSerializerForBoolean(input)
     case BoxedByteEncoder => createSerializerForByte(input)
     case BoxedShortEncoder => createSerializerForShort(input)
@@ -370,7 +373,7 @@ object SerializerBuildHelper {
             GetExternalRowField(input, index, field.name),
             field.enc.dataType,
             lenientExternalDataTypeFor(field.enc)))
-
+        //如果字段允许为空，则使用IF表达式判断，空就取null，否则取fieldValue
         val convertedField = if (field.nullable) {
           exprs.If(
             Invoke(input, "isNullAt", BooleanType, exprs.Literal(index) :: Nil),

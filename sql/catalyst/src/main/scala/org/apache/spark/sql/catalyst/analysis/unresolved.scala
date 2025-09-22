@@ -38,13 +38,13 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 class UnresolvedException(function: String)
   extends AnalysisException(s"Invalid call to $function on unresolved object")
 
-/** Parent trait for unresolved node types */
+/** Parent trait for unresolved node types 表示未解析的节点，默认output未Nil，resolved为fase*/
 trait UnresolvedNode extends LogicalPlan {
   override def output: Seq[Attribute] = Nil
   override lazy val resolved: Boolean = false
 }
 
-/** Parent trait for unresolved leaf node types */
+/** Parent trait for unresolved leaf node types 未解析的叶子节点*/
 trait UnresolvedLeafNode extends LeafNode with UnresolvedNode
 
 /** Parent trait for unresolved unary node types */
@@ -91,14 +91,14 @@ case class ExpressionWithUnresolvedIdentifier(
 
 /**
  * Holds the name of a relation that has yet to be looked up in a catalog.
- *
+ *  未解析的关系节点
  * @param multipartIdentifier table name
  * @param options options to scan this relation.
  */
 case class UnresolvedRelation(
-    multipartIdentifier: Seq[String],
-    options: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty(),
-    override val isStreaming: Boolean = false)
+    multipartIdentifier: Seq[String], //关系全限定符号
+    options: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty(), //参数
+    override val isStreaming: Boolean = false)  //是否是流
   extends UnresolvedLeafNode with NamedRelation {
   import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
 
@@ -183,13 +183,13 @@ case class ResolvedInlineTable(rows: Seq[Seq[Expression]], output: Seq[Attribute
  * {{{
  *   select id from range(10);
  * }}}
- *
+ * 表示未解析的表值函数（Table-Valued Function, TVF），在 Spark SQL 中，表值函数是一类可以生成一个表的函数，例如 range()、explode() 等
  * @param name user-specified name of this table-value function
  * @param functionArgs list of function arguments
  */
 case class UnresolvedTableValuedFunction(
-    name: Seq[String],
-    functionArgs: Seq[Expression])
+    name: Seq[String], //表示表值函数的名称，支持多层命名（例如数据库 + 函数名）
+    functionArgs: Seq[Expression]) //表示函数的参数列表，每个参数都是一个 Expression 类型的表达式,例如，range(10) 中的 10 是一个常量表达式
   extends UnresolvedLeafNode {
 
   final override val nodePatterns: Seq[TreePattern] = Seq(UNRESOLVED_TABLE_VALUED_FUNCTION)
@@ -217,16 +217,16 @@ object UnresolvedTableValuedFunction {
  *   // Assign alias names
  *   select t.a from range(10) t(a);
  * }}}
- *
+ *  表示一个带有输出列别名的表值函数（TVF）
  * @param name user-specified name of the table-valued function
  * @param child logical plan of the table-valued function
  * @param outputNames alias names of function output columns. The analyzer adds [[Project]]
  *                    to rename the output columns.
  */
 case class UnresolvedTVFAliases(
-    name: Seq[String],
-    child: LogicalPlan,
-    outputNames: Seq[String]) extends UnresolvedUnaryNode {
+    name: Seq[String], //表示表值函数的名称，支持多层命名空间
+    child: LogicalPlan, //表示该表值函数的子逻辑计划，通常是一个未解析的 UnresolvedTableValuedFunction 节点
+    outputNames: Seq[String]) extends UnresolvedUnaryNode { //表示为表值函数输出的每个列指定的别名
 
   final override val nodePatterns: Seq[TreePattern] = Seq(UNRESOLVED_TVF_ALIASES)
 
@@ -392,12 +392,12 @@ object UnresolvedFunction {
   }
 }
 
-/**
+/** 用来代表从数据表或查询中选择所有列，会在分析阶段被自动展开
  * Represents all of the input attributes to a given relational operator, for example in
  * "SELECT * FROM ...". A [[Star]] gets automatically expanded during analysis.
  */
 abstract class Star extends LeafExpression with NamedExpression {
-
+  //因为 Star 只是一个占位符，它本身不确定其是否为空，实际的列会在后续解析中确定其 nullable 属性
   override def name: String = throw new UnresolvedException("name")
   override def exprId: ExprId = throw new UnresolvedException("exprId")
   override def dataType: DataType = throw new UnresolvedException("dataType")
@@ -406,7 +406,7 @@ abstract class Star extends LeafExpression with NamedExpression {
   override def toAttribute: Attribute = throw new UnresolvedException("toAttribute")
   override def newInstance(): NamedExpression = throw new UnresolvedException("newInstance")
   override lazy val resolved = false
-
+  //用于在查询分析阶段将 Star 解析为具体的列，返回一个 NamedExpression 序列，表示所有被展开的列
   def expand(input: LogicalPlan, resolver: Resolver): Seq[NamedExpression]
 }
 
@@ -417,7 +417,7 @@ abstract class Star extends LeafExpression with NamedExpression {
  *
  * This is also used to expand structs. For example:
  * "SELECT record.* from (SELECT struct(a,b,c) as record ...)
- *
+ * target: Option[Seq[String]]：表示目标（表或结构体）的名称，Option 用来表示该目标名称是否存在，如果没有提供目标名称，则代表查询的是所有列（例如 SELECT *）。如果指定了目标（例如 SELECT record.*），则仅扩展该目标的字段
  * @param target an optional name that should be the target of the expansion.  If omitted all
  *              targets' columns are produced. This can either be a table name or struct name. This
  *              is a list of identifiers that is the path of the expansion.
@@ -435,30 +435,30 @@ case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevalu
    *   - `SELECT t.* FROM ns1.ns2.t` where nameParts is Seq("t") and
    *     qualifier is Seq("ns1", "ns2", "t").
    */
-  private def matchedQualifier(
-      attribute: Attribute,
-      nameParts: Seq[String],
+  private def matchedQualifier(  //用于检查目标路径（nameParts）是否与属性的限定符（qualifier）匹配。限定符通常是表名或别名
+      attribute: Attribute,  //需要检查的属性，类型为 Attribute。一个属性通常包括表名、列名等信息
+      nameParts: Seq[String], //目标路径，表示查询中用来标识该属性的名称部分，通常是一个字符串序列，例如 Seq("ns1", "ns2", "t")
       resolver: Resolver): Boolean = {
-    val qualifierList = if (nameParts.length == attribute.qualifier.length) {
+    val qualifierList = if (nameParts.length == attribute.qualifier.length) {  //attribute.qualifier  通常用于指明表达式所属的表或数据库
       attribute.qualifier
     } else {
       attribute.qualifier.takeRight(nameParts.length)
     }
-    nameParts.corresponds(qualifierList)(resolver)
+    nameParts.corresponds(qualifierList)(resolver) //corresponds 是一个 Scala 集合操作，它用于检查两个集合中的元素是否按顺序一一对应且满足给定的比较条件
   }
-
+  //判断目标是否通过表限定符进行限定
   def isQualifiedByTable(input: LogicalPlan, resolver: Resolver): Boolean = {
     target.exists(nameParts => input.output.exists(matchedQualifier(_, nameParts, resolver)))
   }
-
+  //方法用于在查询分析阶段展开 * 操作符
   override def expand(
       input: LogicalPlan,
       resolver: Resolver): Seq[NamedExpression] = {
     // If there is no table specified, use all non-hidden input attributes.
-    if (target.isEmpty) return input.output
+    if (target.isEmpty) return input.output  //没有指定目标表名时
 
     // If there is a table specified, use hidden input attributes as well
-    val hiddenOutput = input.metadataOutput.filter(_.qualifiedAccessOnly)
+    val hiddenOutput = input.metadataOutput.filter(_.qualifiedAccessOnly)  //指定了目标表时（目标是特定表或结构体）
       // Remove the qualified-access-only restriction immediately. The expanded attributes will be
       // put in a logical plan node and becomes normal attributes. They can still keep the special
       // attribute metadata to indicate that they are from metadata columns, but they should not
@@ -570,12 +570,12 @@ case class ResolvedStar(expressions: Seq[NamedExpression]) extends Star with Une
 
 /**
  * Extracts a value or values from an Expression
- *
+ * 表示从表达式中提取值的表达式，它用于表示从复杂数据结构（如 Map、Array、Struct）中提取单个值或一组值的操作
  * @param child The expression to extract value from,
  *              can be Map, Array, Struct or array of Structs.
  * @param extraction The expression to describe the extraction,
  *                   can be key of Map, index of Array, field name of Struct.
- */
+ *///child：表示要提取值的表达式，可以是 Map、Array、Struct 或 Struct 数组等复合数据类型  extraction：表示提取的方式，可以是 Map 的键、Array 的索引，或者 Struct 的字段名称等
 case class UnresolvedExtractValue(child: Expression, extraction: Expression)
   extends BinaryExpression with Unevaluable {
 
@@ -650,18 +650,18 @@ case class UnresolvedSubqueryColumnAliases(
  * for it.  Deserializer expression is a special kind of expression that is not always resolved by
  * children output, but by given attributes, e.g. the `keyDeserializer` in `MapGroups` should be
  * resolved by `groupingAttributes` instead of children output.
- *
- * @param deserializer The unresolved deserializer expression
+ * 表示一个未解析的反序列化表达式。这个类的主要作用是持有反序列化表达式和用于解析该表达式的输入属性
+ * @param deserializer The unresolved deserializer expression  表示未解析的反序列化表达式。这个表达式的作用是如何将某个数据（比如 Row）转换为目标对象
  * @param inputAttributes The input attributes used to resolve deserializer expression, can be empty
- *                        if we want to resolve deserializer by children output.
+ *                        if we want to resolve deserializer by children output.  用于解析 deserializer 表达式的输入属性
  */
 case class UnresolvedDeserializer(deserializer: Expression, inputAttributes: Seq[Attribute] = Nil)
   extends UnaryExpression with Unevaluable with NonSQLExpression {
   // The input attributes used to resolve deserializer expression must be all resolved.
   require(inputAttributes.forall(_.resolved), "Input attributes must all be resolved.")
 
-  override def child: Expression = deserializer
-  override def dataType: DataType = throw new UnresolvedException("dataType")
+  override def child: Expression = deserializer  //返回当前表达式的子表达式
+  override def dataType: DataType = throw new UnresolvedException("dataType")  //由于 UnresolvedDeserializer 是一个未解析的表达式，它暂时没有 dataType 和 nullable 属性，所以这两个方法会抛出 UnresolvedException
   override def nullable: Boolean = throw new UnresolvedException("nullable")
   override lazy val resolved = false
   final override val nodePatterns: Seq[TreePattern] = Seq(UNRESOLVED_DESERIALIZER)
@@ -669,7 +669,7 @@ case class UnresolvedDeserializer(deserializer: Expression, inputAttributes: Seq
   override protected def withNewChildInternal(newChild: Expression): UnresolvedDeserializer =
     copy(deserializer = newChild)
 }
-
+//根据位置索引i和数据类型，获取某一列的值
 case class GetColumnByOrdinal(ordinal: Int, dataType: DataType) extends LeafExpression
   with Unevaluable with NonSQLExpression {
   override def nullable: Boolean = throw new UnresolvedException("nullable")

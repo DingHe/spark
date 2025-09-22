@@ -28,13 +28,14 @@ import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.execution.{CodegenSupport, ExplainUtils, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.util.collection.{BitSet, CompactBuffer}
-
+//执行广播嵌套循环连接（Broadcast Nested Loop Join, BNJ）的执行计划类。该类通过广播一个表，并使用嵌套循环的方式与另一个表进行连接。
+// 它是 Spark SQL 中一种连接实现方式，特别适用于右侧表非常小（适合广播）而左侧表较大的场景
 case class BroadcastNestedLoopJoinExec(
-    left: SparkPlan,
-    right: SparkPlan,
-    buildSide: BuildSide,
+    left: SparkPlan, //表示连接操作的左侧子查询或数据源
+    right: SparkPlan, //表示连接操作的右侧子查询或数据源
+    buildSide: BuildSide, //指定哪个表用于广播（即广播表）
     joinType: JoinType,
-    condition: Option[Expression]) extends JoinCodegenSupport {
+    condition: Option[Expression]) extends JoinCodegenSupport { //连接的条件表达式
 
   override def leftKeys: Seq[Expression] = Nil
   override def rightKeys: Seq[Expression] = Nil

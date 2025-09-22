@@ -49,7 +49,7 @@ abstract class Serializer {
    * Default ClassLoader to use in deserialization. Implementations of [[Serializer]] should
    * make sure it is using this when set.
    */
-  @volatile protected var defaultClassLoader: Option[ClassLoader] = None
+  @volatile protected var defaultClassLoader: Option[ClassLoader] = None  //用于存储反序列化时使用的默认类加载器
 
   /**
    * Sets a class loader for the serializer to use in deserialization.
@@ -61,7 +61,7 @@ abstract class Serializer {
     this
   }
 
-  /** Creates a new [[SerializerInstance]]. */
+  /** Creates a new [[SerializerInstance]]. 实际执行序列化和反序列化操作的对象*/
   def newInstance(): SerializerInstance
 
   /**
@@ -94,8 +94,9 @@ abstract class Serializer {
    *
    * See SPARK-7311 for more details.
    */
+    //重排序 = 序列化后的二进制数据仍然保留了逻辑顺序，可以直接比较和排序
   @Private
-  private[spark] def supportsRelocationOfSerializedObjects: Boolean = false
+  private[spark] def supportsRelocationOfSerializedObjects: Boolean = false  //支持重定位的序列化器允许重新排序序列化流中的对象并且能够正确地反序列化
 }
 
 
@@ -108,16 +109,16 @@ abstract class Serializer {
  */
 @DeveloperApi
 @NotThreadSafe
-abstract class SerializerInstance {
-  def serialize[T: ClassTag](t: T): ByteBuffer
+abstract class SerializerInstance { //序列化器实例，每个实例可以用于一个线程中的序列化和反序列化操作
+  def serialize[T: ClassTag](t: T): ByteBuffer  //将对象 t 序列化成一个 ByteBuffer
 
-  def deserialize[T: ClassTag](bytes: ByteBuffer): T
+  def deserialize[T: ClassTag](bytes: ByteBuffer): T  //从 ByteBuffer 中反序列化出一个对象，返回类型 T
 
   def deserialize[T: ClassTag](bytes: ByteBuffer, loader: ClassLoader): T
 
-  def serializeStream(s: OutputStream): SerializationStream
+  def serializeStream(s: OutputStream): SerializationStream  //用于将对象序列化到输出流中
 
-  def deserializeStream(s: InputStream): DeserializationStream
+  def deserializeStream(s: InputStream): DeserializationStream //用于从输入流中反序列化对象
 }
 
 /**

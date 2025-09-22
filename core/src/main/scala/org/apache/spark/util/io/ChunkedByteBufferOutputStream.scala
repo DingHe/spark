@@ -26,7 +26,7 @@ import org.apache.spark.storage.StorageUtils
 
 /**
  * An OutputStream that writes to fixed-size chunks of byte arrays.
- *
+ * 包装固定大小字节数组的输出流
  * @param chunkSize size of each chunk, in bytes.
  */
 private[spark] class ChunkedByteBufferOutputStream(

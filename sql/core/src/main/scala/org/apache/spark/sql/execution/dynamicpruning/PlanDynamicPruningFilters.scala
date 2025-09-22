@@ -34,9 +34,10 @@ import org.apache.spark.sql.execution.joins._
  * results of broadcast. For joins that are not planned as broadcast hash joins we keep
  * the fallback mechanism with subquery duplicate.
 */
+//将通过重写动态修剪表达式，使得可以重用广播连接的结果，从而优化查询性能
 case class PlanDynamicPruningFilters(sparkSession: SparkSession) extends Rule[SparkPlan] {
 
-  /**
+  /** HashedRelationBroadcastMode，表示这些键将通过哈希广播的方式进行处理
    * Identify the shape in which keys of a given plan are broadcasted.
    */
   private def broadcastMode(keys: Seq[Expression], output: AttributeSeq): BroadcastMode = {
@@ -50,12 +51,21 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession) extends Rule[Sp
     }
 
     plan.transformAllExpressionsWithPruning(_.containsPattern(DYNAMIC_PRUNING_SUBQUERY)) {
+      //value：需要进行动态修剪的分区列的值（主表中的过滤条件）
+      //buildPlan：构建侧（如 Fact 表）的子查询执行计划，用于生成动态修剪所需的值。
+      //buildKeys：构建侧的分区列键（与 value 进行匹配的键）
+      //broadcastKeyIndex：需要广播的键的索引，指向 buildKeys 中的特定列。
+      //onlyInBroadcast：标志位，表示此动态修剪是否只在广播情况下有效。
+      //
       case DynamicPruningSubquery(
           value, buildPlan, buildKeys, broadcastKeyIndex, onlyInBroadcast, exprId, _) =>
+        //将逻辑计划 buildPlan 转换为物理执行计划
         val sparkPlan = QueryExecution.createSparkPlan(
           sparkSession, sparkSession.sessionState.planner, buildPlan)
         // Using `sparkPlan` is a little hacky as it is based on the assumption that this rule is
         // the first to be applied (apart from `InsertAdaptiveSparkPlan`).
+        //广播交换复用功能必须开启
+
         val canReuseExchange = conf.exchangeReuseEnabled && buildKeys.nonEmpty &&
           plan.exists {
             case BroadcastHashJoinExec(_, _, _, BuildLeft, _, left, _, _) =>
@@ -75,7 +85,7 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession) extends Rule[Sp
           val broadcastValues =
             SubqueryBroadcastExec(name, broadcastKeyIndex, buildKeys, exchange)
           DynamicPruningExpression(InSubqueryExec(value, broadcastValues, exprId))
-        } else if (onlyInBroadcast) {
+        } else if (onlyInBroadcast) { //如果该动态修剪仅限于广播，但无法复用，则直接返回 Literal.TrueLiteral，表示无需执行动态修剪
           // it is not worthwhile to execute the query, so we fall-back to a true literal
           DynamicPruningExpression(Literal.TrueLiteral)
         } else {

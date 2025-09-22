@@ -25,8 +25,9 @@ trait AttributeNameParser {
    * which means `ab..c`e.f is not allowed.
    * We can use backtick only inside quoted name parts.
    */
+  //将一个字符串形式的属性名称（如 table.column）解析成一个字符串序列，其中每个字符串表示一个属性的不同部分
   def parseAttributeName(name: String): Seq[String] = {
-    def e = DataTypeErrors.attributeNameSyntaxError(name)
+    def e = DataTypeErrors.attributeNameSyntaxError(name) //用于生成属性名称语法错误的异常，它会在发现语法错误时被抛出
     val nameParts = scala.collection.mutable.ArrayBuffer.empty[String]
     val tmp = scala.collection.mutable.ArrayBuffer.empty[Char]
     var inBacktick = false

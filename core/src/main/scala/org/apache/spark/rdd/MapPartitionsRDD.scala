@@ -23,7 +23,7 @@ import org.apache.spark.{Partition, TaskContext}
 
 /**
  * An RDD that applies the provided function to every partition of the parent RDD.
- *
+ * 对父 RDD 的每个分区应用一个指定的函数
  * @param prev the parent RDD.
  * @param f The function used to map a tuple of (TaskContext, partition index, input iterator) to
  *          an output iterator.
@@ -37,17 +37,18 @@ import org.apache.spark.{Partition, TaskContext}
  *                         is changed. Mostly stateful functions are order-sensitive.
  */
 private[spark] class MapPartitionsRDD[U: ClassTag, T: ClassTag](
-    var prev: RDD[T],
+    var prev: RDD[T], //这个属性表示当前 RDD 的父 RDD
+     //接受三个参数：任务上下文 TaskContext、分区索引 Int 和父 RDD 中的元素迭代器 Iterator[T]，并返回一个迭代器 Iterator[U]，即每个分区的输出
     f: (TaskContext, Int, Iterator[T]) => Iterator[U],  // (TaskContext, partition index, iterator)
-    preservesPartitioning: Boolean = false,
-    isFromBarrier: Boolean = false,
-    isOrderSensitive: Boolean = false)
+    preservesPartitioning: Boolean = false, //此rdd的partitioner是否跟父rdd一致
+    isFromBarrier: Boolean = false, //RDDBarrier 用于表示在一个阶段内的同步操作
+    isOrderSensitive: Boolean = false) //函数 f 是否对输入数据的顺序敏感
   extends RDD[U](prev) {
 
   override val partitioner = if (preservesPartitioning) firstParent[T].partitioner else None
 
   override def getPartitions: Array[Partition] = firstParent[T].partitions
-
+  //通过父rdd的分区迭代器iterator获取数据，也保证了父rdd的分区已经计算，然后应用用户定义的f函数计算分区数据
   override def compute(split: Partition, context: TaskContext): Iterator[U] =
     f(context, split.index, firstParent[T].iterator(split, context))
 
@@ -58,7 +59,7 @@ private[spark] class MapPartitionsRDD[U: ClassTag, T: ClassTag](
 
   @transient protected lazy override val isBarrier_ : Boolean =
     isFromBarrier || dependencies.exists(_.rdd.isBarrier())
-
+  //返回输出的确定性级别（即输出是否是确定的
   override protected def getOutputDeterministicLevel = {
     if (isOrderSensitive && prev.outputDeterministicLevel == DeterministicLevel.UNORDERED) {
       DeterministicLevel.INDETERMINATE

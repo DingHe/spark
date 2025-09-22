@@ -43,34 +43,46 @@ import org.apache.spark.ui.scope._
  * @param lastUpdateTime When replaying logs, the log's last update time, so that the duration of
  *                       unfinished tasks can be more accurately calculated (see SPARK-21922).
  */
+// Spark 事件监听器（SparkListener）的一个实现
+// 这个类充当了Spark内部事件与外部监控系统（如 Spark UI、历史服务器）之间的桥梁
+// 这种设计使得：
+// Spark UI：可以直接从 KVStore 读取数据，以极快的速度展示应用程序的实时状态，而无需在每次刷新页面时都去处理复杂的事件流
+// 历史服务器：可以回放并存储完整的应用程序事件日志，并在应用程序结束后提供详细的历史视图
+// 性能优化：通过使用 ElementTrackingStore 和触发器（triggers），它能够自动管理和清理旧数据，防止存储无限增长，同时通过异步刷新和缓存机制来提高性能
+//
+
+
 private[spark] class AppStatusListener(
-    kvstore: ElementTrackingStore,
-    conf: SparkConf,
-    live: Boolean,
-    appStatusSource: Option[AppStatusSource] = None,
+    kvstore: ElementTrackingStore, // 键/值存储实例，用于持久化应用程序状态
+    conf: SparkConf, // Spark 配置对象，用于获取各种参数，例如保留的最大任务数、作业数等
+    live: Boolean,  // 指示该监听器是在实时（live）应用程序中运行，还是在重放（replaying）历史日志
+    appStatusSource: Option[AppStatusSource] = None, //
     lastUpdateTime: Option[Long] = None) extends SparkListener with Logging {
 
-  private var sparkVersion = SPARK_VERSION
-  private var appInfo: v1.ApplicationInfo = null
-  private var appSummary = new AppSummary(0, 0)
+  private var sparkVersion = SPARK_VERSION  //存储 Spark 版本号，从 SparkListenerLogStart 事件中获取
+  private var appInfo: v1.ApplicationInfo = null //存储应用程序的基本信息，例如应用程序 ID、名称和尝试信息
+  private var appSummary = new AppSummary(0, 0) //存储应用程序的总览信息，例如总任务数、总作业数等
   private var defaultCpusPerTask: Int = 1
 
   // How often to update live entities. -1 means "never update" when replaying applications,
   // meaning only the last write will happen. For live applications, this avoids a few
   // operations that we can live without when rapidly processing incoming task events.
+  //实时应用程序中，更新活动实体的最小时间间隔（纳秒）
   private val liveUpdatePeriodNs = if (live) conf.get(LIVE_ENTITY_UPDATE_PERIOD) else -1L
 
   /**
    * Minimum time elapsed before stale UI data is flushed. This avoids UI staleness when incoming
    * task events are not fired frequently.
    */
+  //实时应用程序中，即使没有新事件，也强制刷新 UI 数据的最小时间间隔
   private val liveUpdateMinFlushPeriod = conf.get(LIVE_ENTITY_UPDATE_MIN_FLUSH_PERIOD)
-
+  //从配置中读取的参数，用于限制保留在 KVStore 中的实体数量，以避免无限增长
   private val maxTasksPerStage = conf.get(MAX_RETAINED_TASKS_PER_STAGE)
   private val maxGraphRootNodes = conf.get(MAX_RETAINED_ROOT_NODES)
 
   // Keep track of live entities, so that task metrics can be efficiently updated (without
   // causing too many writes to the underlying store, and other expensive operations).
+  //内存中的缓存。它们用于临时存储正在运行的实体（例如，正在进行的阶段、任务和作业），以实现高效的更新
   private val liveStages = new ConcurrentHashMap[(Int, Int), LiveStage]()
   private val liveJobs = new HashMap[Int, LiveJob]()
   private[spark] val liveExecutors = new HashMap[String, LiveExecutor]()
@@ -88,7 +100,8 @@ private[spark] class AppStatusListener(
 
   /** The last time when flushing `LiveEntity`s. This is to avoid flushing too frequently. */
   private var lastFlushTimeNs = System.nanoTime()
-
+  //用于设置数据清理触发器。当存储中特定类型（如 JobDataWrapper）的实体数量超过预设的上限（MAX_RETAINED_JOBS）时，
+  // 这个触发器会被激活，并调用相应的清理方法（例如 cleanupJobs），以移除旧数据
   kvstore.addTrigger(classOf[ExecutorSummaryWrapper], conf.get(MAX_RETAINED_DEAD_EXECUTORS))
     { count => cleanupExecutors(count) }
 
@@ -99,21 +112,21 @@ private[spark] class AppStatusListener(
   kvstore.addTrigger(classOf[StageDataWrapper], conf.get(MAX_RETAINED_STAGES)) { count =>
     cleanupStages(count)
   }
-
+  //注册一个在 KVStore 被强制刷新时调用的回调函数。在历史重放模式下，它用于在日志结束时确保所有未完成的实体都被更新到最新状态
   kvstore.onFlush {
     if (!live) {
       val now = System.nanoTime()
       flush(update(_, now))
     }
   }
-
+  //该方法实现了 SparkListenerInterface 接口，用于处理 SparkListenerEvent 中未被其他专用方法处理的事件
   override def onOtherEvent(event: SparkListenerEvent): Unit = event match {
     case SparkListenerLogStart(version) => sparkVersion = version
     case processInfoEvent: SparkListenerMiscellaneousProcessAdded =>
       onMiscellaneousProcessAdded(processInfoEvent)
     case _ =>
   }
-
+  //处理应用程序启动事件
   override def onApplicationStart(event: SparkListenerApplicationStart): Unit = {
     assert(event.appId.isDefined, "Application without IDs are not supported.")
 
@@ -150,7 +163,7 @@ private[spark] class AppStatusListener(
       }
     }
   }
-
+  //处理资源配置文件添加事件
   override def onResourceProfileAdded(event: SparkListenerResourceProfileAdded): Unit = {
     val maxTasks = if (event.resourceProfile.isCoresLimitKnown) {
       Some(event.resourceProfile.maxTasksPerExecutor(conf))

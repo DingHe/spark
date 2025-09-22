@@ -41,32 +41,33 @@ import org.apache.spark.sql.types.StructType
  */
 abstract class PartitioningAwareFileIndex(
     sparkSession: SparkSession,
-    parameters: Map[String, String],
-    userSpecifiedSchema: Option[StructType],
+    parameters: Map[String, String], //参数列表
+    userSpecifiedSchema: Option[StructType],  //用户指定的schema
     fileStatusCache: FileStatusCache = NoopCache) extends FileIndex with Logging {
 
   /** Returns the specification of the partitions inferred from the data. */
-  def partitionSpec(): PartitionSpec
-
+  def partitionSpec(): PartitionSpec  //返回从数据推断出的分区规范，包括分区列信息和具体的分区路径。
+  //返回分区列的模式（Schema）
   override def partitionSchema: StructType = partitionSpec().partitionColumns
-
+  //Hadoop 文件系统配置，用于与 HDFS 或本地文件系统交互
   protected val hadoopConf: Configuration =
     sparkSession.sessionState.newHadoopConfWithOptions(parameters)
-
+  //存储所有叶子文件（即可直接读取的数据文件）
   protected def leafFiles: mutable.LinkedHashMap[Path, FileStatus]
-
+  //存储目录路径到其子文件的映射,用于文件列出时快速查找某个目录下的所有文件
   protected def leafDirToChildrenFiles: Map[Path, Array[FileStatus]]
-
+  //提供大小写不敏感的访问方式
   private val caseInsensitiveMap = CaseInsensitiveMap(parameters)
+  //存储所有 PathFilter，用于筛选符合规则的文件路径
   private val pathFilters = PathFilterFactory.create(caseInsensitiveMap)
-
+  //检查某个文件是否符合路径过滤条件
   protected def matchPathPattern(file: FileStatus): Boolean =
     pathFilters.forall(_.accept(file))
-
+  //指示是否需要递归查找文件
   protected lazy val recursiveFileLookup: Boolean = {
     caseInsensitiveMap.getOrElse(FileIndexOptions.RECURSIVE_FILE_LOOKUP, "false").toBoolean
   }
-
+  //列出所有符合条件的文件，并按分区组织
   override def listFiles(
       partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
     def isNonEmptyFile(f: FileStatus): Boolean = {
@@ -140,11 +141,12 @@ abstract class PartitioningAwareFileIndex(
   }
 
   /** Returns the list of files that will be read when scanning this relation. */
+    //返回所有需要读取的文件路径（URL 编码）
   override def inputFiles: Array[String] =
     allFiles().map(fs => SparkPath.fromFileStatus(fs).urlEncoded).toArray
-
+  //返回所有文件的总大小（字节）
   override def sizeInBytes: Long = allFiles().map(_.getLen).sum
-
+  //返回所有需要读取的文件
   def allFiles(): Seq[FileStatus] = {
     val files = if (partitionSpec().partitionColumns.isEmpty && !recursiveFileLookup) {
       // For each of the root input paths, get the list of files inside them
@@ -177,7 +179,7 @@ abstract class PartitioningAwareFileIndex(
     }
     files.filter(matchPathPattern)
   }
-
+  //推断数据集的分区结构
   protected def inferPartitioning(): PartitionSpec = {
     if (recursiveFileLookup) {
       PartitionSpec.emptySpec
@@ -201,7 +203,7 @@ abstract class PartitioningAwareFileIndex(
         timeZoneId = timeZoneId)
     }
   }
-
+  //根据谓词条件裁剪分区
   private def prunePartitions(
       predicates: Seq[Expression],
       partitionSpec: PartitionSpec): Seq[PartitionPath] = {
@@ -257,6 +259,7 @@ abstract class PartitioningAwareFileIndex(
    * For example, `spark.read.option("basePath", "/path/").parquet("/path/something=true/")`,
    * and the returned DataFrame will have the column of `something`.
    */
+    //获取数据集的根目录（Base Path）
   private def basePaths: Set[Path] = {
     caseInsensitiveMap.get(FileIndexOptions.BASE_PATH_PARAM).map(new Path(_)) match {
       case Some(userDefinedBasePath) =>
@@ -285,6 +288,7 @@ abstract class PartitioningAwareFileIndex(
 
   // SPARK-15895: Metadata files (e.g. Parquet summary files) and temporary files should not be
   // counted as data files, so that they shouldn't participate partition discovery.
+  //判断一个路径是否是数据文件路径（排除临时文件）
   private def isDataPath(path: Path): Boolean = {
     val name = path.getName
     !((name.startsWith("_") && !name.contains("=")) || name.startsWith("."))

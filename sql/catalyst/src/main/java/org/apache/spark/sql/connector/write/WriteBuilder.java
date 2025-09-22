@@ -29,6 +29,7 @@ import org.apache.spark.sql.connector.write.streaming.StreamingWrite;
  *
  * @since 3.0.0
  */
+//Spark 3.0 引入的接口，用于构建 Write 对象，它提供了数据写入的逻辑，并支持批处理（Batch）和流处理（Streaming）
 @Evolving
 public interface WriteBuilder {
 

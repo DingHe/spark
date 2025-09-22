@@ -24,13 +24,15 @@ import org.apache.spark.sql.catalyst.trees.TreeNode
 abstract class Rule[TreeType <: TreeNode[_]] extends SQLConfHelper with Logging {
 
   // The integer id of a rule, for pruning unnecessary tree traversals.
+  //规则id
   protected lazy val ruleId = RuleIdCollection.getRuleId(this.ruleName)
 
   /** Name for this rule, automatically inferred based on class name. */
+    //规则名哼
   val ruleName: String = {
     val className = getClass.getName
     if (className endsWith "$") className.dropRight(1) else className
   }
-
+   //规则执行
   def apply(plan: TreeType): TreeType
 }

@@ -40,10 +40,11 @@ import org.apache.spark.sql.types.DataType
  * Parsed logical plans are located in Catalyst so that as much SQL parsing logic as possible is be
  * kept in a [[org.apache.spark.sql.catalyst.parser.AbstractSqlParser]].
  */
+//表示从 SQL 语句解析出来的逻辑计划的抽象类。它是 Catalyst 查询优化框架的一部分，主要作用是持有 SQL 解析后的信息，并将其转换为后续的执行计划
 abstract class ParsedStatement extends LogicalPlan {
   // Redact properties and options when parsed nodes are used by generic methods like toString
   override def productIterator: Iterator[Any] = super.productIterator.map {
-    case mapArg: Map[_, _] => conf.redactOptions(mapArg)
+    case mapArg: Map[_, _] => conf.redactOptions(mapArg)  //如果元素是 Map 类型（通常用于存储配置选项等数据结构），会调用 conf.redactOptions(mapArg) 方法对其进行脱敏（敏感信息处理）
     case other => other
   }
 
@@ -168,14 +169,15 @@ case class QualifiedColType(
  * @param byName               If true, reorder the data columns to match the column names of the
  *                             target table.
  */
+//表示 INSERT INTO 语句的逻辑计划类
 case class InsertIntoStatement(
-    table: LogicalPlan,
-    partitionSpec: Map[String, Option[String]],
-    userSpecifiedCols: Seq[String],
-    query: LogicalPlan,
-    overwrite: Boolean,
-    ifPartitionNotExists: Boolean,
-    byName: Boolean = false) extends UnaryParsedStatement {
+    table: LogicalPlan,                             //目标表的逻辑计划
+    partitionSpec: Map[String, Option[String]],     //分区键到分区值的映射，用于指定分区插入
+    userSpecifiedCols: Seq[String],                 //用户指定的列名
+    query: LogicalPlan,                             //用于插入的查询数据的逻辑计划
+    overwrite: Boolean,                             //是否覆盖现有的表或分区
+    ifPartitionNotExists: Boolean,                  //如果为 true，则仅在分区不存在时才进行写入。仅适用于静态分区
+    byName: Boolean = false) extends UnaryParsedStatement {  //如果为 true，则按照目标表的列名重新排列数据列
 
   require(overwrite || !ifPartitionNotExists,
     "IF NOT EXISTS is only valid in INSERT OVERWRITE")

@@ -27,6 +27,7 @@ import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
  * Intercepts write calls and tracks total time spent writing in order to update shuffle write
  * metrics. Not thread safe.
  */
+//包装写入时间的流
 @Private
 public final class TimeTrackingOutputStream extends OutputStream {
 

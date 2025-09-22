@@ -138,10 +138,12 @@ object Row {
  *
  * @since 1.3.0
  */
+//表示一行数据的类。它允许通过多种方式访问行中的数据，包括按列索引访问、原始基本类型访问、字段名访问等。
+// 它可以存储多种类型的值，包括原始类型、对象类型、结构体类型等
 @Stable
 trait Row extends Serializable {
   /** Number of elements in the Row. */
-  def size: Int = length
+  def size: Int = length //当前 Row 的元素个数，size 是 length 的别名
 
   /** Number of elements in the Row. */
   def length: Int
@@ -178,7 +180,7 @@ trait Row extends Serializable {
    *   StructType -> org.apache.spark.sql.Row
    * }}}
    */
-  def apply(i: Int): Any = get(i)
+  def apply(i: Int): Any = get(i) //索引 i 获取 Row 中的数据。如果值为 null，则返回 null
 
   /**
    * Returns the value at position i. If the value is null, null is returned. The following
@@ -207,10 +209,10 @@ trait Row extends Serializable {
    *   StructType -> org.apache.spark.sql.Row
    * }}}
    */
-  def get(i: Int): Any
+  def get(i: Int): Any  //根据索引 i 返回 Row 中的值
 
   /** Checks whether the value at position i is null. */
-  def isNullAt(i: Int): Boolean = get(i) == null
+  def isNullAt(i: Int): Boolean = get(i) == null   //判断索引 i 处的值是否为 null
 
   /**
    * Returns the value at position i as a primitive boolean.
@@ -560,7 +562,7 @@ trait Row extends Serializable {
       JArray(iterator.map(toJson(_, elementType)).toList)
     }
 
-    // Convert a value to json.
+    // Convert a value to json. 返回 Row 的 JSON 表示，支持多种数据类型（包括基本类型、数组、映射、结构体等）
     def toJson(value: Any, dataType: DataType): JValue = (value, dataType) match {
       case (null, _) => JNull
       case (b: Boolean, _) => JBool(b)

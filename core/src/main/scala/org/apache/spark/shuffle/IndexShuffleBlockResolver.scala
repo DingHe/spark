@@ -47,28 +47,34 @@ import org.apache.spark.util.collection.OpenHashSet
  *
  * We use the name of the shuffle data's shuffleBlockId with reduce ID set to 0 and add ".data"
  * as the filename postfix for data file, and ".index" as the filename postfix for index file.
- *
  */
+
 // Note: Changes to the format in this file should be kept in sync with
 // org.apache.spark.network.shuffle.ExternalShuffleBlockResolver#getSortBasedShuffleBlockData().
+//  Spark 中负责管理和解析本地磁盘上的 Shuffle 数据块的核心类。它扮演着一个“文件系统管理器”和“数据索引器”的角色
+//  主要工作原理是索引文件（.index） 和 数据文件（.data） 的分离存储
+//  数据文件 (.data)：一个 Map 任务的所有 Shuffle 输出数据（对应多个分区）被写入到一个大的文件中
+//  索引文件 (.index)：一个单独的文件，存储了数据文件中每个分区的起始和结束偏移量
 private[spark] class IndexShuffleBlockResolver(
     conf: SparkConf,
     // var for testing
-    var _blockManager: BlockManager = null,
+    var _blockManager: BlockManager = null, // 块管理器实例，用于管理数据块的存储和访问
+    // 用于记录每个 shuffleId 对应哪些 Map 任务（mapId）。这在数据迁移和清理等场景下很有用
     val taskIdMapsForShuffle: JMap[Int, OpenHashSet[Long]] = Collections.emptyMap())
   extends ShuffleBlockResolver
   with Logging with MigratableResolver {
 
   private lazy val blockManager = Option(_blockManager).getOrElse(SparkEnv.get.blockManager)
-
+  // 网络传输配置，用于创建 ManagedBuffer 时配置网络传输属性
   private val transportConf = SparkTransportConf.fromSparkConf(conf, "shuffle")
-
+  // 指定最大允许的 shuffle 磁盘使用量，超过该值会抛出异常。
   private val remoteShuffleMaxDisk: Option[Long] =
     conf.get(config.STORAGE_DECOMMISSION_SHUFFLE_MAX_DISK_SIZE)
-
+  //获取指定 shuffleId 和 mapId 的 shuffle 数据文件。如果不指定目录，则从默认目录获取
   def getDataFile(shuffleId: Int, mapId: Long): File = getDataFile(shuffleId, mapId, None)
 
-  /**
+  /** 获取当前存储的所有 shuffle 数据块信息，返回匹配的 ShuffleBlockInfo
+   *  主要用于块迁移
    * Get the shuffle files that are stored locally. Used for block migrations.
    */
   override def getStoredShuffles(): Seq[ShuffleBlockInfo] = {
@@ -81,13 +87,14 @@ private[spark] class IndexShuffleBlockResolver(
     }
   }
 
+  // 获取全部shuffle文件的大小
   private def getShuffleBytesStored(): Long = {
     val shuffleFiles: Seq[File] = getStoredShuffles().map {
       si => getDataFile(si.shuffleId, si.mapId)
     }
     shuffleFiles.map(_.length()).sum
   }
-
+  //创建一个临时文件，用于后续的文件重命名操作
   /** Create a temporary file that will be renamed to the final resulting file */
   def createTempFile(file: File): File = {
     blockManager.diskBlockManager.createTempFileWith(file)
@@ -95,10 +102,10 @@ private[spark] class IndexShuffleBlockResolver(
 
   /**
    * Get the shuffle data file.
-   *
    * When the dirs parameter is None then use the disk manager's local directories. Otherwise,
    * read from the specified directories.
    */
+   //获取指定 shuffleId 和 mapId 的 shuffle 数据文件。如果不指定目录，则从默认目录获取
    def getDataFile(shuffleId: Int, mapId: Long, dirs: Option[Array[String]]): File = {
     val blockId = ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID)
     dirs
@@ -109,10 +116,10 @@ private[spark] class IndexShuffleBlockResolver(
 
   /**
    * Get the shuffle index file.
-   *
    * When the dirs parameter is None then use the disk manager's local directories. Otherwise,
    * read from the specified directories.
    */
+  // 获取shuffle的索引文件
   def getIndexFile(
       shuffleId: Int,
       mapId: Long,
@@ -124,6 +131,7 @@ private[spark] class IndexShuffleBlockResolver(
       .getOrElse(blockManager.diskBlockManager.getFile(blockId))
   }
 
+  //获取合并数据块文件
   private def getMergedBlockDataFile(
       appId: String,
       shuffleId: Int,
@@ -133,7 +141,7 @@ private[spark] class IndexShuffleBlockResolver(
     blockManager.diskBlockManager.getMergedShuffleFile(
       ShuffleMergedDataBlockId(appId, shuffleId, shuffleMergeId, reduceId), dirs)
   }
-
+  //获取合并快索引文件
   private def getMergedBlockIndexFile(
       appId: String,
       shuffleId: Int,
@@ -143,7 +151,7 @@ private[spark] class IndexShuffleBlockResolver(
     blockManager.diskBlockManager.getMergedShuffleFile(
       ShuffleMergedIndexBlockId(appId, shuffleId, shuffleMergeId, reduceId), dirs)
   }
-
+  //获取合并快元数据文件
   private def getMergedBlockMetaFile(
       appId: String,
       shuffleId: Int,
@@ -154,7 +162,7 @@ private[spark] class IndexShuffleBlockResolver(
       ShuffleMergedMetaBlockId(appId, shuffleId, shuffleMergeId, reduceId), dirs)
   }
 
-  /**
+  /** 删除数据、索引文件
    * Remove data file and index file that contain the output data from one map.
    */
   def removeDataByMap(shuffleId: Int, mapId: Long): Unit = {
@@ -174,7 +182,7 @@ private[spark] class IndexShuffleBlockResolver(
     }
   }
 
-  /**
+  /** 检查索引文件和数据文件是否匹配。检查通过比较索引文件的偏移量与数据文件的大小，确保两者的关系一致
    * Check whether the given index and data files match each other.
    * If so, return the partition lengths in the data file. Otherwise return null.
    */
@@ -219,7 +227,7 @@ private[spark] class IndexShuffleBlockResolver(
     }
   }
 
-  /**
+  /** 将 shuffle 块以流的形式存储
    * Write a provided shuffle block as a stream. Used for block migrations.
    * ShuffleBlockBatchIds must contain the full range represented in the ShuffleIndexBlock.
    * Requires the caller to delete any shuffle index blocks where the shuffle block fails to
@@ -300,7 +308,7 @@ private[spark] class IndexShuffleBlockResolver(
     }
   }
 
-  /**
+  /** 获取要迁移的 shuffle 块的数据和索引。它返回一对 (BlockId, ManagedBuffer)，表示每个 shuffle 块的数据和索引
    * Get the index & data block for migration.
    */
   def getMigrationBlocks(shuffleBlockInfo: ShuffleBlockInfo): List[(BlockId, ManagedBuffer)] = {
@@ -355,6 +363,7 @@ private[spark] class IndexShuffleBlockResolver(
    * the cause when a block is corrupted. Note that empty `checksums` indicate that
    * checksum is disabled.
    */
+    //将 shuffle 的元数据（索引和校验和）写入临时文件，并在写入完成后提交（重命名为目标文件）。确保写入是原子性的
   def writeMetadataFileAndCommit(
       shuffleId: Int,
       mapId: Long,
@@ -463,6 +472,7 @@ private[spark] class IndexShuffleBlockResolver(
    *                       checksum is only a best-effort so we won't fail the whole task due to
    *                       the error from checksum.
    */
+    //将元数据写入临时文件，并重命名为目标文件。该方法用于处理索引文件和校验和文件的写入
   private def writeMetadataFile(
       metaValues: Array[Long],
       tmpFile: File,
@@ -539,7 +549,7 @@ private[spark] class IndexShuffleBlockResolver(
     val chunkBitMaps = new FileSegmentManagedBuffer(transportConf, metaFile, 0L, metaFile.length)
     new MergedBlockMeta(numChunks, chunkBitMaps)
   }
-
+  //从给定的校验和文件中读取每个 shuffle 块的校验和
   private[shuffle] def getChecksums(checksumFile: File, blockNum: Int): Array[Long] = {
     if (!checksumFile.exists()) return null
     val checksums = new ArrayBuffer[Long]
@@ -562,7 +572,7 @@ private[spark] class IndexShuffleBlockResolver(
 
   /**
    * Get the shuffle checksum file.
-   *
+   * 获取指定 shuffleId、mapId 和算法的校验和文件
    * When the dirs parameter is None then use the disk manager's local directories. Otherwise,
    * read from the specified directories.
    */

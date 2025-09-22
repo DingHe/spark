@@ -37,19 +37,19 @@ import org.apache.spark.internal.Logging
  *
  * An operation scope may be nested in other scopes. For instance, a SQL query may enclose
  * scopes associated with the public RDD APIs it uses under the hood.
- *
+ * RDDOperationScope 用来表示一个 RDD 操作的作用域，帮助记录和管理 RDD 的创建过程。
  * There is no particular relationship between an operation scope and a stage or a job.
  * A scope may live inside one stage (e.g. map) or span across multiple jobs (e.g. take).
  */
 @JsonInclude(Include.NON_ABSENT)
 @JsonPropertyOrder(Array("id", "name", "parent"))
 private[spark] class RDDOperationScope(
-    val name: String,
-    val parent: Option[RDDOperationScope] = None,
-    val id: String = RDDOperationScope.nextScopeId().toString) {
+    val name: String,  //该作用域的名称，通常是当前操作的名称，比如某个 RDD 操作方法的名称
+    val parent: Option[RDDOperationScope] = None, //表示当前作用域的父作用域，可以是另一个 RDDOperationScope。它是一个可选值，默认为 None
+    val id: String = RDDOperationScope.nextScopeId().toString) { //作用域的唯一标识符，每个作用域都会有一个唯一的 ID
 
   def toJson: String = {
-    RDDOperationScope.jsonMapper.writeValueAsString(this)
+    RDDOperationScope.jsonMapper.writeValueAsString(this) //将当前作用域对象转换为 JSON 字符串
   }
 
   /**
@@ -57,10 +57,10 @@ private[spark] class RDDOperationScope(
    * The result is ordered from the outermost scope (eldest ancestor) to this scope.
    */
   @JsonIgnore
-  def getAllScopes: Seq[RDDOperationScope] = {
+  def getAllScopes: Seq[RDDOperationScope] = { //递归获取父作用域及自身的作用域，返回一个Seq
     parent.map(_.getAllScopes).getOrElse(Seq.empty) ++ Seq(this)
   }
-
+  //方法用于比较两个 RDDOperationScope 是否相等，主要通过 id、name 和 parent 来判断
   override def equals(other: Any): Boolean = {
     other match {
       case s: RDDOperationScope =>
@@ -79,8 +79,8 @@ private[spark] class RDDOperationScope(
  * An RDD scope tracks the series of operations that created a given RDD.
  */
 private[spark] object RDDOperationScope extends Logging {
-  private val jsonMapper = new ObjectMapper().registerModule(DefaultScalaModule)
-  private val scopeCounter = new AtomicInteger(0)
+  private val jsonMapper = new ObjectMapper().registerModule(DefaultScalaModule) //用于处理 JSON 序列化的 ObjectMapper，并注册了 Scala 模块来支持 Scala 特有的数据结构
+  private val scopeCounter = new AtomicInteger(0)  //一个 AtomicInteger 用于生成唯一的作用域 ID，确保每个作用域 ID 都是唯一的
 
   def fromJson(s: String): RDDOperationScope = {
     jsonMapper.readValue(s, classOf[RDDOperationScope])
@@ -98,7 +98,7 @@ private[spark] object RDDOperationScope extends Logging {
    */
   private[spark] def withScope[T](
       sc: SparkContext,
-      allowNesting: Boolean = false)(body: => T): T = {
+      allowNesting: Boolean = false)(body: => T): T = {  //如果为 true，则允许在当前作用域内嵌套其他作用域。如果为 false，则不允许嵌套作用域
     val ourMethodName = "withScope"
     val callerMethodName = Thread.currentThread.getStackTrace()
       .dropWhile(_.getMethodName != ourMethodName)

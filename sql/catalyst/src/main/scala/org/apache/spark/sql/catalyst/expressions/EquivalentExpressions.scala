@@ -31,9 +31,12 @@ import org.apache.spark.util.Utils
  * to this class and they subsequently query for expression equality. Expression trees are
  * considered equal if for the same input(s), the same result is produced.
  */
+//用于计算表达式（Expression）树相等性的工具类
+//主要作用是将不同的表达式组合成一组等价表达式，并在这些表达式之间进行比较。如果两个表达式在相同的输入下返回相同的结果，则认为它们是等价的
+//skipForShortcutEnable 是否启用快速跳过某些表达式的子表达式
 class EquivalentExpressions(
     skipForShortcutEnable: Boolean = SQLConf.get.subexpressionEliminationSkipForShotcutExpr) {
-
+  //存储等价的表达式及其相关统计信息
   // For each expression, the set of equivalent expressions.
   private val equivalenceMap = mutable.HashMap.empty[ExpressionEquals, ExpressionStats]
 
@@ -41,7 +44,7 @@ class EquivalentExpressions(
    * Adds each expression to this data structure, grouping them with existing equivalent
    * expressions. Non-recursive.
    * Returns true if there was already a matching expression.
-   */
+   */ //将一个表达式 expr 添加到 equivalenceMap 中。如果该表达式已经存在于 equivalenceMap 中，则返回 true，表示找到了匹配的表达式；如果没有匹配，则返回 false
   def addExpr(expr: Expression): Boolean = {
     if (supportedExpression(expr)) {
       updateExprInMap(expr, equivalenceMap)
@@ -56,7 +59,7 @@ class EquivalentExpressions(
    * - if there was a matching expression in the map before add or
    * - if there remained a matching expression in the map after remove (`useCount` remained > 0)
    * to indicate there is no need to recurse in `updateExprTree`.
-   */
+   */ //根据表达式的等价性将其添加或删除，并更新其使用计数（useCount）
   private def updateExprInMap(
       expr: Expression,
       map: mutable.HashMap[ExpressionEquals, ExpressionStats],
@@ -64,7 +67,7 @@ class EquivalentExpressions(
     if (expr.deterministic) {
       val wrapper = ExpressionEquals(expr)
       map.get(wrapper) match {
-        case Some(stats) =>
+        case Some(stats) =>  //如果找到了匹配的表达式，则更新使用计数。如果使用计数为 0，则从 equivalenceMap 中移除该表达式
           stats.useCount += useCount
           if (stats.useCount > 0) {
             true
@@ -76,7 +79,7 @@ class EquivalentExpressions(
             throw new IllegalStateException(
               s"Cannot update expression: $expr in map: $map with use count: $useCount")
           }
-        case _ =>
+        case _ =>  //如果没有找到匹配的表达式，则将其添加到 equivalenceMap
           if (useCount > 0) {
             map.put(wrapper, ExpressionStats(expr)(useCount))
           }
@@ -98,7 +101,7 @@ class EquivalentExpressions(
    * only the common nodes.
    * Those common nodes are then removed from the local map and added to the final map of
    * expressions.
-   */
+   */ //递归地添加所有表达式中公共的子表达式。递归地遍历多个表达式，找出它们共享的子表达式，并将其添加到 equivalenceMap
   private def updateCommonExprs(
       exprs: Seq[Expression],
       map: mutable.HashMap[ExpressionEquals, ExpressionStats],
@@ -127,7 +130,7 @@ class EquivalentExpressions(
       statsOption = Some(localEquivalenceMap).filter(_.nonEmpty).map(_.maxBy(_._1.height)._2)
     }
   }
-
+  //根据 skipForShortcutEnable 配置，决定是否跳过某些表达式的子表达式
   private def skipForShortcut(expr: Expression): Expression = {
     if (skipForShortcutEnable) {
       // The subexpression may not need to eval even if it appears more than once.
@@ -145,20 +148,22 @@ class EquivalentExpressions(
   // There are some special expressions that we should not recurse into all of its children.
   //   1. CodegenFallback: it's children will not be used to generate code (call eval() instead)
   //   2. ConditionalExpression: use its children that will always be evaluated.
+  //目的是确定在遍历表达式树时，应该递归处理哪些子表达式
   private def childrenToRecurse(expr: Expression): Seq[Expression] = expr match {
-    case _: CodegenFallback => Nil
-    case c: ConditionalExpression => c.alwaysEvaluatedInputs.map(skipForShortcut)
+    case _: CodegenFallback => Nil //子表达式不会参与生成代码，而是应该通过直接调用 eval() 来进行求值，不需要递归
+    case c: ConditionalExpression => c.alwaysEvaluatedInputs.map(skipForShortcut)  //条件表达式总是被评估的表达式，就会继续递归
     case other => skipForShortcut(other).children
   }
 
   // For some special expressions we cannot just recurse into all of its children, but we can
   // recursively add the common expressions shared between all of its children.
+  //确定哪些子表达式是公共的，需要递归遍历
   private def commonChildrenToRecurse(expr: Expression): Seq[Seq[Expression]] = expr match {
     case _: CodegenFallback => Nil
-    case c: ConditionalExpression => c.branchGroups
+    case c: ConditionalExpression => c.branchGroups  //条件表达式的分支总是被递归
     case _ => Nil
   }
-
+  //检查一个表达式是否支持等价性比较
   private def supportedExpression(e: Expression) = {
     !e.exists {
       // `LambdaVariable` is usually used as a loop variable, which can't be evaluated ahead of the
@@ -184,7 +189,7 @@ class EquivalentExpressions(
       updateExprTree(expr, map)
     }
   }
-
+  //递归地更新表达式树，直到找到匹配的表达式或者遍历完所有子表达式
   private def updateExprTree(
       expr: Expression,
       map: mutable.HashMap[ExpressionEquals, ExpressionStats] = equivalenceMap,
@@ -239,8 +244,15 @@ class EquivalentExpressions(
 /**
  * Wrapper around an Expression that provides semantic equality.
  */
+//为Expression提供了语义上的相等性（semantic equality）检查，
+//能够通过语义比较来判断两个表达式是否等价，同时还引入了一个子树的高度（height）来优化比较过程
 case class ExpressionEquals(e: Expression) {
+  //高度是指从当前表达式（根节点）到最深的叶子节点的最长路径的长度
   private def getHeight(tree: Expression): Int = {
+    //map(getHeight) 会对每个子节点递归调用 getHeight，得到子节点的高度
+    //reduceOption(_ max _) 会从所有子节点的高度中选择最大的高度，并加1表示当前节点的高度
+    //reduceOption是一个集合操作方法，它类似于reduce，但与reduce不同，reduceOption返回一个Option类型的结果。
+    // 这意味着，如果集合为空，reduceOption会返回None，而不是抛出异常
     tree.children.map(getHeight).reduceOption(_ max _).getOrElse(0) + 1
   }
 

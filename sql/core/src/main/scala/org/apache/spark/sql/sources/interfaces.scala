@@ -34,6 +34,7 @@ import org.apache.spark.sql.types.StructType
  *
  * @since 1.5.0
  */
+//Spark 中数据源需要实现的接口，用来注册数据源的别名。数据源可以通过别名来代替完全限定的类名进行引用
 @Stable
 trait DataSourceRegister {
 
@@ -64,6 +65,7 @@ trait DataSourceRegister {
  *
  * @since 1.3.0
  */
+//创建数据源的关系（Relation）。当用户在 DDL 操作中指定 USING 子句时，Spark SQL 会通过该接口传递给数据源提供者
 @Stable
 trait RelationProvider {
   /**
@@ -95,6 +97,8 @@ trait RelationProvider {
  *
  * @since 1.3.0
  */
+//与 RelationProvider 类似，但此接口专门处理用户提供了模式（Schema）的情况。
+// 用户在 DDL 中指定数据源时，如果还提供了一个模式定义，将使用该接口
 @Stable
 trait SchemaRelationProvider {
   /**
@@ -115,6 +119,7 @@ trait SchemaRelationProvider {
  *
  * @since 2.0.0
  */
+//该接口用于创建流数据源，允许 Spark 处理流式数据
 @Unstable
 trait StreamSourceProvider {
 
@@ -157,6 +162,7 @@ trait StreamSinkProvider {
 /**
  * @since 1.3.0
  */
+//这个接口允许将 DataFrame 保存到指定的目标位置，类似于将数据写入外部系统
 @Stable
 trait CreatableRelationProvider {
   /**
@@ -189,10 +195,12 @@ trait CreatableRelationProvider {
  *
  * @since 1.3.0
  */
+// 表示一个数据关系，包含已知模式的元组集合。
+// 任何实现了 BaseRelation 的类都需要能够提供其数据的模式（StructType），并且实现扫描数据的功能
 @Stable
 abstract class BaseRelation {
   def sqlContext: SQLContext
-  def schema: StructType
+  def schema: StructType  //返回该关系的数据模式
 
   /**
    * Returns an estimated size of this relation in bytes. This information is used by the planner
@@ -206,6 +214,7 @@ abstract class BaseRelation {
    *
    * @since 1.3.0
    */
+    //返回该关系数据的估算大小，默认情况下，返回的是配置的默认大小
   def sizeInBytes: Long = sqlContext.conf.defaultSizeInBytes
 
   /**
@@ -220,6 +229,7 @@ abstract class BaseRelation {
    *
    * @since 1.4.0
    */
+    //是否需要将 Row 转换为内部表示（如字符串转换为 UTF8String）。通常，外部数据源应将其保持为 true
   def needConversion: Boolean = true
 
   /**
@@ -231,6 +241,7 @@ abstract class BaseRelation {
    *
    * @since 1.6.0
    */
+    //返回该数据源可能无法处理的 Filter，通常由实现类重写
   def unhandledFilters(filters: Array[Filter]): Array[Filter] = filters
 }
 
@@ -239,6 +250,7 @@ abstract class BaseRelation {
  *
  * @since 1.3.0
  */
+//返回所有元组（行）的 BaseRelation，通常用于扫描数据表
 @Stable
 trait TableScan {
   def buildScan(): RDD[Row]
@@ -250,6 +262,7 @@ trait TableScan {
  *
  * @since 1.3.0
  */
+//可以在扫描数据时排除不需要的列的 BaseRelation
 @Stable
 trait PrunedScan {
   def buildScan(requiredColumns: Array[String]): RDD[Row]
@@ -268,6 +281,7 @@ trait PrunedScan {
  *
  * @since 1.3.0
  */
+//以在扫描数据时排除不需要的列并且根据过滤条件进行数据筛选的 BaseRelation
 @Stable
 trait PrunedFilteredScan {
   def buildScan(requiredColumns: Array[String], filters: Array[Filter]): RDD[Row]
@@ -290,6 +304,7 @@ trait PrunedFilteredScan {
  *
  * @since 1.3.0
  */
+//可以通过 insert 方法向其中插入数据的 BaseRelation
 @Stable
 trait InsertableRelation {
   def insert(data: DataFrame, overwrite: Boolean): Unit
@@ -305,6 +320,7 @@ trait InsertableRelation {
  *
  * @since 1.3.0
  */
+//直接连接查询规划器，允许用户处理原始的逻辑计划表达式。相比于 PrunedFilteredScan，它接收原始的表达式
 @Unstable
 trait CatalystScan {
   def buildScan(requiredColumns: Seq[Attribute], filters: Seq[Expression]): RDD[Row]

@@ -56,7 +56,8 @@ import org.apache.spark.shuffle.ShuffleWriter;
 import org.apache.spark.storage.*;
 import org.apache.spark.util.Utils;
 
-/**
+/** 首先每个reduce写一个文件，然后合并成一个文件。所以如果reduce很多，效率就很低，所以使用有限制条件
+ * 记录不会在内存中缓存，直接携程文件。
  * This class implements sort-based shuffle's hash-style shuffle fallback path. This write path
  * writes incoming records to separate files, one file per reduce partition, then concatenates these
  * per-partition files to form a single output file, regions of which are served to reducers.
@@ -83,22 +84,22 @@ final class BypassMergeSortShuffleWriter<K, V>
 
   private static final Logger logger = LoggerFactory.getLogger(BypassMergeSortShuffleWriter.class);
 
-  private final int fileBufferSize;
-  private final boolean transferToEnabled;
-  private final int numPartitions;
+  private final int fileBufferSize; //文件缓冲区大小（以字节为单位）
+  private final boolean transferToEnabled;  //是否启用 transferTo 方法，用于优化数据的文件传输
+  private final int numPartitions; //reduce 分区的数量
   private final BlockManager blockManager;
-  private final Partitioner partitioner;
+  private final Partitioner partitioner; //决定如何将 key 映射到具体分区
   private final ShuffleWriteMetricsReporter writeMetrics;
-  private final int shuffleId;
-  private final long mapId;
-  private final Serializer serializer;
-  private final ShuffleExecutorComponents shuffleExecutorComponents;
+  private final int shuffleId; //本次 shuffle 操作的唯一标识 ID
+  private final long mapId; //当前 map 任务的唯一标识 ID
+  private final Serializer serializer; //用于将数据序列化到磁盘的序列化器
+  private final ShuffleExecutorComponents shuffleExecutorComponents; //提供创建 shuffle 输出写入器的组件
 
   /** Array of file writers, one for each partition */
-  private DiskBlockObjectWriter[] partitionWriters;
-  private FileSegment[] partitionWriterSegments;
-  @Nullable private MapStatus mapStatus;
-  private long[] partitionLengths;
+  private DiskBlockObjectWriter[] partitionWriters; //每个分区对应的磁盘写入器数组，用于将数据写入磁盘
+  private FileSegment[] partitionWriterSegments; //每个分区对应的磁盘文件段，用于记录文件元信息（如偏移量和长度）
+  @Nullable private MapStatus mapStatus; //保存 shuffle 输出文件的状态（包括分区数据的长度和位置）
+  private long[] partitionLengths; //每个分区的数据长度，用于 reducer 获取数据时定位
   /** Checksum calculator for each partition. Empty when shuffle checksum disabled. */
   private final Checksum[] partitionChecksums;
 
@@ -107,7 +108,7 @@ final class BypassMergeSortShuffleWriter<K, V>
    * and then call stop() with success = false if they get an exception, we want to make sure
    * we don't try deleting files, etc twice.
    */
-  private boolean stopping = false;
+  private boolean stopping = false; //标志是否正在停止写入，防止重复停止操作
 
   BypassMergeSortShuffleWriter(
       BlockManager blockManager,
@@ -130,7 +131,7 @@ final class BypassMergeSortShuffleWriter<K, V>
     this.shuffleExecutorComponents = shuffleExecutorComponents;
     this.partitionChecksums = createPartitionChecksums(numPartitions, conf);
   }
-
+  //将记录写入磁盘
   @Override
   public void write(Iterator<Product2<K, V>> records) throws IOException {
     assert (partitionWriters == null);

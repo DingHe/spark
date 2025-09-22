@@ -22,6 +22,8 @@ package org.apache.spark.sql.execution
  * the list of paths that it returns will be returned to a user who calls `inputPaths` on any
  * DataFrame that queries this relation.
  */
+//用于表示基于文件的关系（数据源）。实现此接口的类需要提供访问其底层数据文件的能力，
+// 主要服务于 Spark 读取和解析文件型数据源（如 CSV、Parquet、ORC 等）
 trait FileRelation {
   /**
    * Returns the list of files that will be read when scanning this relation.

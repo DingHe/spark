@@ -32,28 +32,31 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 /**
  * Common trait for all InMemoryTableScans implementations to facilitate pattern matching.
  */
+//主要用于Apache Spark中内存表扫描的操作
 trait InMemoryTableScanLike extends LeafExecNode {
 
   /**
    * Returns whether the cache buffer is loaded
    */
+  //缓存的表是否已经加载到内存中。即，数据是否已被物化（缓存）
   def isMaterialized: Boolean
 
   /**
    * Returns the actual cached RDD without filters and serialization of row/columnar.
    */
+  //返回实际的缓存RDD，未做任何过滤或序列化
   def baseCacheRDD(): RDD[CachedBatch]
 
-  /**
+  /** 返回物化后的运行时统计信息
    * Returns the runtime statistics after materialization.
    */
   def runtimeStatistics: Statistics
 }
-
+//用于执行内存表扫描的操作
 case class InMemoryTableScanExec(
-    attributes: Seq[Attribute],
-    predicates: Seq[Expression],
-    @transient relation: InMemoryRelation)
+    attributes: Seq[Attribute], //表示输出列的属性。它定义了该操作扫描并返回的列
+    predicates: Seq[Expression], //扫描操作的谓词（过滤条件）。它表示对数据进行过滤的表达式
+    @transient relation: InMemoryRelation) //代表缓存的关系（即从内存中获取的数据）
   extends InMemoryTableScanLike {
 
   override lazy val metrics = Map(

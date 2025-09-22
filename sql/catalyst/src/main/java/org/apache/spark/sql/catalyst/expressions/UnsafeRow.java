@@ -54,14 +54,15 @@ import static org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET;
  *
  * Instances of `UnsafeRow` act as pointers to row data stored in this format.
  */
+//用于处理数据行的一种高效实现，它使用原始内存（而不是传统的 Java 对象）来存储数据，从而提高性能
 public final class UnsafeRow extends InternalRow implements Externalizable, KryoSerializable {
-
+  //表示每个字段的字长，单位是字节。它的值是 8
   public static final int WORD_SIZE = 8;
 
   //////////////////////////////////////////////////////////////////////////////
   // Static methods
   //////////////////////////////////////////////////////////////////////////////
-
+  //需要多少字节来存储 numFields 个字段的空值标记，每 64 个字段占用 8 字节
   public static int calculateBitSetWidthInBytes(int numFields) {
     return ((numFields + 63)/ 64) * 8;
   }
@@ -69,6 +70,8 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
   /**
    * Field types that hold fixed-length, store the value directly in an 8-byte word
    */
+  //判断字段类型是否为固定长度的。如果字段类型是基本类型（如 int、long、double），返回 true。
+  // 对于可变长度的数据类型（如 String、Array 等），返回 false
   public static boolean isFixedLength(DataType dt) {
     if (dt instanceof UserDefinedType) {
       return isFixedLength(((UserDefinedType<?>) dt).sqlType());
@@ -84,6 +87,8 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
   /**
    * Field types that can be updated in place in UnsafeRows (e.g. we support set() for these types)
    */
+  // 判断字段类型是否支持原地更新。对于基础类型、Decimal 类型和 CalendarInterval 类型，返回 true；
+  // 对于其他类型，返回 false
   public static boolean isMutable(DataType dt) {
     if (dt instanceof UserDefinedType) {
       return isMutable(((UserDefinedType<?>) dt).sqlType());
@@ -96,17 +101,20 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
   //////////////////////////////////////////////////////////////////////////////
   // Private fields and methods
   //////////////////////////////////////////////////////////////////////////////
-
+  //指向基础对象的引用，表示当前行数据的存储位置。它指向存储数据的内存块，UnsafeRow 通过这个对象来操作底层的数据
   private Object baseObject;
+  //baseObject 中数据的偏移量，指示从哪个位置开始存储数据。这对于计算每个字段的存储位置非常重要
   private long baseOffset;
 
   /** The number of fields in this row, used for calculating the bitset width (and in assertions) */
   private int numFields;
 
   /** The size of this row's backing data, in bytes) */
+  //表示该行数据所占用的内存大小，单位是字节
   private int sizeInBytes;
 
   /** The width of the null tracking bit set, in bytes */
+  //这是一个用于存储 null 值的位集的大小
   private int bitSetWidthInBytes;
 
   private long getFieldOffset(int ordinal) {
@@ -128,6 +136,7 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
    *
    * @param numFields the number of fields in this row
    */
+  //创建一个 UnsafeRow 实例，并初始化字段数量 (numFields) 和空值标记位集的大小 (bitSetWidthInBytes)
   public UnsafeRow(int numFields) {
     this.numFields = numFields;
     this.bitSetWidthInBytes = calculateBitSetWidthInBytes(numFields);
@@ -150,6 +159,7 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
    * @param baseOffset the offset within the base object
    * @param sizeInBytes the size of this row's backing data, in bytes
    */
+  //设置当前行数据指向指定的内存地址。通过 baseObject 和 baseOffset 来指定数据存储的内存地址，并设置数据的大小 sizeInBytes
   public void pointTo(Object baseObject, long baseOffset, int sizeInBytes) {
     assert numFields >= 0 : "numFields (" + numFields + ") should >= 0";
     assert sizeInBytes % 8 == 0 : "sizeInBytes (" + sizeInBytes + ") should be a multiple of 8";
@@ -172,12 +182,12 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
     assert sizeInBytes % 8 == 0 : "sizeInBytes (" + sizeInBytes + ") should be a multiple of 8";
     this.sizeInBytes = sizeInBytes;
   }
-
+  //将指定字段设置为非 null，并在内存中更新对应的值
   public void setNotNullAt(int i) {
     assertIndexIsValid(i);
     BitSetMethods.unset(baseObject, baseOffset, i);
   }
-
+  //将指定字段设置为 null，并在内存中清零对应的值
   @Override
   public void setNullAt(int i) {
     assertIndexIsValid(i);

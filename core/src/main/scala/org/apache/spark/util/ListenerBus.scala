@@ -34,12 +34,17 @@ import org.apache.spark.scheduler.SparkListenerEnvironmentUpdate
  * An event bus which posts events to its listeners.
  */
 private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
-
+  // 用于存储所有注册的监听器及其对应的性能计时器
   private[this] val listenersPlusTimers = new CopyOnWriteArrayList[(L, Option[Timer])]
 
   // Marked `private[spark]` for access in tests.
+  //返回一个只包含监听器对象的 Java.util.List。主要用于测试
   private[spark] def listeners = listenersPlusTimers.asScala.map(_._1).asJava
 
+  // 这三个惰性初始化属性用于控制慢事件处理的日志记录。
+  // 它们从 Spark 配置中读取相关值，
+  // 如果 logSlowEventEnabled 为 true 且事件处理时间超过 logSlowEventThreshold，postToAll 方法会记录一条警告日志。
+  // 这有助于诊断性能问题，特别是当某个监听器处理事件耗时过长，阻塞了事件总线时
   private lazy val env = SparkEnv.get
 
   private lazy val logSlowEventEnabled = if (env != null) {
@@ -58,11 +63,14 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
    * Returns a CodaHale metrics Timer for measuring the listener's event processing time.
    * This method is intended to be overridden by subclasses.
    */
+    //用于为每个监听器获取一个 CodaHale Metrics 的 Timer 实例。子类需要实现这个方法，以提供特定的计时器
   protected def getTimer(listener: L): Option[Timer] = None
 
   /**
    * Add a listener to listen events. This method is thread-safe and can be called in any thread.
    */
+
+  //向事件总线添加一个监听器。它是 final 的，表示子类不能重写它
   final def addListener(listener: L): Unit = {
     listenersPlusTimers.add((listener, getTimer(listener)))
   }
@@ -71,6 +79,7 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
    * Remove a listener and it won't receive any events. This method is thread-safe and can be called
    * in any thread.
    */
+  //从事件总线中移除一个监听器
   final def removeListener(listener: L): Unit = {
     listenersPlusTimers.asScala.find(_._1 eq listener).foreach { listenerAndTimer =>
       listenersPlusTimers.remove(listenerAndTimer)
@@ -81,6 +90,7 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
    * Remove all listeners and they won't receive any events. This method is thread-safe and can be
    * called in any thread.
    */
+    //删除所有监听器
   final def removeAllListeners(): Unit = {
     listenersPlusTimers.clear()
   }
@@ -89,6 +99,7 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
    * This can be overridden by subclasses if there is any extra cleanup to do when removing a
    * listener.  In particular AsyncEventQueues can clean up queues in the LiveListenerBus.
    */
+  //移除监听器
   def removeListenerOnError(listener: L): Unit = {
     removeListener(listener)
   }
@@ -98,6 +109,8 @@ private[spark] trait ListenerBus[L <: AnyRef, E] extends Logging {
    * Post the event to all registered listeners. The `postToAll` caller should guarantee calling
    * `postToAll` in the same thread for all events.
    */
+  // 将一个事件分发给所有注册的监听器。这是事件总线的核心方法。
+  // 它遍历 listenersPlusTimers 列表，对每个监听器调用 doPostEvent 方法来处理事件
   def postToAll(event: E): Unit = {
     // JavaConverters can create a JIterableWrapper if we use asScala.
     // However, this method will be called frequently. To avoid the wrapper cost, here we use

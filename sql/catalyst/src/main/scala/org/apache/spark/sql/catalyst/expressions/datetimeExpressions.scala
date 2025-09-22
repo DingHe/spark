@@ -42,7 +42,7 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
 /**
  * Common base class for time zone aware expressions.
- */
+ *///表示那些需要考虑时区的表达式
 trait TimeZoneAwareExpression extends Expression {
   /** The expression is only resolved when the time zone has been set. */
   override lazy val resolved: Boolean =
@@ -53,17 +53,17 @@ trait TimeZoneAwareExpression extends Expression {
 
   // Subclasses can override this function to provide more TreePatterns.
   def nodePatternsInternal(): Seq[TreePattern] = Seq()
-
+  //表示该表达式使用的时区 ID。由于时区可能不存在（例如，可能没有为某些操作指定时区），因此使用 Option[String] 来处理时区可能缺失的情况
   /** the timezone ID to be used to evaluate value. */
   def timeZoneId: Option[String]
-
+  //创建一个新的 TimeZoneAwareExpression 实例，并指定一个新的时区 ID
   /** Returns a copy of this expression with the specified timeZoneId. */
   def withTimeZone(timeZoneId: String): TimeZoneAwareExpression
-
+  //ZoneId 是 Java 8 中的新时区 API，表示时区的唯一标识符
   @transient lazy val zoneId: ZoneId = DateTimeUtils.getZoneId(timeZoneId.get)
 
   def zoneIdForType(dataType: DataType): ZoneId = dataType match {
-    case _: TimestampNTZType => java.time.ZoneOffset.UTC
+    case _: TimestampNTZType => java.time.ZoneOffset.UTC  //TimestampNTZType 是一种特殊的时间戳类型（无时区时间戳），它通常表示不考虑时区的时间戳。在这种情况下，返回的是 ZoneOffset.UTC，即 UTC 时区。
     case _ => zoneId
   }
 }
