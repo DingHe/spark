@@ -57,6 +57,7 @@ public abstract class MemoryConsumer {
   /**
    * Returns the size of used memory in bytes.
    */
+  //返回当前已经使用的内存
   public long getUsed() {
     return used;
   }
@@ -97,6 +98,7 @@ public abstract class MemoryConsumer {
     long required = size * 8L;
     MemoryBlock page = taskMemoryManager.allocatePage(required, this);
     if (page == null || page.size() < required) {
+      //如果分配不到内存，则抛出异常
       throwOom(page, required);
     }
     used += required;

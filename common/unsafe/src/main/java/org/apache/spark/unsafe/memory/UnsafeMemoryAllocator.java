@@ -22,6 +22,7 @@ import org.apache.spark.unsafe.Platform;
 /**
  * A simple {@link MemoryAllocator} that uses {@code Unsafe} to allocate off-heap memory.
  */
+//堆外内存分配器
 public class UnsafeMemoryAllocator implements MemoryAllocator {
 
   @Override

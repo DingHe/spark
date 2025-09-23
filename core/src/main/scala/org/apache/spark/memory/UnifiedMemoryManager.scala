@@ -46,10 +46,11 @@ import org.apache.spark.storage.BlockId
  *                          it if necessary. Cached blocks can be evicted only if actual
  *                          storage memory usage exceeds this region.
  */
+//Spark 中负责统一内存管理的核心类。它的主要作用是动态地在执行（Execution）内存和存储（Storage）内存之间分配和调整可用空间
 private[spark] class UnifiedMemoryManager(
     conf: SparkConf,
-    val maxHeapMemory: Long,  //总的堆内内存
-    onHeapStorageRegionSize: Long,  //存储内存
+    val maxHeapMemory: Long,  //存储执行器（Executor）可用的总堆内内存大小
+    onHeapStorageRegionSize: Long,  //定义了存储内存的静态初始大小
     numCores: Int)
   extends MemoryManager(
     conf,
@@ -64,11 +65,11 @@ private[spark] class UnifiedMemoryManager(
   }
 
   assertInvariants()
-  //总的堆内内存
+  //返回当前可用于存储的最大堆内内存
   override def maxOnHeapStorageMemory: Long = synchronized {
     maxHeapMemory - onHeapExecutionMemoryPool.memoryUsed
   }
- //总的堆外内存
+ //返回当前可用于存储的最大堆外内存
   override def maxOffHeapStorageMemory: Long = synchronized {
     maxOffHeapMemory - offHeapExecutionMemoryPool.memoryUsed
   }
@@ -82,12 +83,15 @@ private[spark] class UnifiedMemoryManager(
    * active tasks) before it is forced to spill. This can happen if the number of tasks increase
    * but an older task had a lot of memory already.
    */
+  // 为一个任务尝试（TaskAttempt）申请执行内存
   override private[memory] def acquireExecutionMemory(
       numBytes: Long,
       taskAttemptId: Long,
       memoryMode: MemoryMode): Long = synchronized {
     assertInvariants()
     assert(numBytes >= 0)
+    //根据 memoryMode（堆内或堆外），选择相应的内存池
+    //执行内存池、存储内存池、存储内存大小，最大内存
     val (executionPool, storagePool, storageRegionSize, maxMemory) = memoryMode match {
       case MemoryMode.ON_HEAP => (
         onHeapExecutionMemoryPool,
@@ -103,11 +107,12 @@ private[spark] class UnifiedMemoryManager(
 
     /**
      * Grow the execution pool by evicting cached blocks, thereby shrinking the storage pool.
-     * 如果执行内存不足且存储区域占用了超过onHeapStorageRegionSize的空间，则通过驱逐存储块释放内存
      * When acquiring memory for a task, the execution pool may need to make multiple
      * attempts. Each attempt must be able to evict storage in case another task jumps in
      * and caches a large block between the attempts. This is called once per attempt.
      */
+    // 如果执行内存不足且存储区域占用了超过onHeapStorageRegionSize的空间，则通过驱逐存储块释放内存
+    //用于在执行内存不足时，尝试通过驱逐存储块来回收内存。它会检查存储池中是否有超过其初始大小 (storageRegionSize) 的部分，如果有，就将其回收，并增加执行池的大小
     def maybeGrowExecutionPool(extraMemoryNeeded: Long): Unit = {
       if (extraMemoryNeeded > 0) {
         // There is not enough free memory in the execution pool, so try to reclaim memory from
@@ -140,6 +145,7 @@ private[spark] class UnifiedMemoryManager(
      * its fair share of execution memory, mistakenly thinking that other tasks can acquire
      * the portion of storage memory that cannot be evicted.
      */
+    //用于计算执行池的最大可用大小。这确保了在分配内存时，任务不会超过其公平份额
     def computeMaxExecutionPoolSize(): Long = {
       maxMemory - math.min(storagePool.memoryUsed, storageRegionSize)
     }
@@ -147,7 +153,7 @@ private[spark] class UnifiedMemoryManager(
     executionPool.acquireMemory(
       numBytes, taskAttemptId, maybeGrowExecutionPool, () => computeMaxExecutionPoolSize)
   }
-
+  //为一个缓存块（Block）申请存储内存
   override def acquireStorageMemory(
       blockId: BlockId,
       numBytes: Long,
@@ -164,7 +170,8 @@ private[spark] class UnifiedMemoryManager(
         offHeapStorageMemoryPool,
         maxOffHeapStorageMemory)
     }
-    if (numBytes > maxMemory) {  //如果大于最大存储内存，则直接返回放不下
+    //如果请求的内存量超过了当前可用的总存储内存（由 max...StorageMemory 方法动态计算），则直接失败
+    if (numBytes > maxMemory) {
       // Fail fast if the block simply won't fit
       logInfo(s"Will not store $blockId as the required space ($numBytes bytes) exceeds our " +
         s"memory limit ($maxMemory bytes)")
@@ -197,6 +204,7 @@ object UnifiedMemoryManager {
   // the memory used for execution and storage will be (1024 - 300) * 0.6 = 434MB by default.
   private val RESERVED_SYSTEM_MEMORY_BYTES = 300 * 1024 * 1024 //为非执行和非存储任务保留固定内存（300MB），确保系统运行正常
 
+  //通过配置文件，构建一个统一内存管理器
   def apply(conf: SparkConf, numCores: Int): UnifiedMemoryManager = {
     val maxMemory = getMaxMemory(conf)
     new UnifiedMemoryManager(

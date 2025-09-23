@@ -36,6 +36,7 @@ import org.apache.spark.util.Utils
  * sorts and aggregations, while storage memory refers to that used for caching and propagating
  * internal data across the cluster. There exists one MemoryManager per JVM.
  */
+//MemoryManager 是 Executor 层级，负责统一管理和分配内存
 private[spark] abstract class MemoryManager(
     conf: SparkConf,
     numCores: Int, //表示JVM中可用的核心数
@@ -46,13 +47,13 @@ private[spark] abstract class MemoryManager(
 
   // -- Methods related to memory allocation policies and bookkeeping ------------------------------
 
-  @GuardedBy("this")  //存储内存、执行内存的堆内和堆外内存池
+  @GuardedBy("this")  //堆内存的存储内存大小
   protected val onHeapStorageMemoryPool = new StorageMemoryPool(this, MemoryMode.ON_HEAP)
-  @GuardedBy("this")
+  @GuardedBy("this") //堆外内存的存储内存大小
   protected val offHeapStorageMemoryPool = new StorageMemoryPool(this, MemoryMode.OFF_HEAP)
-  @GuardedBy("this")
+  @GuardedBy("this") //堆内存的执行内存大小
   protected val onHeapExecutionMemoryPool = new ExecutionMemoryPool(this, MemoryMode.ON_HEAP)
-  @GuardedBy("this")
+  @GuardedBy("this") //堆外内存的执行内存大小
   protected val offHeapExecutionMemoryPool = new ExecutionMemoryPool(this, MemoryMode.OFF_HEAP)
   //堆内存中的存储和执行内存池设置了初始大小
   onHeapStorageMemoryPool.incrementPoolSize(onHeapStorageMemory)
@@ -82,6 +83,7 @@ private[spark] abstract class MemoryManager(
    * Set the [[MemoryStore]] used by this manager to evict cached blocks.
    * This must be set after construction due to initialization ordering constraints.
    */
+  //设置存储内存池的内存存储器
   final def setMemoryStore(store: MemoryStore): Unit = synchronized {
     onHeapStorageMemoryPool.setMemoryStore(store)
     offHeapStorageMemoryPool.setMemoryStore(store)
@@ -108,21 +110,22 @@ private[spark] abstract class MemoryManager(
   /**
    * Try to acquire up to `numBytes` of execution memory for the current task and return the
    * number of bytes obtained, or 0 if none can be allocated.
-   * 尝试分配一定量的执行内存，如果内存不足，可以阻塞等待
    * This call may block until there is enough free memory in some situations, to make sure each
    * task has a chance to ramp up to at least 1 / 2N of the total memory pool (where N is the # of
    * active tasks) before it is forced to spill. This can happen if the number of tasks increase
    * but an older task had a lot of memory already.
    */
+  //为任务尝试分配一定量的执行内存，如果内存不足，可以阻塞等待
   private[memory]
   def acquireExecutionMemory(
       numBytes: Long,
       taskAttemptId: Long,
       memoryMode: MemoryMode): Long
 
-  /** 释放执行内存
+  /**
    * Release numBytes of execution memory belonging to the given task.
    */
+  // 释放指定任务的执行内存
   private[memory]
   def releaseExecutionMemory(
       numBytes: Long,
@@ -136,17 +139,18 @@ private[spark] abstract class MemoryManager(
 
   /**
    * Release all memory for the given task and mark it as inactive (e.g. when a task ends).
-   * 释放执行内存
    * @return the number of bytes freed.
    */
+  // 释放指定任务的所有执行内存
   private[memory] def releaseAllExecutionMemoryForTask(taskAttemptId: Long): Long = synchronized {
     onHeapExecutionMemoryPool.releaseAllMemoryForTask(taskAttemptId) +
       offHeapExecutionMemoryPool.releaseAllMemoryForTask(taskAttemptId)
   }
 
-  /** 释放存储内存
+  /**
    * Release N bytes of storage memory.
    */
+  // 释放存储内存
   def releaseStorageMemory(numBytes: Long, memoryMode: MemoryMode): Unit = synchronized {
     memoryMode match {
       case MemoryMode.ON_HEAP => onHeapStorageMemoryPool.releaseMemory(numBytes)
@@ -154,59 +158,67 @@ private[spark] abstract class MemoryManager(
     }
   }
 
-  /** 释放存储内存
+  /**
    * Release all storage memory acquired.
    */
+  //释放所有存储内存
   final def releaseAllStorageMemory(): Unit = synchronized {
     onHeapStorageMemoryPool.releaseAllMemory()
     offHeapStorageMemoryPool.releaseAllMemory()
   }
 
-  /** 释放解压内存
+  /**
    * Release N bytes of unroll memory.
    */
+  // 释放展开内存
   final def releaseUnrollMemory(numBytes: Long, memoryMode: MemoryMode): Unit = synchronized {
     releaseStorageMemory(numBytes, memoryMode)
   }
 
-  /** 当前使用的执行内存
+  /**
    * Execution memory currently in use, in bytes.
    */
+  // 当前执行内存的使用量
   final def executionMemoryUsed: Long = synchronized {
     onHeapExecutionMemoryPool.memoryUsed + offHeapExecutionMemoryPool.memoryUsed
   }
 
-  /** 当前使用的存储内存
+  /**
    * Storage memory currently in use, in bytes.
    */
+  // 当前存储内存的使用量
   final def storageMemoryUsed: Long = synchronized {
     onHeapStorageMemoryPool.memoryUsed + offHeapStorageMemoryPool.memoryUsed
   }
 
-  /** 当前使用的堆内执行内存
+  /**
    *  On heap execution memory currently in use, in bytes.
    */
+  // 堆内执行内存的使用量
   final def onHeapExecutionMemoryUsed: Long = synchronized {
     onHeapExecutionMemoryPool.memoryUsed
   }
 
-  /** 当前使用的堆外执行内存
+  /**
    *  Off heap execution memory currently in use, in bytes.
    */
+  //堆外执行内存的使用量
   final def offHeapExecutionMemoryUsed: Long = synchronized {
     offHeapExecutionMemoryPool.memoryUsed
   }
 
-  /** 当前使用的堆内存储内存
+  /**
    *  On heap storage memory currently in use, in bytes.
    */
+  //堆内存储内存的使用量
   final def onHeapStorageMemoryUsed: Long = synchronized {
     onHeapStorageMemoryPool.memoryUsed
   }
 
-  /** 当前使用的堆外存储内存
+  /**
    *  Off heap storage memory currently in use, in bytes.
    */
+  //堆外存储内存的使用量
   final def offHeapStorageMemoryUsed: Long = synchronized {
     offHeapStorageMemoryPool.memoryUsed
   }
@@ -272,6 +284,7 @@ private[spark] abstract class MemoryManager(
   /**
    * Allocates memory for use by Unsafe/Tungsten code.
    */
+  // 具体内存的分配器
   private[memory] final val tungstenMemoryAllocator: MemoryAllocator = {
     tungstenMemoryMode match {
       case MemoryMode.ON_HEAP => MemoryAllocator.HEAP

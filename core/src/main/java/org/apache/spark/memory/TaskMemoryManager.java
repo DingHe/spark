@@ -52,11 +52,15 @@ import org.apache.spark.util.Utils;
  * store a "page number" and the lower 51 bits to store an offset within this page. These page
  * numbers are used to index into a "page table" array inside of the MemoryManager in order to
  * retrieve the base object.
- * <p>  负责管理Spark任务在执行过程中分配的内存，特别是在Tungsten执行引擎中，支持堆外内存（off-heap）和堆内存（on-heap）的管理
+ * <p>
  * This allows us to address 8192 pages. In on-heap mode, the maximum page size is limited by the
  * maximum size of a long[] array, allowing us to address 8192 * (2^31 - 1) * 8 bytes, which is
  * approximately 140 terabytes of memory.
  */
+// 负责管理Spark任务在执行过程中分配的内存，特别是在Tungsten执行引擎中，支持堆外内存（off-heap）和堆内存（on-heap）的管理
+//管理 单个 Task 的内存使用
+//Execution Memory（执行内存）：用于 shuffle、join、aggregation、sort、window 等运算
+//Storage Memory（存储内存）：用于缓存 RDD block、广播变量、序列化数据等
 public class TaskMemoryManager {
 
   private static final Logger logger = LoggerFactory.getLogger(TaskMemoryManager.class);
@@ -78,6 +82,7 @@ public class TaskMemoryManager {
    * array, which is (2^31 - 1) * 8 bytes (or about 17 gigabytes). Therefore, we cap this at 17
    * gigabytes.
    */
+  //对内存最大分配为17G
   public static final long MAXIMUM_PAGE_SIZE_BYTES = ((1L << 31) - 1) * 8L; //每个页面的最大字节数，由于在堆外内存模式下，页面大小理论上可以达到2+PB（千万亿字节），但由于堆内存限制最大为17GB，所以这里将其限制为17GB
 
   /** Bit mask for the lower 51 bits of a long. */

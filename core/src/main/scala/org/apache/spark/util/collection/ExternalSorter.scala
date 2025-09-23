@@ -163,8 +163,9 @@ private[spark] class ExternalSorter[K, V, C](
   @volatile private var isShuffleSort: Boolean = true
   //强制溢写的磁盘文件
   private val forceSpillFiles = new ArrayBuffer[SpilledFile]
+  //支持磁盘溢写的迭代器
   @volatile private var readingIterator: SpillableIterator = null
-
+  //每个分区的CheckSum
   private val partitionChecksums = createPartitionChecksums(numPartitions, conf)
 
   def getChecksums: Array[Long] = getChecksumValues(partitionChecksums)
@@ -272,6 +273,7 @@ private[spark] class ExternalSorter[K, V, C](
    * @param collection whichever collection we're using (map or buffer)
    */
   // 将指定的内存集合（map 或 buffer）溢写到磁盘
+  // 在Spillable 接口中调用
   override protected[this] def spill(collection: WritablePartitionedPairCollection[K, C]): Unit = {
     //获取一个排序好的、可写入的迭代器
     val inMemoryIterator = collection.destructiveSortedWritablePartitionedIterator(comparator)

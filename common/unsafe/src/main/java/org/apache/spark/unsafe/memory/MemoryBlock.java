@@ -24,6 +24,9 @@ import org.apache.spark.unsafe.Platform;
 /**
  * A consecutive block of memory, starting at a {@link MemoryLocation} with a fixed size.
  */
+//代表一块连续的内存块
+  //作用是在 MemoryLocation 的基础上，增加了内存块的长度信息，并将内存块与 TaskMemoryManager 的内存页编号关联起来。
+// 它为 Spark 的执行引擎提供了一种简单、统一的方式来表示和操作物理内存块，无论这块内存是位于 JVM 堆内还是堆外
 public class MemoryBlock extends MemoryLocation {
 
   /** Special `pageNumber` value for pages which were not allocated by TaskMemoryManagers */

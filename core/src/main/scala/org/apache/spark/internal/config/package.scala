@@ -358,7 +358,7 @@ package object config {
     .version("0.6.0")
     .intConf
     .createOptional
-
+  //是否启用堆外内存
   private[spark] val MEMORY_OFFHEAP_ENABLED = ConfigBuilder("spark.memory.offHeap.enabled")
     .doc("If true, Spark will attempt to use off-heap memory for certain operations. " +
       "If off-heap memory use is enabled, then spark.memory.offHeap.size must be positive.")
@@ -366,7 +366,7 @@ package object config {
     .withAlternative("spark.unsafe.offHeap")
     .booleanConf
     .createWithDefault(false)
-
+  //堆外内存的总大小
   private[spark] val MEMORY_OFFHEAP_SIZE = ConfigBuilder("spark.memory.offHeap.size")
     .doc("The absolute amount of memory which can be used for off-heap allocation, " +
       " in bytes unless otherwise specified. " +
@@ -377,7 +377,8 @@ package object config {
     .bytesConf(ByteUnit.BYTE)
     .checkValue(_ >= 0, "The off-heap memory size must not be negative")
     .createWithDefault(0)
-
+ //堆外内存中，存储内存的占比
+  //也是堆内内存中，存储内存的占比
   private[spark] val MEMORY_STORAGE_FRACTION = ConfigBuilder("spark.memory.storageFraction")
     .doc("Amount of storage memory immune to eviction, expressed as a fraction of the " +
       "size of the region set aside by spark.memory.fraction. The higher this is, the " +

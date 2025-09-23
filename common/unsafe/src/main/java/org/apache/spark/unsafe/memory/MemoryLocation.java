@@ -23,12 +23,22 @@ import javax.annotation.Nullable;
  * A memory location. Tracked either by a memory address (with off-heap allocation),
  * or by an offset from a JVM object (on-heap allocation).
  */
+//用于封装和表示一块内存的物理位置
+  //能以统一的方式表示两种不同类型的内存：
+  //堆内内存 (On-Heap)：JVM 堆中的内存
+  //堆外内存 (Off-Heap)：直接从操作系统分配的、不受 JVM 管理的内存
 public class MemoryLocation {
 
+  //表示内存的基对象（base object）
+  //如果 MemoryLocation 指向的是堆内内存（ON_HEAP），obj 就是一个 Java 数组对象（例如 byte[]），这块内存就在这个数组内部
+  //如果 MemoryLocation 指向的是堆外内存（OFF_HEAP），obj 则为 null，因为堆外内存不属于任何 Java 对象
   @Nullable
-  Object obj; //表示内存的基地址。如果内存是堆外内存，这个字段可能为 null
+  Object obj;
 
-  long offset; //表示内存的偏移量。对于堆内存来说，它表示相对于 obj 的偏移量；对于堆外内存，是内存的地址
+  //表示内存的偏移量（offset）
+  //如果是堆内内存，offset 表示相对于 obj 数组起始地址的偏移量，用以定位具体的内存块
+  //如果是堆外内存，offset 则直接存储了内存块的起始地址（一个 long 类型的内存指针）
+  long offset;
 
   public MemoryLocation(@Nullable Object obj, long offset) {
     this.obj = obj;

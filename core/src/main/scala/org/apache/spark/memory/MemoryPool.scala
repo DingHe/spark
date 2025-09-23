@@ -27,14 +27,20 @@ import javax.annotation.concurrent.GuardedBy
  *             to `Object` to avoid programming errors, since this object should only be used for
  *             synchronization purposes.
  */
-private[memory] abstract class MemoryPool(lock: Object) {
-
+// 主要作用是管理一块可调节大小的内存区域，并提供对其使用情况进行跟踪的通用接口
+//设计是为了封装对内存池的记账（bookkeeping） 逻辑，例如追踪池子的总大小和已使用大小。它将这些通用功能抽象出来，由不同的子类来实现具体的内存分配策略
+//有两个主要的 MemoryPool 子类
+//StorageMemoryPool：用于管理缓存 RDD、广播变量等存储内存
+//ExecutionMemoryPool：用于管理 Shuffle、聚合等执行任务所需的内存
+private[memory] abstract class MemoryPool(lock: Object) {//一个用于同步的对象
+  //存储内存池的当前总大小，单位为字节
   @GuardedBy("lock")
   private[this] var _poolSize: Long = 0
 
   /**
    * Returns the current size of the pool, in bytes.
    */
+    //返回内存池的当前总大小
   final def poolSize: Long = lock.synchronized {
     _poolSize
   }
@@ -42,6 +48,7 @@ private[memory] abstract class MemoryPool(lock: Object) {
   /**
    * Returns the amount of free memory in the pool, in bytes.
    */
+    //返回内存池中的空闲内存量
   final def memoryFree: Long = lock.synchronized {
     _poolSize - memoryUsed
   }
@@ -49,6 +56,7 @@ private[memory] abstract class MemoryPool(lock: Object) {
   /**
    * Expands the pool by `delta` bytes.
    */
+    //增加内存池的总大小
   final def incrementPoolSize(delta: Long): Unit = lock.synchronized {
     require(delta >= 0)
     _poolSize += delta
@@ -57,6 +65,7 @@ private[memory] abstract class MemoryPool(lock: Object) {
   /**
    * Shrinks the pool by `delta` bytes.
    */
+    //减少内存池的总大小
   final def decrementPoolSize(delta: Long): Unit = lock.synchronized {
     require(delta >= 0)
     require(delta <= _poolSize)
@@ -67,5 +76,6 @@ private[memory] abstract class MemoryPool(lock: Object) {
   /**
    * Returns the amount of used memory in this pool (in bytes).
    */
+  //已经使用的内存
   def memoryUsed: Long
 }
