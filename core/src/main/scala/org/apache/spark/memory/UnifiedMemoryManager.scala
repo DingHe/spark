@@ -47,6 +47,16 @@ import org.apache.spark.storage.BlockId
  *                          storage memory usage exceeds this region.
  */
 //Spark 中负责统一内存管理的核心类。它的主要作用是动态地在执行（Execution）内存和存储（Storage）内存之间分配和调整可用空间
+// UnifiedMemoryManager 是否能同时分配堆内和堆外？
+// 不能在同一个 UnifiedMemoryManager 实例中同时分配堆内和堆外内存
+// 默认优先用堆内：适合中小规模任务，简单稳定
+// 开启堆外的典型场景：
+// GC 时间 > 10% 甚至更高
+// Executor 堆内存占满，频繁 Full GC
+// 运行 Spark SQL，特别是 Dataset/DataFrame 大量缓存 + Shuffle 的场景
+// 机器内存大（> 64G），希望避免 JVM 堆太大带来的 GC 问题
+
+//Executor是通过SparkEnv来获取UnifiedMemoryManager实例的
 private[spark] class UnifiedMemoryManager(
     conf: SparkConf,
     val maxHeapMemory: Long,  //存储执行器（Executor）可用的总堆内内存大小

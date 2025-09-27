@@ -73,7 +73,10 @@ case class ShuffleBlockBatchId(
     "shuffle_" + shuffleId + "_" + mapId + "_" + startReduceId + "_" + endReduceId
   }
 }
-
+// Spark 3.2.0 引入的一个特殊的块标识符（BlockId）。
+// 它的主要目的是在 Push-Based Shuffle (基于推送的 Shuffle) 架构中，为合并后的 Shuffle 数据块的小块/分块（Chunk） 提供唯一的身份标识
+//在传统的 Pull-Based Shuffle 中，Map 输出通常存储为 ShuffleBlockId。
+// 但在 Push-Based Shuffle 机制中，数据可能在 Shuffle Writer 端（如 Map 端）被提前合并（Shuffle Merge），并切分成更小的数据块或分块（Chunks） 推送到 Shuffle Service 或外部存储
 @Since("3.2.0")
 @DeveloperApi
 case class ShuffleBlockChunkId(
@@ -111,7 +114,7 @@ case class ShufflePushBlockId(
   override def name: String = "shufflePush_" + shuffleId + "_" +
     shuffleMergeId + "_" + mapIndex + "_" + reduceId + ""
 }
-
+//主要目的是在 Push-Based Shuffle (基于推送的 Shuffle) 架构中，为完整且合并后的 Shuffle 数据块提供唯一的身份标识
 @Since("3.2.0")
 @DeveloperApi
 case class ShuffleMergedBlockId(

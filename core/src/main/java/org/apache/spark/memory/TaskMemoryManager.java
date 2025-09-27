@@ -112,11 +112,13 @@ public class TaskMemoryManager {
    * without doing any masking or lookups. Since this branching should be well-predicted by the JIT,
    * this extra layer of indirection / abstraction hopefully shouldn't be too expensive.
    */
+  // 堆外内存还是对内内存
   final MemoryMode tungstenMemoryMode;
 
   /**
    * Tracks spillable memory consumers.
    */
+  //跟踪可溢写的内存消费者
   @GuardedBy("this")
   private final HashSet<MemoryConsumer> consumers;
 
@@ -141,6 +143,10 @@ public class TaskMemoryManager {
    *
    * @return number of bytes successfully granted (<= N).
    */
+  //负责为任务中的内存使用者（MemoryConsumer）分配执行内存。
+  // 如果内存不足，它会触发其他内存消费者的溢写（spill）操作来释放更多内存
+  //required（所需的内存字节数）
+  //requestingConsumer（请求内存的消费者）
   public long acquireExecutionMemory(long required, MemoryConsumer requestingConsumer) {
     assert(required >= 0);
     assert(requestingConsumer != null);
@@ -150,10 +156,12 @@ public class TaskMemoryManager {
     // off-heap memory. This is subject to change, though, so it may be risky to make this
     // optimization now in case we forget to undo it late when making changes.
     synchronized (this) {
+      //向Executor请求分配所需的内存
       long got = memoryManager.acquireExecutionMemory(required, taskAttemptId, mode);
 
       // Try to release memory from other consumers first, then we can reduce the frequency of
       // spilling, avoid to have too many spilled files.
+      //如果初始分配的内存 got 小于请求的 required，说明内存不足，需要进行溢写来释放空间
       if (got < required) {
         if (logger.isDebugEnabled()) {
           logger.debug("Task {} need to spill {} for {}", taskAttemptId,
@@ -174,9 +182,13 @@ public class TaskMemoryManager {
         // Build a map of consumer in order of memory usage to prioritize spilling. Assign current
         // consumer (if present) a nominal memory usage of 0 so that it is always last in priority
         // order. The map will include all consumers that have previously acquired memory.
+        //key: 消费者已使用的内存
+        //value: 使用相同内存量的消费者列表
         TreeMap<Long, List<MemoryConsumer>> sortedConsumers = new TreeMap<>();
+        //按已使用的内存量对所有活跃的 MemoryConsumer 进行排序
         for (MemoryConsumer c: consumers) {
           if (c.getUsed() > 0 && c.getMode() == mode) {
+            //请求者本身（requestingConsumer）会被赋予一个特殊键 0，确保它最后才被考虑溢写
             long key = c == requestingConsumer ? 0 : c.getUsed();
             List<MemoryConsumer> list =
                 sortedConsumers.computeIfAbsent(key, k -> new ArrayList<>(1));
@@ -184,15 +196,19 @@ public class TaskMemoryManager {
           }
         }
         // Iteratively spill consumers until we've freed enough memory or run out of consumers.
+        //循环溢写
         while (got < required && !sortedConsumers.isEmpty()) {
           // Get the consumer using the least memory more than the remaining required memory.
+          //寻找第一个已使用内存大于或等于还需内存量 (required - got) 的消费者
           Map.Entry<Long, List<MemoryConsumer>> currentEntry =
             sortedConsumers.ceilingEntry(required - got);
           // No consumer has enough memory on its own, start with spilling the biggest consumer.
+          //如果找不到，则溢写当前内存用量最大的消费者，这是为了尽快释放出最大的内存块
           if (currentEntry == null) {
             currentEntry = sortedConsumers.lastEntry();
           }
           List<MemoryConsumer> cList = currentEntry.getValue();
+          //执行溢写
           got += trySpillAndAcquire(requestingConsumer, required - got, cList, cList.size() - 1);
           if (cList.isEmpty()) {
             sortedConsumers.remove(currentEntry.getKey());
@@ -218,11 +234,18 @@ public class TaskMemoryManager {
    * @throws RuntimeException if task is interrupted
    * @throws SparkOutOfMemoryError if an IOException occurs during spilling
    */
+  //用于在内存不足时，尝试通过溢写（spill） 其他任务的内存来为当前任务腾出空间。
+  // 它会调用被选中的 MemoryConsumer 的 spill 方法，然后尝试重新分配内存
+  //requestingConsumer: 发起请求的内存消费者
+  //requested: 请求的内存字节数
+  //cList: 包含待溢写消费者的列表
+  //idx: 待溢写消费者在列表中的索引
   private long trySpillAndAcquire(
       MemoryConsumer requestingConsumer,
       long requested,
       List<MemoryConsumer> cList,
       int idx) {
+    //获取请求者的内存模式（堆内或堆外），并根据传入的索引 idx 从列表中获取要溢写的消费者 consumerToSpill
     MemoryMode mode = requestingConsumer.getMode();
     MemoryConsumer consumerToSpill = cList.get(idx);
     if (logger.isDebugEnabled()) {
@@ -230,6 +253,7 @@ public class TaskMemoryManager {
         Utils.bytesToString(requested), consumerToSpill, requestingConsumer);
     }
     try {
+      //传入需要释放的字节数 requested 和请求者 requestingConsumer
       long released = consumerToSpill.spill(requested, requestingConsumer);
       if (released > 0) {
         if (logger.isDebugEnabled()) {
@@ -243,6 +267,7 @@ public class TaskMemoryManager {
         // newly-freed memory before we have a chance to do so (SPARK-35486). Therefore we may
         // not be able to acquire all the memory that was just spilled. In that case, we will
         // try again in the next loop iteration.
+        //再次申请内存
         return memoryManager.acquireExecutionMemory(requested, taskAttemptId, mode);
       } else {
         cList.remove(idx);
@@ -313,13 +338,17 @@ public class TaskMemoryManager {
    *
    * @throws TooLargePageException
    */
+  //为任务分配一个内存页。这个方法是 Spark Tungsten 内存管理的核心，它负责从全局的 MemoryManager 请求内存，并在任务级别对已分配的内存块进行追踪
+  //size（请求的内存大小）
+  //consumer（请求内存的消费者）
   public MemoryBlock allocatePage(long size, MemoryConsumer consumer) {
     assert(consumer != null);
     assert(consumer.getMode() == tungstenMemoryMode);
+    //检查请求的内存大小是否超过了单个内存页的最大限制。如果超过，直接抛出 TooLargePageException 异常，因为单个内存页无法满足如此大的请求
     if (size > MAXIMUM_PAGE_SIZE_BYTES) {
       throw new TooLargePageException(size);
     }
-
+    //请求执行内存
     long acquired = acquireExecutionMemory(size, consumer);
     if (acquired <= 0) {
       return null;
@@ -327,18 +356,22 @@ public class TaskMemoryManager {
 
     final int pageNumber;
     synchronized (this) {
+      //nextClearBit(0) 会找到第一个未被使用的页编号，作为本次分配的唯一标识
       pageNumber = allocatedPages.nextClearBit(0);
       if (pageNumber >= PAGE_TABLE_SIZE) {
         releaseExecutionMemory(acquired, consumer);
         throw new IllegalStateException(
           "Have already allocated a maximum of " + PAGE_TABLE_SIZE + " pages");
       }
+      //将找到的页编号在 BitSet 中标记为已使用
       allocatedPages.set(pageNumber);
     }
     MemoryBlock page = null;
     try {
+      //实际内存分配
       page = memoryManager.tungstenMemoryAllocator().allocate(acquired);
     } catch (OutOfMemoryError e) {
+      //抛出 OutOfMemoryError，意味着尽管 MemoryManager 认为有内存，但实际底层分配失败了。这通常是内存碎片化或其他复杂问题导致的
       logger.warn("Failed to allocate a page ({} bytes), try again.", acquired);
       // there is no enough memory actually, it means the actual free memory is smaller than
       // MemoryManager thought, we should keep the acquired memory.
@@ -360,6 +393,7 @@ public class TaskMemoryManager {
   /**
    * Free a block of memory allocated via {@link TaskMemoryManager#allocatePage}.
    */
+  //释放内存页
   public void freePage(MemoryBlock page, MemoryConsumer consumer) {
     assert (page.pageNumber != MemoryBlock.NO_PAGE_NUMBER) :
       "Called freePage() on memory that wasn't allocated with allocatePage()";

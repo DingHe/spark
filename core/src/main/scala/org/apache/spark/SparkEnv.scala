@@ -69,7 +69,8 @@ class SparkEnv (
     val blockManager: BlockManager, //用于管理 Spark 存储的数据块的类，负责数据块的存储、读取和删除
     val securityManager: SecurityManager,
     val metricsSystem: MetricsSystem,
-    val memoryManager: MemoryManager, //管理 Spark 内存分配的类。它确保各个组件正确地分配内存资源。
+    //每个Executor的MemoryManager都统一采用这里初始化的类
+    val memoryManager: MemoryManager,
     val outputCommitCoordinator: OutputCommitCoordinator, //用于协调输出提交的类，主要用于支持 Spark 中的提交操作，如在任务失败时回滚操作。
     val conf: SparkConf) extends Logging {
 
@@ -318,7 +319,7 @@ object SparkEnv extends Logging {
       shortShuffleMgrNames.getOrElse(shuffleMgrName.toLowerCase(Locale.ROOT), shuffleMgrName)
     val shuffleManager = Utils.instantiateSerializerOrShuffleManager[ShuffleManager](
       shuffleMgrClass, conf, isDriver)
-
+    // 初始化统一内存管理模型
     val memoryManager: MemoryManager = UnifiedMemoryManager(conf, numUsableCores)
 
     val blockManagerPort = if (isDriver) {

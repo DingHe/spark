@@ -82,24 +82,36 @@ import org.apache.spark.util.{Clock, CompletionIterator, SystemClock, TaskComple
  * @param doBatchFetch fetch continuous shuffle blocks from same executor in batch if the server
  *                     side supports.
  */
+//  Reduce Task 用于从 Map Task 输出中高效、并行、受控地抓取（Fetch）Shuffle 数据块 的迭代器
+// 数据抓取管道化 (Pipelining): 它将网络数据传输（异步操作）转换为一个同步的 Scala 迭代器。调用者可以通过迭代器连续获取 (BlockId, InputStream) 对，从而在接收到下一个块的同时处理前一个块，实现数据流的管道化
+// 流量控制 (Throttling): 它严格限制同时在网络中传输的远程数据块总大小 (maxBytesInFlight)、并发请求数 (maxReqsInFlight) 和针对单个执行器的并发块数 (maxBlocksInFlightPerAddress)，以防止 Reduce Task 节点因同时拉取过多数据而导致内存溢出（OOM）
+// 本地/远程块统一处理: 它能智能区分要获取的块是本地（同一执行器）还是远程（其他执行器），并使用不同的机制进行获取
 private[spark]
 final class ShuffleBlockFetcherIterator(
     context: TaskContext,
-    shuffleClient: BlockStoreClient,
-    blockManager: BlockManager,
-    mapOutputTracker: MapOutputTracker,
+    shuffleClient: BlockStoreClient, //用于向远程执行器发起网络请求，抓取远程 Shuffle 数据块
+    blockManager: BlockManager,  //用于读取本地（同一执行器）存储的 Shuffle 数据块
+    mapOutputTracker: MapOutputTracker, //用于在 Push-Based Shuffle 模式下，如果抓取块失败，可以回退（fallback）到抓取原始块的场景
+    //Reduce Task 需要抓取的所有 Shuffle 块信息，按存储它们的 BlockManagerId 分组，包含 BlockId、大小（用于流控）和 Map 索引
     blocksByAddress: Iterator[(BlockManagerId, collection.Seq[(BlockId, Long, Int)])],
+    //用于对获取到的原始输入流进行封装处理，主要用于I/O 加密/解密和压缩/解压
     streamWrapper: (BlockId, InputStream) => InputStream,
+    //流量控制核心。限制网络中同时传输的远程数据块总大小（字节）
     maxBytesInFlight: Long,
+    //限制同时发出的远程网络请求的最大数量
     maxReqsInFlight: Int,
+    //限制针对单个远程执行器同时抓取的最大块数量
     maxBlocksInFlightPerAddress: Int,
+    //远程请求的总大小若超过此值，则会将数据先下载到磁盘（DownloadFile），否则直接下载到内存
     val maxReqSizeShuffleToMem: Long,
+    //当 Netty 因内存不足失败时，允许重试该块的最大次数
     maxAttemptsOnNettyOOM: Int,
     detectCorrupt: Boolean,
     detectCorruptUseExtraMemory: Boolean,
     checksumEnabled: Boolean,
     checksumAlgorithm: String,
     shuffleMetrics: ShuffleReadMetricsReporter,
+    //是否尝试在一次请求中从同一执行器抓取多个连续的 Shuffle 数据块
     doBatchFetch: Boolean,
   clock: Clock = new SystemClock())
   extends Iterator[(BlockId, InputStream)] with DownloadFileManager with Logging {
@@ -109,73 +121,88 @@ final class ShuffleBlockFetcherIterator(
   // Make remote requests at most maxBytesInFlight / 5 in length; the reason to keep them
   // smaller than maxBytesInFlight is to allow multiple, parallel fetches from up to 5
   // nodes, rather than blocking on reading output from one node.
+  //每次远程抓取请求的目标大小，通常是 maxBytesInFlight / 5，以允许更高的并行度
   private val targetRemoteRequestSize = math.max(maxBytesInFlight / 5, 1L)
 
   /**
    * Total number of blocks to fetch.
    */
+  //任务总共需要抓取的 Shuffle 数据块数量
   private[this] var numBlocksToFetch = 0
 
   /**
    * The number of blocks processed by the caller. The iterator is exhausted when
    * [[numBlocksProcessed]] == [[numBlocksToFetch]].
    */
+  //已经由调用者（Reduce Task）处理完毕的块数量。当它等于 numBlocksToFetch 时，迭代器结束。
   private[this] var numBlocksProcessed = 0
 
   private[this] val startTimeNs = System.nanoTime()
 
   /** Host local blocks to fetch, excluding zero-sized blocks. */
+  //存储需要在本地（同一执行器）获取的 Shuffle 块的 BlockId 和 Map 索引
   private[this] val hostLocalBlocks = scala.collection.mutable.LinkedHashSet[(BlockId, Int)]()
 
   /**
    * A queue to hold our results. This turns the asynchronous model provided by
    * [[org.apache.spark.network.BlockTransferService]] into a synchronous model (iterator).
    */
+  //异步转同步的核心。用于存储已成功获取或失败的 Shuffle 块结果 (FetchResult)。网络抓取线程将结果放入此队列，主线程通过迭代器从队列中取出
+  //next 方法从这里取出处理的结果，逐个处理
   private[this] val results = new LinkedBlockingQueue[FetchResult]
 
   /**
    * Current [[FetchResult]] being processed. We track this so we can release the current buffer
    * in case of a runtime exception when processing the current buffer.
    */
+   //记录当前正在被 Reduce Task 处理的块的结果。用于在处理过程中发生异常时，能够释放其关联的内存缓冲区
   @volatile private[this] var currentResult: SuccessFetchResult = null
 
   /**
    * Queue of fetch requests to issue; we'll pull requests off this gradually to make sure that
    * the number of bytes in flight is limited to maxBytesInFlight.
    */
+    //存储所有等待发送的远程抓取请求，这些请求将按照流控限制逐步发出
   private[this] val fetchRequests = new Queue[FetchRequest]
 
   /**
    * Queue of fetch requests which could not be issued the first time they were dequeued. These
    * requests are tried again when the fetch constraints are satisfied.
    */
+  //存储因当前的流控限制未满足（例如，bytesInFlight 过高）而被暂时推迟发送的远程抓取请求
   private[this] val deferredFetchRequests = new HashMap[BlockManagerId, Queue[FetchRequest]]()
 
   /** Current bytes in flight from our requests */
+  //当前正在网络中传输的远程数据块总大小，用于实施 maxBytesInFlight 限制
   private[this] var bytesInFlight = 0L
 
   /** Current number of requests in flight */
+  //当前正在执行的远程网络请求数量，用于实施 maxReqsInFlight 限制
   private[this] var reqsInFlight = 0
 
   /** Current number of blocks in flight per host:port */
+  //记录每个远程执行器当前正在传输的块数量，用于实施 maxBlocksInFlightPerAddress 限制
   private[this] val numBlocksInFlightPerAddress = new HashMap[BlockManagerId, Int]()
 
   /**
    * Count the retry times for the blocks due to Netty OOM. The block will stop retry if
    * retry times has exceeded the [[maxAttemptsOnNettyOOM]].
    */
+  //记录每个块因 Netty OOM 错误而重试的次数，防止无限重试
   private[this] val blockOOMRetryCounts = new HashMap[String, Int]
 
   /**
    * The blocks that can't be decompressed successfully, it is used to guarantee that we retry
    * at most once for those corrupted blocks.
    */
+  //存储已被识别为数据损坏的块 ID，用于避免对同一块进行重复重试
   private[this] val corruptedBlocks = mutable.HashSet[BlockId]()
 
   /**
    * Whether the iterator is still active. If isZombie is true, the callback interface will no
    * longer place fetched blocks into [[results]].
    */
+  //标志迭代器是否已停止或清理。如果为 true，后续网络抓取回调将不再向 results 队列中放置结果
   @GuardedBy("this")
   private[this] var isZombie = false
 
@@ -183,11 +210,12 @@ final class ShuffleBlockFetcherIterator(
    * A set to store the files used for shuffling remote huge blocks. Files in this set will be
    * deleted when cleanup. This is a layer of defensiveness against disk file leaks.
    */
+  //存储因 maxReqSizeShuffleToMem 限制而下载到磁盘的临时文件句柄，用于在清理时删除这些文件
   @GuardedBy("this")
   private[this] val shuffleFilesSet = mutable.HashSet[DownloadFile]()
-
+  ////当任务完成时执行ShuffleBlockFetcherIterator的清理操作，具体时调用cleanup方法
   private[this] val onCompleteCallback = new ShuffleFetchCompletionListener(this)
-
+  //在 Push-Based Shuffle 模式下，用于协助处理块抓取逻辑，包括获取本地合并块等
   private[this] val pushBasedFetchHelper = new PushBasedFetchHelper(
     this, shuffleClient, blockManager, mapOutputTracker, shuffleMetrics)
 
@@ -252,23 +280,29 @@ final class ShuffleBlockFetcherIterator(
       }
     }
   }
-
+ //实际执行远程网络抓取请求的核心方法。它负责向远程 BlockManager 发送请求、更新流量控制状态，并定义了处理请求成功和失败的异步回调逻辑
   private[this] def sendRequest(req: FetchRequest): Unit = {
+    //打印调试日志，记录正在发送的请求信息，包括块的数量、总大小以及目标地址
     logDebug("Sending request for %d blocks (%s) from %s".format(
       req.blocks.size, Utils.bytesToString(req.size), req.address.hostPort))
     bytesInFlight += req.size
     reqsInFlight += 1
 
     // so we can look up the block info of each blockID
+    //将请求中包含的每个块 ID 字符串映射到它的 (大小, Map 索引)，方便在异步回调中通过 ID 查找块的详细信息
     val infoMap = req.blocks.map {
       case FetchBlockInfo(blockId, size, mapIndex) => (blockId.toString, (size, mapIndex))
     }.toMap
+    //初始化一个集合，包含该请求中所有块的 ID。在异步回调中，每成功获取一个块，就将其从该集合中移除
     val remainingBlocks = new HashSet[String]() ++= infoMap.keys
+    //用于在 Netty OOM 失败时，临时存储因失败需要延迟重试的块 ID
     val deferredBlocks = new ArrayBuffer[String]()
+    //将请求中的块 ID 转换为字符串列表，这是底层 shuffleClient.fetchBlocks 方法所需的参数格式
     val blockIds = req.blocks.map(_.blockId.toString)
+    //提取请求目标地址
     val address = req.address
     val requestStartTime = clock.nanoTime()
-
+    //用于检查是否需要将 Netty OOM 失败的块打包成新的延迟请求
     @inline def enqueueDeferredFetchRequestIfNecessary(): Unit = {
       if (remainingBlocks.isEmpty && deferredBlocks.nonEmpty) {
         val blocks = deferredBlocks.map { blockId =>
@@ -279,29 +313,35 @@ final class ShuffleBlockFetcherIterator(
         deferredBlocks.clear()
       }
     }
-
+    //用于更新网络请求持续时间指标
     @inline def updateMergedReqsDuration(wasReqForMergedChunks: Boolean = false): Unit = {
+      //只有当当前请求中的所有块都已处理完毕 (remainingBlocks.isEmpty) 时，才更新指标
       if (remainingBlocks.isEmpty) {
         val durationMs = TimeUnit.NANOSECONDS.toMillis(clock.nanoTime() - requestStartTime)
+        //如果请求包含合并块片段 (ShuffleChunk)，则更新专门的远程合并请求持续时间指标
         if (wasReqForMergedChunks) {
           shuffleMetrics.incRemoteMergedReqsDuration(durationMs)
         }
         shuffleMetrics.incRemoteReqsDuration(durationMs)
       }
     }
-
+    //关键的内部类，它定义了异步网络请求成功和失败时的处理逻辑
     val blockFetchingListener = new BlockFetchingListener {
       override def onBlockFetchSuccess(blockId: String, buf: ManagedBuffer): Unit = {
         // Only add the buffer to results queue if the iterator is not zombie,
         // i.e. cleanup() has not been called yet.
         ShuffleBlockFetcherIterator.this.synchronized {
+          //确保并发安全。同时检查 isZombie 标志，如果迭代器已被清理，则不处理结果
           if (!isZombie) {
             // Increment the ref count because we need to pass this to a different thread.
             // This needs to be released after use.
+            //由于 ManagedBuffer 将从网络线程传递给主任务线程，需要调用 retain() 增加引用计数，防止底层内存被提前释放
             buf.retain()
+            //从 remainingBlocks 集合中移除已成功获取的块 ID
             remainingBlocks -= blockId
             blockOOMRetryCounts.remove(blockId)
             updateMergedReqsDuration(BlockId(blockId).isShuffleChunk)
+            //创建一个 SuccessFetchResult 对象，其中包含块 ID、Map 索引、内存缓冲区等信息，并将其放入阻塞队列 results 中，供主迭代器 (next()) 消费
             results.put(SuccessFetchResult(BlockId(blockId), infoMap(blockId)._2,
               address, infoMap(blockId)._1, buf, remainingBlocks.isEmpty))
             logDebug("remainingBlocks: " + remainingBlocks)
@@ -313,6 +353,7 @@ final class ShuffleBlockFetcherIterator(
 
       override def onBlockFetchFailure(blockId: String, e: Throwable): Unit = {
         ShuffleBlockFetcherIterator.this.synchronized {
+          // 记录获取块失败的错误信息
           logError(s"Failed to get block(s) from ${req.address.host}:${req.address.port}", e)
           e match {
             // SPARK-27991: Catch the Netty OOM and set the flag `isNettyOOMOnShuffle` (shared among
@@ -332,11 +373,13 @@ final class ShuffleBlockFetcherIterator(
             // Note that catching OOM and do something based on it is only a workaround for
             // handling the Netty OOM issue, which is not the best way towards memory management.
             // We can get rid of it when we find a way to manage Netty's memory precisely.
+            //处理 Netty OOM 错误：如果异常是 OutOfDirectMemoryError 并且该块的重试次数未达到上限
             case _: OutOfDirectMemoryError
                 if blockOOMRetryCounts.getOrElseUpdate(blockId, 0) < maxAttemptsOnNettyOOM =>
               if (!isZombie) {
                 val failureTimes = blockOOMRetryCounts(blockId)
                 blockOOMRetryCounts(blockId) += 1
+                // 核心背压机制：如果 OOM 标志尚未设置，则将其原子性地设置为 true，从而暂停所有其他任务的 Shuffle 抓取请求
                 if (isNettyOOMOnShuffle.compareAndSet(false, true)) {
                   // The fetcher can fail remaining blocks in batch for the same error. So we only
                   // log the warning once to avoid flooding the logs.
@@ -347,7 +390,8 @@ final class ShuffleBlockFetcherIterator(
                 deferredBlocks += blockId
                 enqueueDeferredFetchRequestIfNecessary()
               }
-
+            //处理非 OOM 错误（如网络错误、文件不存在等）
+            //如果失败的是 Push Shuffle 的块片段，则不将本次失败视为致命错误，而是放入 FallbackOnPushMergedFailureResult 结果，指示主迭代器回退（Fallback）到抓取原始块
             case _ =>
               val block = BlockId(blockId)
               if (block.isShuffleChunk) {
@@ -367,6 +411,8 @@ final class ShuffleBlockFetcherIterator(
     // already encrypted and compressed over the wire(w.r.t. the related configs), we can just fetch
     // the data and write it to file directly.
     if (req.size > maxReqSizeShuffleToMem) {
+      // 如果请求的总大小超过了阈值 (maxReqSizeShuffleToMem)，则调用 shuffleClient.fetchBlocks 发起请求，
+      // 并将 this (ShuffleBlockFetcherIterator，作为 DownloadFileManager 接口的实现) 作为最后一个参数传入。这会指示底层网络层将数据直接写入磁盘上的临时文件
       shuffleClient.fetchBlocks(address.host, address.port, address.executorId, blockIds.toArray,
         blockFetchingListener, this)
     } else {
@@ -379,11 +425,16 @@ final class ShuffleBlockFetcherIterator(
    * This is called from initialize and also from the fallback which is triggered from
    * [[PushBasedFetchHelper]].
    */
+  // 作用是遍历所有待抓取的 Shuffle 块，并根据它们的存储位置（本地、主机本地、远程等）将它们进行分类，同时将远程块打包成受流控限制的抓取请求 (FetchRequest)
   private[this] def partitionBlocksByFetchMode(
+      // 待处理的块信息迭代器，按 BlockManagerId 分组
       blocksByAddress: Iterator[(BlockManagerId, collection.Seq[(BlockId, Long, Int)])],
+      //用于存储需要从当前执行器读取的块，这是出参
       localBlocks: mutable.LinkedHashSet[(BlockId, Int)],
+      //用于存储需要从同一主机上其他执行器读取的块，这是出参
       hostLocalBlocksByExecutor:
         mutable.LinkedHashMap[BlockManagerId, collection.Seq[(BlockId, Long, Int)]],
+      //用于存储 Push-Based Shuffle 模式下，已在本地执行器上合并的块，这是出参
       pushMergedLocalBlocks: mutable.LinkedHashSet[BlockId]): ArrayBuffer[FetchRequest] = {
     logDebug(s"maxBytesInFlight: $maxBytesInFlight, targetRemoteRequestSize: "
       + s"$targetRemoteRequestSize, maxBlocksInFlightPerAddress: $maxBlocksInFlightPerAddress")
@@ -391,27 +442,35 @@ final class ShuffleBlockFetcherIterator(
     // Partition to local, host-local, push-merged-local, remote (includes push-merged-remote)
     // blocks.Remote blocks are further split into FetchRequests of size at most maxBytesInFlight
     // in order to limit the amount of data in flight
+    //用于收集所有打包好的、准备发送的远程抓取请求
     val collectedRemoteRequests = new ArrayBuffer[FetchRequest]
     var localBlockBytes = 0L
     var hostLocalBlockBytes = 0L
     var numHostLocalBlocks = 0
     var pushMergedLocalBlockBytes = 0L
     val prevNumBlocksToFetch = numBlocksToFetch
-
+    //获取备用存储（Fallback Storage）的执行器 ID。该 ID 通常与本地执行器 ID 一起被视为“本地”范围
     val fallback = FallbackStorage.FALLBACK_BLOCK_MANAGER_ID.executorId
+    // 集合包含当前执行器的 ID 和备用存储的 ID。如果块存储在这两个 ID 之一的执行器上，则视为“本地”块
     val localExecIds = Set(blockManager.blockManagerId.executorId, fallback)
     for ((address, blockInfos) <- blocksByAddress) {
+      //循环遍历输入迭代器，每次获取一个 (BlockManagerId, 块信息列表) 对
       checkBlockSizes(blockInfos)
       if (pushBasedFetchHelper.isPushMergedShuffleBlockAddress(address)) {
+        //检查该地址是否是一个推式合并（Push-Merged）Shuffle 块的地址
         // These are push-merged blocks or shuffle chunks of these blocks.
         if (address.host == blockManager.blockManagerId.host) {
+          //如果地址是推式合并块并且主机名与当前执行器的主机名相同，则该块是推式合并本地块
           numBlocksToFetch += blockInfos.size
           pushMergedLocalBlocks ++= blockInfos.map(_._1)
           pushMergedLocalBlockBytes += blockInfos.map(_._2).sum
         } else {
+          //如果推式合并块地址与当前主机不同，则将其视为远程块
           collectFetchRequests(address, blockInfos, collectedRemoteRequests)
         }
       } else if (localExecIds.contains(address.executorId)) {
+        //如果块的执行器 ID 属于 localExecIds（即当前执行器或备用存储），则视为本地块
+        //如果启用了批量抓取 (doBatchFetch)，尝试将连续的 Shuffle 块 ID 合并成一个逻辑上的块，以减少 I/O 操作数
         val mergedBlockInfos = mergeContinuousShuffleBlockIdsIfNeeded(
           blockInfos.map(info => FetchBlockInfo(info._1, info._2, info._3)), doBatchFetch)
         numBlocksToFetch += mergedBlockInfos.size
@@ -419,6 +478,8 @@ final class ShuffleBlockFetcherIterator(
         localBlockBytes += mergedBlockInfos.map(_.size).sum
       } else if (blockManager.hostLocalDirManager.isDefined &&
         address.host == blockManager.blockManagerId.host) {
+        //如果当前执行器配置了 hostLocalDirManager 并且块存储在同一主机上的其他执行器，则视为主机本地块（Host-Local）
+        //尝试合并主机本地块的 ID
         val mergedBlockInfos = mergeContinuousShuffleBlockIdsIfNeeded(
           blockInfos.map(info => FetchBlockInfo(info._1, info._2, info._3)), doBatchFetch)
         numBlocksToFetch += mergedBlockInfos.size
@@ -428,17 +489,22 @@ final class ShuffleBlockFetcherIterator(
         numHostLocalBlocks += blocksForAddress.size
         hostLocalBlockBytes += mergedBlockInfos.map(_.size).sum
       } else {
+        //如果不满足以上任何条件，则该块是需要通过网络抓取的远程块
         val (_, timeCost) = Utils.timeTakenMs[Unit] {
           collectFetchRequests(address, blockInfos, collectedRemoteRequests)
         }
         logDebug(s"Collected remote fetch requests for $address in $timeCost ms")
       }
     }
+    //遍历 collectedRemoteRequests 列表，计算远程块的总字节数 (remoteBlockBytes) 和总数量 (numRemoteBlocks)
     val (remoteBlockBytes, numRemoteBlocks) =
       collectedRemoteRequests.foldLeft((0L, 0))((x, y) => (x._1 + y.size, x._2 + y.blocks.size))
+
+    //累加所有四种类型块的总字节数
     val totalBytes = localBlockBytes + remoteBlockBytes + hostLocalBlockBytes +
       pushMergedLocalBlockBytes
     val blocksToFetchCurrentIteration = numBlocksToFetch - prevNumBlocksToFetch
+    //断言本次划分出的块总数（本地、主机本地、推式本地、远程）必须等于 numBlocksToFetch 的增量。这保证了所有非零大小的块都被正确分类
     assert(blocksToFetchCurrentIteration == localBlocks.size +
       numHostLocalBlocks + numRemoteBlocks + pushMergedLocalBlocks.size,
         s"The number of non-empty blocks $blocksToFetchCurrentIteration doesn't equal to the sum " +
@@ -467,20 +533,24 @@ final class ShuffleBlockFetcherIterator(
       + s"with ${blocks.size} blocks")
     FetchRequest(address, blocks, forMergedMetas)
   }
-
+  //用于将一批 Shuffle 块封装成一个或多个 FetchRequest 对象的核心工具
   private def createFetchRequests(
-      curBlocks: collection.Seq[FetchBlockInfo],
-      address: BlockManagerId,
-      isLast: Boolean,
-      collectedRemoteRequests: ArrayBuffer[FetchRequest],
-      enableBatchFetch: Boolean,
-      forMergedMetas: Boolean = false): ArrayBuffer[FetchBlockInfo] = {
+      curBlocks: collection.Seq[FetchBlockInfo], // 当前需要被打包的 FetchBlockInfo 序列
+      address: BlockManagerId, //块所属的远程执行器的 ID
+      isLast: Boolean, // 标志这批块是否是来自该 address 的所有块中的最后一批。这会影响流控限制的应用
+      collectedRemoteRequests: ArrayBuffer[FetchRequest], //出参，用于收集新创建的 FetchRequest 对象的列表
+      enableBatchFetch: Boolean,  // 标志是否应尝试进行连续块 ID 的合并（批量抓取优化）
+      forMergedMetas: Boolean = false): ArrayBuffer[FetchBlockInfo] = { // 标志请求是否针对合并块的元数据。方法返回一个剩余未打包的块列表
+    //如果 enableBatchFetch 为 true，该方法会将连续的 Shuffle 块 ID 合并成一个逻辑上的 MergedBlock ID，从而减少网络 I/O 次数
     val mergedBlocks = mergeContinuousShuffleBlockIdsIfNeeded(curBlocks, enableBatchFetch)
     numBlocksToFetch += mergedBlocks.size
     val retBlocks = new ArrayBuffer[FetchBlockInfo]
     if (mergedBlocks.length <= maxBlocksInFlightPerAddress) {
+      //情况 1： 如果合并后的块数量没有超过单个地址的最大在途块数限制
+      //将所有块打包成一个 FetchRequest，并将其添加到收集器中
       collectedRemoteRequests += createFetchRequest(mergedBlocks, address, forMergedMetas)
     } else {
+      //情况 2： 如果合并后的块数量超过了限制，需要将其分割成多个请求
       mergedBlocks.grouped(maxBlocksInFlightPerAddress).foreach { blocks =>
         if (blocks.length == maxBlocksInFlightPerAddress || isLast) {
           collectedRemoteRequests += createFetchRequest(blocks, address, forMergedMetas)
@@ -494,13 +564,18 @@ final class ShuffleBlockFetcherIterator(
     }
     retBlocks
   }
-
+  // 用于打包远程抓取请求的关键逻辑。它的核心目标是接收来自单个远程执行器的 Shuffle 块列表，并根据流量控制限制（如最大请求大小和最大块数）将它们分割成多个 FetchRequest 对象
+  // address: BlockManagerId 传入远程地址
+  // blockInfos: collection.Seq[...]	  存储在该远程执行器上的、待抓取的所有 Shuffle 块的信息序列。
   private def collectFetchRequests(
       address: BlockManagerId,
       blockInfos: collection.Seq[(BlockId, Long, Int)],
       collectedRemoteRequests: ArrayBuffer[FetchRequest]): Unit = {
+    //将块信息序列转换为迭代器，以便逐个处理
     val iterator = blockInfos.iterator
+    //累加当前正在打包的 FetchRequest 中所有块的总字节数
     var curRequestSize = 0L
+    //存储当前正在打包的 FetchRequest 中包含的 FetchBlockInfo 列表
     var curBlocks = new ArrayBuffer[FetchBlockInfo]()
 
     while (iterator.hasNext) {
@@ -511,13 +586,16 @@ final class ShuffleBlockFetcherIterator(
         // Either all blocks are push-merged blocks, shuffle chunks, or original blocks.
         // Based on these types, we decide to do batch fetch and create FetchRequests with
         // forMergedMetas set.
+        // 处理 Shuffle 块片段： 这通常是 Push-Based Shuffle 中合并块的片段
         case ShuffleBlockChunkId(_, _, _, _) =>
           if (curRequestSize >= targetRemoteRequestSize ||
             curBlocks.size >= maxBlocksInFlightPerAddress) {
+            //打包并重置
             curBlocks = createFetchRequests(curBlocks, address, isLast = false,
               collectedRemoteRequests, enableBatchFetch = false)
             curRequestSize = curBlocks.map(_.size).sum
           }
+          //处理 Shuffle 合并块： 通常是 Push-Based Shuffle 中完全合并的大块
         case ShuffleMergedBlockId(_, _, _) =>
           if (curBlocks.size >= maxBlocksInFlightPerAddress) {
             curBlocks = createFetchRequests(curBlocks, address, isLast = false,
@@ -525,6 +603,7 @@ final class ShuffleBlockFetcherIterator(
           }
         case _ =>
           // For batch fetch, the actual block in flight should count for merged block.
+          //处理普通 Shuffle 块： 这是最常见的 Shuffle 块类型
           val mayExceedsMaxBlocks = !doBatchFetch && curBlocks.size >= maxBlocksInFlightPerAddress
           if (curRequestSize >= targetRemoteRequestSize || mayExceedsMaxBlocks) {
             curBlocks = createFetchRequests(curBlocks, address, isLast = false,
@@ -534,7 +613,9 @@ final class ShuffleBlockFetcherIterator(
       }
     }
     // Add in the final request
+    //检查 curBlocks 中是否还有未打包的块（即循环中未触发打包条件的剩余块）
     if (curBlocks.nonEmpty) {
+      //确定最后一个请求的配置
       val (enableBatchFetch, forMergedMetas) = {
         curBlocks.head.blockId match {
           case ShuffleBlockChunkId(_, _, _, _) => (false, false)
@@ -546,7 +627,7 @@ final class ShuffleBlockFetcherIterator(
         enableBatchFetch = enableBatchFetch, forMergedMetas = forMergedMetas)
     }
   }
-
+  //检查块大小，不能小于等于0
   private def assertPositiveBlockSize(blockId: BlockId, blockSize: Long): Unit = {
     if (blockSize < 0) {
       throw BlockException(blockId, "Negative block size " + size)
@@ -554,7 +635,7 @@ final class ShuffleBlockFetcherIterator(
       throw BlockException(blockId, "Zero-sized blocks should be excluded.")
     }
   }
-
+  //检查一个集合中每个块的大小
   private def checkBlockSizes(blockInfos: collection.Seq[(BlockId, Long, Int)]): Unit = {
     blockInfos.foreach { case (blockId, size, _) => assertPositiveBlockSize(blockId, size) }
   }
@@ -692,38 +773,50 @@ final class ShuffleBlockFetcherIterator(
         s"in ${Utils.getUsedTimeNs(startTimeNs)}")
     }
   }
-
+ //Shuffle 数据抓取过程的启动函数。这个方法负责设置清理机制、划分数据块、初始化远程请求队列和发出首批网络请求
   private[this] def initialize(): Unit = {
     // Add a task completion callback (called in both success case and failure case) to cleanup.
+    //清理机制设置：为当前 TaskContext 注册一个完成回调函数 onCompleteCallback。
+    // 这个回调函数会在任务成功或失败时被调用，用于执行 ShuffleBlockFetcherIterator 的 cleanup() 逻辑，释放内存和删除临时文件
     context.addTaskCompletionListener(onCompleteCallback)
     // Local blocks to fetch, excluding zero-sized blocks.
+    //用于存储需要从当前执行器的 BlockManager 读取的 Shuffle 块 ID 和 Map 索引
     val localBlocks = mutable.LinkedHashSet[(BlockId, Int)]()
+    //用于存储需要从同一物理主机上的其他执行器读取的块。这利用了主机本地性优化
     val hostLocalBlocksByExecutor =
       mutable.LinkedHashMap[BlockManagerId, collection.Seq[(BlockId, Long, Int)]]()
+    //用于存储 Push-Based Shuffle 模式下，已在本地执行器上合并完成的 Shuffle 块
     val pushMergedLocalBlocks = mutable.LinkedHashSet[BlockId]()
     // Partition blocks by the different fetch modes: local, host-local, push-merged-local and
     // remote blocks.
+    //根据块的存储位置，将所有待抓取的块划分成四种类型：本地块、主机本地块、推式合并本地块和远程请求（需要通过网络抓取的块）
     val remoteRequests = partitionBlocksByFetchMode(
       blocksByAddress, localBlocks, hostLocalBlocksByExecutor, pushMergedLocalBlocks)
     // Add the remote requests into our queue in a random order
+    //将所有需要远程抓取的请求列表 (remoteRequests) 随机打乱，然后加入到待发送的请求队列 (fetchRequests) 中。随机化是为了避免集中请求少数几个 Map 输出服务器，实现负载均衡
     fetchRequests ++= Utils.randomize(remoteRequests)
     assert ((0 == reqsInFlight) == (0 == bytesInFlight),
       "expected reqsInFlight = 0 but found reqsInFlight = " + reqsInFlight +
       ", expected bytesInFlight = 0 but found bytesInFlight = " + bytesInFlight)
 
     // Send out initial requests for blocks, up to our maxBytesInFlight
+    // 开始网络抓取：调用此方法，根据流量控制参数 (maxBytesInFlight, maxReqsInFlight 等)，从 fetchRequests 队列中取出请求并发送到网络
     fetchUpToMaxBytes()
-
+    // 计算在 fetchUpToMaxBytes() 执行后，有多少个请求因流控限制而进入了延迟请求队列
     val numDeferredRequest = deferredFetchRequests.values.map(_.size).sum
+    //计算实际抓取数
     val numFetches = remoteRequests.size - fetchRequests.size - numDeferredRequest
     logInfo(s"Started $numFetches remote fetches in ${Utils.getUsedTimeNs(startTimeNs)}" +
       (if (numDeferredRequest > 0 ) s", deferred $numDeferredRequest requests" else ""))
 
     // Get Local Blocks
+    //处理本地块：调用此方法，同步地从当前执行器的 BlockManager 中读取本地 Shuffle 块
     fetchLocalBlocks(localBlocks)
     logDebug(s"Got local blocks in ${Utils.getUsedTimeNs(startTimeNs)}")
     // Get host local blocks if any
+    //处理主机本地块：调用此方法，同步地从同一主机上的其他执行器读取 Shuffle 块（通常通过特殊的本地通信路径）
     fetchAllHostLocalBlocks(hostLocalBlocksByExecutor)
+    //处理推式合并本地块：如果启用了 Push-Based Shuffle，调用辅助器抓取已在本地合并的 Shuffle 块
     pushBasedFetchHelper.fetchAllPushMergedLocalBlocks(pushMergedLocalBlocks)
   }
 
@@ -788,17 +881,22 @@ final class ShuffleBlockFetcherIterator(
    *
    * Throws a FetchFailedException if the next block could not be fetched.
    */
+  // 是 Shuffle 抓取流程中消费结果的关键点。
+  // 它是一个阻塞操作，会等待异步网络请求的结果 (FetchResult)，对结果进行处理、解压、检查数据损坏，并最终返回一个可供用户读取的 (BlockId, InputStream) 对
+  // 返回一个 Shuffle 块 ID 和其对应的输入流
   override def next(): (BlockId, InputStream) = {
     if (!hasNext) {
       throw SparkCoreErrors.noSuchElementError()
     }
-
+    // 统计已开始处理的块数量
     numBlocksProcessed += 1
 
     var result: FetchResult = null
+    //初始化用于最终返回给用户的 InputStream，以及用于数据校验的 CheckedInputStream 等辅助变量
     var input: InputStream = null
     // This's only initialized when shuffle checksum is enabled.
     var checkedIn: CheckedInputStream = null
+    //标记数据流是否经过压缩或加密，这会影响数据损坏检测逻辑
     var streamCompressedOrEncrypted: Boolean = false
     // Take the next fetched result and try to decompress it to detect data corruption,
     // then fetch it one more time if it's corrupt, throw FailureFetchResult if the second fetch
@@ -806,13 +904,16 @@ final class ShuffleBlockFetcherIterator(
     // For local shuffle block, throw FailureFetchResult for the first IOException.
     while (result == null) {
       val startFetchWait = System.nanoTime()
+      //从阻塞队列 results 中取出下一个抓取结果。这是阻塞点
       result = results.take()
       val fetchWaitTime = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startFetchWait)
       shuffleMetrics.incFetchWaitTime(fetchWaitTime)
 
       result match {
+        //成功获取块
         case SuccessFetchResult(blockId, mapIndex, address, size, buf, isNetworkReqDone) =>
           if (address != blockManager.blockManagerId) {
+            // 如果块不是来自本地 BlockManager，则需要更新远程抓取指标。
             if (hostLocalBlocks.contains(blockId -> mapIndex) ||
               pushBasedFetchHelper.isLocalPushMergedBlockAddress(address)) {
               // It is a host local block or a local shuffle chunk
@@ -823,12 +924,13 @@ final class ShuffleBlockFetcherIterator(
               bytesInFlight -= size
             }
           }
+          //如果当前请求包含的所有块都已成功返回 (isNetworkReqDone=true)，则减少全局在途请求数 (reqsInFlight)，并尝试重置 Netty OOM 标志
           if (isNetworkReqDone) {
             reqsInFlight -= 1
             resetNettyOOMFlagIfPossible(maxReqSizeShuffleToMem)
             logDebug("Number of requests in flight " + reqsInFlight)
           }
-
+          //检查 ManagedBuffer 是否为零大小。零大小块被视为错误
           val in = if (buf.size == 0) {
             // We will never legitimately receive a zero-size block. All blocks with zero records
             // have zero size and all zero-size blocks have no records (and hence should never
@@ -894,11 +996,13 @@ final class ShuffleBlockFetcherIterator(
 
           if (in != null) {
             try {
+              //应用解压、解密等流包装器。input 此时是解压/解密后的流
               input = streamWrapper(blockId, in)
               // If the stream is compressed or wrapped, then we optionally decompress/unwrap the
               // first maxBytesInFlight/3 bytes into memory, to check for corruption in that portion
               // of the data. But even if 'detectCorruptUseExtraMemory' configuration is off, or if
               // the corruption is later, we'll still detect the corruption later in the stream.
+              //检查 input 是否与原始流 in 是同一个对象，判断是否进行了压缩/加密/其他包装操作
               streamCompressedOrEncrypted = !input.eq(in)
               if (streamCompressedOrEncrypted && detectCorruptUseExtraMemory) {
                 // TODO: manage the memory used here, and spill it into disk in case of OOM.
@@ -960,7 +1064,7 @@ final class ShuffleBlockFetcherIterator(
               }
             }
           }
-
+        // 致命失败
         case FailureFetchResult(blockId, mapIndex, address, e) =>
           var errorMsg: String = null
           if (e.isInstanceOf[OutOfDirectMemoryError]) {
@@ -969,7 +1073,7 @@ final class ShuffleBlockFetcherIterator(
             logError(errorMsg)
           }
           throwFetchFailedException(blockId, mapIndex, address, e, Some(errorMsg))
-
+        // 延迟请求
         case DeferFetchRequestResult(request) =>
           val address = request.address
           numBlocksInFlightPerAddress(address) -= request.blocks.size
@@ -1064,11 +1168,13 @@ final class ShuffleBlockFetcherIterator(
       }
 
       // Send fetch requests up to maxBytesInFlight
+      //在处理完一个结果后，调用此方法以检查当前的流控限制，并尽可能地发送更多的延迟和常规请求
       fetchUpToMaxBytes()
     }
 
     currentResult = result.asInstanceOf[SuccessFetchResult]
     (currentResult.blockId,
+      //这个特殊的 InputStream 在关闭时会自动调用 buf.release()，释放底层的 ManagedBuffer 内存
       new BufferReleasingInputStream(
         input,
         this,
@@ -1158,13 +1264,16 @@ final class ShuffleBlockFetcherIterator(
     CompletionIterator[(BlockId, InputStream), this.type](this,
       onCompleteCallback.onComplete(context))
   }
-
+  //实现流量控制（Throttling）和并发控制的核心逻辑。它的作用是循环检查当前的在途数据量和请求数，并尽可能地从待发送队列中取出请求并发往远程执行器，直到达到预设的流量上限
   private def fetchUpToMaxBytes(): Unit = {
+    //判断 Shuffle 网络层是否正在经历 Netty 内存溢出（OOM）错误
     if (isNettyOOMOnShuffle.get()) {
       if (reqsInFlight > 0) {
+        //这是一种背压机制：当网络层因 OOM 崩溃时，必须等待所有正在途中的请求完成后，才能尝试重置并发送新请求
         // Return immediately if Netty is still OOMed and there're ongoing fetch requests
         return
       } else {
+        //尝试重置 OOM 标志。参数 0 表示不延迟立即重置
         resetNettyOOMFlagIfPossible(0)
       }
     }
@@ -1173,13 +1282,16 @@ final class ShuffleBlockFetcherIterator(
     // immediately, defer the request until the next time it can be processed.
 
     // Process any outstanding deferred fetch requests if possible.
+    // 优先处理因前一次流控限制而被推迟 (deferred) 的请求
     if (deferredFetchRequests.nonEmpty) {
       for ((remoteAddress, defReqQueue) <- deferredFetchRequests) {
+        //核心检查： 循环检查：1. 当前全局流量限制是否允许发送下一个请求 (isRemoteBlockFetchable)。2. 当前远程地址的单地址块数限制是否允许发送下一个请求 (!isRemoteAddressMaxedOut)
         while (isRemoteBlockFetchable(defReqQueue) &&
             !isRemoteAddressMaxedOut(remoteAddress, defReqQueue.front)) {
           val request = defReqQueue.dequeue()
           logDebug(s"Processing deferred fetch request for $remoteAddress with "
             + s"${request.blocks.length} blocks")
+          //调用内部 send 函数发送请求
           send(remoteAddress, request)
           if (defReqQueue.isEmpty) {
             deferredFetchRequests -= remoteAddress
@@ -1189,29 +1301,36 @@ final class ShuffleBlockFetcherIterator(
     }
 
     // Process any regular fetch requests if possible.
+    //处理首次从主队列中取出的常规请求
+    //循环检查全局流量限制是否允许发送主请求队列 (fetchRequests) 中的下一个请求
     while (isRemoteBlockFetchable(fetchRequests)) {
       val request = fetchRequests.dequeue()
       val remoteAddress = request.address
+      //检查单地址块数限制是否被超过
       if (isRemoteAddressMaxedOut(remoteAddress, request)) {
         logDebug(s"Deferring fetch request for $remoteAddress with ${request.blocks.size} blocks")
         val defReqQueue = deferredFetchRequests.getOrElse(remoteAddress, new Queue[FetchRequest]())
+        // 将当前请求放入该地址的延迟请求队列中
         defReqQueue.enqueue(request)
         deferredFetchRequests(remoteAddress) = defReqQueue
       } else {
+        //调用内部 send 函数发送请求
         send(remoteAddress, request)
       }
     }
 
     def send(remoteAddress: BlockManagerId, request: FetchRequest): Unit = {
       if (request.forMergedMetas) {
+        //如果请求是针对合并块的元数据的（通常用于 Push Shuffle 模式），则调用辅助器处理
         pushBasedFetchHelper.sendFetchMergedStatusRequest(request)
       } else {
+        //通过网络发送常规的 Shuffle 块抓取请求
         sendRequest(request)
       }
       numBlocksInFlightPerAddress(remoteAddress) =
         numBlocksInFlightPerAddress.getOrElse(remoteAddress, 0) + request.blocks.size
     }
-
+    //检查全局流量限制是否允许发送请求队列中的第一个请求
     def isRemoteBlockFetchable(fetchReqQueue: Queue[FetchRequest]): Boolean = {
       fetchReqQueue.nonEmpty &&
         (bytesInFlight == 0 ||
@@ -1404,6 +1523,7 @@ private class BufferReleasingInputStream(
  * A listener to be called at the completion of the ShuffleBlockFetcherIterator
  * @param data the ShuffleBlockFetcherIterator to process
  */
+//当任务完成时执行ShuffleBlockFetcherIterator的清理操作，具体时调用cleanup方法
 private class ShuffleFetchCompletionListener(var data: ShuffleBlockFetcherIterator)
   extends TaskCompletionListener {
 
@@ -1432,6 +1552,7 @@ object ShuffleBlockFetcherIterator {
    */
   val isNettyOOMOnShuffle = new AtomicBoolean(false)
 
+  //重置OOM的标志
   def resetNettyOOMFlagIfPossible(freeMemoryLowerBound: Long): Unit = {
     if (isNettyOOMOnShuffle.get() && NettyUtils.freeDirectMemory() >= freeMemoryLowerBound) {
       isNettyOOMOnShuffle.compareAndSet(true, false)
@@ -1450,18 +1571,25 @@ object ShuffleBlockFetcherIterator {
    * @param doBatchFetch whether to merge blocks.
    * @return the input blocks if doBatchFetch=false, or the merged blocks if doBatchFetch=true.
    */
+  //据配置（doBatchFetch），将来自同一个 Map Task 且 Reduce 分区 ID 连续的多个 Shuffle 块 ID，合并成一个批量抓取块 ID (ShuffleBlockBatchId)。这个优化可以减少网络请求次数和开销
+  //blocks: collection.Seq[FetchBlockInfo] 待合并的块信息序列，可能包含已合并的批量块 ID
   def mergeContinuousShuffleBlockIdsIfNeeded(
       blocks: collection.Seq[FetchBlockInfo],
       doBatchFetch: Boolean): collection.Seq[FetchBlockInfo] = {
+    //如果 doBatchFetch 为 false，则跳过整个 if 块，直接返回原始 blocks
     val result = if (doBatchFetch) {
+      //用于临时存储连续的、来自同一个 Map Task 的块信息，等待被合并
       val curBlocks = new ArrayBuffer[FetchBlockInfo]
+      //用于存储最终合并后的 FetchBlockInfo 结果
       val mergedBlockInfo = new ArrayBuffer[FetchBlockInfo]
-
+      //该内部函数负责将 toBeMerged 缓冲区中的块合并成一个新的 ShuffleBlockBatchId
       def mergeFetchBlockInfo(toBeMerged: ArrayBuffer[FetchBlockInfo]): FetchBlockInfo = {
         val startBlockId = toBeMerged.head.blockId.asInstanceOf[ShuffleBlockId]
 
         // The last merged block may comes from the input, and we can merge more blocks
         // into it, if the map id is the same.
+        //定义一个判断条件：检查上一个已合并到 mergedBlockInfo 中的块（如果它是 ShuffleBlockBatchId）的 mapId 是否与当前待合并的第一个块的 mapId 相同。
+        // 如果相同，意味着这些块是连续的，可以进一步合并
         def shouldMergeIntoPreviousBatchBlockId =
           mergedBlockInfo.last.blockId.asInstanceOf[ShuffleBlockBatchId].mapId == startBlockId.mapId
 
@@ -1528,7 +1656,7 @@ object ShuffleBlockFetcherIterator {
   private[storage] case class FetchBlockInfo(
     blockId: BlockId,
     size: Long,
-    mapIndex: Int)
+    mapIndex: Int) //代表这个BlockId属于哪个Map任务的输出
 
   /**
    * A request to fetch blocks from a remote BlockManager.
@@ -1547,6 +1675,7 @@ object ShuffleBlockFetcherIterator {
   /**
    * Result of a fetch from a remote block.
    */
+  //请求结果
   private[storage] sealed trait FetchResult
 
   /**
@@ -1559,6 +1688,7 @@ object ShuffleBlockFetcherIterator {
    * @param buf `ManagedBuffer` for the content.
    * @param isNetworkReqDone Is this the last network request for this host in this fetch request.
    */
+  //成功请求
   private[storage] case class SuccessFetchResult(
       blockId: BlockId,
       mapIndex: Int,
@@ -1577,6 +1707,7 @@ object ShuffleBlockFetcherIterator {
    * @param address BlockManager that the block was attempted to be fetched from
    * @param e the failure exception
    */
+  //请求失败
   private[storage] case class FailureFetchResult(
       blockId: BlockId,
       mapIndex: Int,
@@ -1587,6 +1718,7 @@ object ShuffleBlockFetcherIterator {
   /**
    * Result of a fetch request that should be deferred for some reasons, e.g., Netty OOM
    */
+   //需要延迟处理的请求
   private[storage]
   case class DeferFetchRequestResult(fetchRequest: FetchRequest) extends FetchResult
 

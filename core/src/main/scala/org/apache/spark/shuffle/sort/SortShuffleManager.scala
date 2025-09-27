@@ -100,6 +100,9 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
     if (SortShuffleWriter.shouldBypassMergeSort(conf, dependency)) {
       //1、map端combine，则可以跳过 2、dependency的分区数量少于SHUFFLE_SORT_BYPASS_MERGE_THRESHOLD，则不可以跳过
+      //是为了绕过昂贵的外部排序 + 多路归并开销，直接把记录按分区写入对应的分区文件，再在结束时合并，从而在小分区数场景下通常比 SortShuffleWriter 更快、更省 CPU
+      //BypassMergeSort 在 reduce 分区数很少时能通过 O(n) 的直接分区写入避免排序开销，
+      // 从总体 CPU + IO 角度会更好（尤其文件数可控时）。也就是说，对于“分区少、写入分散不重排序”这类场景，绕开排序比 Unsafe 的指针排序更划算
       // If there are fewer than spark.shuffle.sort.bypassMergeThreshold partitions and we don't
       // need map-side aggregation, then write numPartitions files directly and just concatenate
       // them at the end. This avoids doing serialization and deserialization twice to merge
@@ -126,15 +129,29 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
    *
    * Called on executors by reduce tasks.
    */
+  // Reduce 任务在执行时，用于获取一个读取器 (ShuffleReader) 来从 Map 任务的输出中拉取所需数据的入口
+  // 核心逻辑是：确定要读取的数据块位置和大小，然后创建一个 BlockStoreShuffleReader 来执行实际的 I/O 操作。 它同时兼容传统的 Shuffle 机制和基于 Push 的 Shuffle 机制
+  //startMapIndex  这是 Map Task 列表中的起始索引。Reduce Task 只关心执行成功的 Map Task 的输出。Spark 会给每个成功的 Map Task 分配一个从 0 开始的索引。startMapIndex 指定了要开始读取的 Map Task 的索引
+  //为什么需要 Map 索引范围？
+  //在 Shuffle 过程中，并非所有的 Reduce Task 都需要读取所有 Map Task 的输出。主要有以下两种情况需要限制 Map 索引范围：
+  //容错/重试： 如果一个 Map Task 失败，Spark 只需要重新运行这个 Map Task，不需要重新运行所有 Map Task
+  //Map Task 划分： 在某些高级场景（如 Push-Based Shuffle 或动态资源分配），Spark 可能需要分批次处理 Map Task 的输出，或者为了负载均衡，让一个 Reduce Task 只读取一部分 Map 的输出
+  // startPartition 指定当前 Reduce Task 要处理的分区 ID 的起始值
+  // 为什么需要 Reduce 分区范围？
+  //一个 Reduce Stage 通常有 N 个 Reduce Task
+  //每个 Map Task 的输出被分成了 N 个逻辑分区，对应 N 个 Reduce Task
+  //每个 Reduce Task 负责处理其中 一个或多个 分区
+  //通常情况下，一个 Reduce Task 只会读取一个分区：startPartition = P 且 endPartition = P + 1
+  //但如果启用了合并（Consolidation） 或负载均衡，一个 Reduce Task 可能会被分配多个分区，例如：
   override def getReader[K, C](
       handle: ShuffleHandle,  //包含 Shuffle 的元信息，例如 Shuffle ID 和依赖关系
-      startMapIndex: Int, //读取的 Map 输出范围 [startMapIndex, endMapIndex - 1]
+      startMapIndex: Int,
       endMapIndex: Int,
       startPartition: Int,  //读取的 Reduce 分区范围 [startPartition, endPartition - 1]
       endPartition: Int,
       context: TaskContext,
       metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = {
-    val baseShuffleHandle = handle.asInstanceOf[BaseShuffleHandle[K, _, C]] //将 ShuffleHandle 转换为 BaseShuffleHandle，以便访问具体的依赖信息和 Shuffle ID
+    val baseShuffleHandle = handle.asInstanceOf[BaseShuffleHandle[K, _, C]] // 将 ShuffleHandle 转换为 BaseShuffleHandle，以便访问具体的依赖信息和 Shuffle ID
     val (blocksByAddress, canEnableBatchFetch) =
       if (baseShuffleHandle.dependency.isShuffleMergeFinalizedMarked) { //如果 Shuffle 合并已完成（即启用了 Push-Based Shuffle），通过 getPushBasedShuffleMapSizesByExecutorId 获取 Map 输出的大小信息
         val res = SparkEnv.get.mapOutputTracker.getPushBasedShuffleMapSizesByExecutorId(

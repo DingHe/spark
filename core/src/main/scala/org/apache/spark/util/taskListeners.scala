@@ -27,6 +27,7 @@ import org.apache.spark.annotation.DeveloperApi
  *
  * Listener providing a callback function to invoke when a task's execution completes.
  */
+//任务完成监听接口
 @DeveloperApi
 trait TaskCompletionListener extends EventListener {
   def onTaskCompletion(context: TaskContext): Unit

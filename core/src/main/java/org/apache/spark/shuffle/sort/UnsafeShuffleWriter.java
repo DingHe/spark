@@ -63,6 +63,11 @@ import org.apache.spark.storage.TimeTrackingOutputStream;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.util.Utils;
 
+//使用了 Unsafe（非安全） 内存操作和序列化数据进行优化的写入器
+//在 Map 任务执行期间，高效地将 RDD 记录进行分区、排序、并写入磁盘，为后续的 Reduce 阶段提供数据
+//基于外部排序 (External Sorting)： 它使用 ShuffleExternalSorter 组件。当内存不足以容纳所有 Shuffle 数据时，它会将数据溢写（Spill）到磁盘上的多个临时文件
+//Unsafe 优化： 它不存储原始 Java 对象，而是将序列化后的键值对数据直接写入堆外内存（Off-Heap Memory） 或内部的字节数组中。这避免了 Java 对象的开销，并允许使用指针算术（Pointer Arithmetic）等高效的、"非安全" 的操作来快速比较和排序记录，从而极大地提高了 Shuffle 性能
+//最终合并 (Merging)： 在 Map 任务结束时，它会高效地（可能使用 NIO 的 transferTo 零拷贝技术）将磁盘上的所有溢写文件（Spill Files）和内存中的数据块按分区合并成一个或少数几个最终的 Shuffle 数据文件
 @Private
 public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
@@ -72,10 +77,12 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
   @VisibleForTesting
   static final int DEFAULT_INITIAL_SER_BUFFER_SIZE = 1024 * 1024;
-
+  //负责管理执行器上的存储块，包括申请临时磁盘文件（用于溢写）和获取磁盘写入器等
   private final BlockManager blockManager;
+  //用于申请和释放 Shuffle 所需的堆外内存（由 ShuffleExternalSorter 使用），是 Unsafe 优化的基础
   private final TaskMemoryManager memoryManager;
   private final SerializerInstance serializer;
+  //决定每条记录应该发送到哪个目标 Reduce 分区（根据记录的 Key）
   private final Partitioner partitioner;
   private final ShuffleWriteMetricsReporter writeMetrics;
   private final ShuffleExecutorComponents shuffleExecutorComponents;
@@ -83,22 +90,30 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private final long mapId;
   private final TaskContext taskContext;
   private final SparkConf sparkConf;
+  //配置项 spark.shuffle.merge.hashing.transferTo，决定在合并溢写文件时是否尝试使用 NIO 的 transferTo（零拷贝）优化
   private final boolean transferToEnabled;
+  //ShuffleExternalSorter 启动时分配的初始内存缓冲区大小（配置项 spark.shuffle.sort.initialBufferSize）
   private final int initialSortBufferSize;
+  //用于读取文件时缓冲区的字节数（配置项 spark.shuffle.file.buffer）
   private final int inputBufferSizeInBytes;
 
   @Nullable private MapStatus mapStatus;
+  //负责接收序列化记录，在内存中排序，并在内存不足时将数据溢写到磁盘
   @Nullable private ShuffleExternalSorter sorter;
+  //最终 Shuffle 文件中每个分区占据的字节长度
   @Nullable private long[] partitionLengths;
+  //记录整个 Shuffle 写入过程中，sorter 占用的最大内存量
   private long peakMemoryUsedBytes = 0;
 
   /** Subclass of ByteArrayOutputStream that exposes `buf` directly. */
+  //buf在父类中是保护的，所以通过继承可以返回
   private static final class MyByteArrayOutputStream extends ByteArrayOutputStream {
     MyByteArrayOutputStream(int size) { super(size); }
     public byte[] getBuf() { return buf; }
   }
-
+  //临时内存缓冲区，用于在将记录插入 sorter 之前，将 Key/Value 序列化成字节
   private MyByteArrayOutputStream serBuffer;
+  //包装 serBuffer 的序列化流，负责将对象写入缓冲区
   private SerializationStream serOutputStream;
 
   /**

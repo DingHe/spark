@@ -62,6 +62,7 @@ private class PushBasedFetchHelper(
   /**
    * Returns true if the address is for a push-merged block.
    */
+  // 如果BlockManager的执行ID = shuffle-push-merger 表示基于推送合并的模式的shuffle
   def isPushMergedShuffleBlockAddress(address: BlockManagerId): Boolean = {
     SHUFFLE_MERGER_IDENTIFIER == address.executorId
   }
