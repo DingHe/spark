@@ -19,10 +19,12 @@ package org.apache.spark.network.client;
 
 import java.nio.ByteBuffer;
 
-/** 加入类onSuccess的回调方法
+/**
  * Callback for the result of a single RPC. This will be invoked once with either success or
  * failure.
  */
+// 核心作用是为 单个远程过程调用（RPC） 提供一个完整的、客户端回调机制的契约
+// 当 Spark 客户端（例如，一个执行器）向远程服务器（例如，另一个执行器或外部 Shuffle 服务）发送一个 RPC 请求后，它需要一个对象来处理服务器返回的结果。RpcResponseCallback 正是这个结果的处理器：
 public interface RpcResponseCallback extends BaseResponseCallback {
   /**
    * Successful serialized result from server.
@@ -30,5 +32,6 @@ public interface RpcResponseCallback extends BaseResponseCallback {
    * After `onSuccess` returns, `response` will be recycled and its content will become invalid.
    * Please copy the content of `response` if you want to use it after `onSuccess` returns.
    */
+  //用于接收并处理服务器返回的序列化数据
   void onSuccess(ByteBuffer response);
 }

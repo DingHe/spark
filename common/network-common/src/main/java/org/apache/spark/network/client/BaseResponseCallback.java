@@ -17,13 +17,17 @@
 
 package org.apache.spark.network.client;
 
-/** rpc响应的回掉类
+/**
  * A basic callback. This is extended by {@link RpcResponseCallback} and
  * {@link MergedBlockMetaResponseCallback} so that both RpcRequests and MergedBlockMetaRequests
  * can be handled in {@link TransportResponseHandler} a similar way.
  *
  * @since 3.2.0
  */
+// 主要作用是作为一个基础的、通用的回调机制，用于处理 Spark 客户端向服务器发送请求后，在处理失败时所需的通用逻辑
+// 以下情况下会被调用：
+// 1. 服务器端传播的异常：服务器在处理请求时发生错误，并将异常信息返回给客户端。
+// 2. 客户端引发的异常：在客户端与服务器通信过程中，由于网络问题（如连接断开、超时）或数据解析错误等，在客户端本地抛出的异常。 该方法接收一个 Throwable e 参数，代表失败的原因
 public interface BaseResponseCallback {
 
   /** Exception either propagated from server or raised on client side. */

@@ -98,12 +98,21 @@ import org.apache.spark.network.yarn.util.HadoopConfigProvider;
  * either on the NodeManager's classpath, or specified in the classpath configuration.
  * This {@code classpath} configuration is only supported on YARN versions >= 2.9.0.
  */
+
+// Spark 在 YARN 集群管理器上实现 External Shuffle Service（外部 Shuffle 服务） 的核心
+// 作为 YARN 辅助服务运行：它继承自 Hadoop 的 AuxiliaryService，因此可以在每个 YARN NodeManager (NM) 进程中以一个长期运行的、独立的服务身份运行
+// 解耦 Shuffle I/O：它将 Shuffle 数据的读写操作从 Spark 执行器（Executor） 进程中分离出来。
+// 这意味着即使 Spark Executor 退出（例如由于应用程序完成或动态资源分配释放了执行器），Shuffle 数据仍然安全地存储在 NodeManager 的磁盘上，并可通过该服务访问
+// 提供数据传输：它通过内部的 TransportServer 监听一个端口（默认为 7337），响应其他执行器或 Reduce 任务发来的 Shuffle 数据拉取请求（Fetch Requests）
+// 支持认证和恢复：它能够配置 SASL 认证来保护不同应用程序之间 Shuffle 数据的隔离性，并支持在 NodeManager 重启后恢复已注册的执行器状态和安全密钥
 public class YarnShuffleService extends AuxiliaryService {
   private static final Logger defaultLogger = LoggerFactory.getLogger(YarnShuffleService.class);
   private Logger logger = defaultLogger;
 
   // Port on which the shuffle server listens for fetch requests
+  //Shuffle Server 监听请求的端口的配置键（spark.shuffle.service.port）
   private static final String SPARK_SHUFFLE_SERVICE_PORT_KEY = "spark.shuffle.service.port";
+  //默认端口号，值为 7337
   private static final int DEFAULT_SPARK_SHUFFLE_SERVICE_PORT = 7337;
 
   /**
@@ -121,15 +130,20 @@ public class YarnShuffleService extends AuxiliaryService {
       "spark.yarn.shuffle.service.logs.namespace";
 
   // Whether the shuffle server should authenticate fetch requests
+  //Shuffle Fetch 请求是否需要认证的配置键（spark.authenticate）
   private static final String SPARK_AUTHENTICATE_KEY = "spark.authenticate";
+  //默认不需要认证
   private static final boolean DEFAULT_SPARK_AUTHENTICATE = false;
-
+  //存储已注册执行器状态的恢复文件名（registeredExecutors）
   private static final String RECOVERY_FILE_NAME = "registeredExecutors";
+  //存储应用程序密钥的恢复文件名（sparkShuffleRecovery）
   private static final String SECRETS_RECOVERY_FILE_NAME = "sparkShuffleRecovery";
+  //存储 Push-Based Shuffle 合并状态的恢复文件名（sparkShuffleMergeRecovery）
   @VisibleForTesting
   static final String SPARK_SHUFFLE_MERGE_RECOVERY_FILE_NAME = "sparkShuffleMergeRecovery";
 
   // Whether failure during service initialization should stop the NM.
+  //当external suffle service失败时，nm是否要退出
   @VisibleForTesting
   static final String STOP_ON_FAILURE_KEY = "spark.yarn.shuffle.stopOnFailure";
 
@@ -145,10 +159,13 @@ public class YarnShuffleService extends AuxiliaryService {
   static final String SECRET_KEY = "secret";
 
   // just for testing when you want to find an open port
+  //监听端口
   @VisibleForTesting
   static int boundPort = -1;
+  //用于序列化和反序列化元数据和密钥的 Jackson ObjectMapper 实例
   private static final ObjectMapper mapper = new ObjectMapper();
   private static final String APP_CREDS_KEY_PREFIX = "AppCreds";
+  //用于存储恢复状态的数据库的版本号
   private static final StoreVersion CURRENT_VERSION = new StoreVersion(1, 0);
 
   /**
@@ -156,6 +173,7 @@ public class YarnShuffleService extends AuxiliaryService {
    * configuration overlay. If found, this will be parsed as a standard Hadoop
    * {@link Configuration config} file and will override the configs passed from the NodeManager.
    */
+  //用于加载额外配置覆盖文件的资源名称
   static final String SHUFFLE_SERVICE_CONF_OVERLAY_RESOURCE_NAME = "spark-shuffle-site.xml";
 
   // just for integration tests that want to look at this file -- in general not sensible as
@@ -165,26 +183,30 @@ public class YarnShuffleService extends AuxiliaryService {
 
   // An entity that manages the shuffle secret per application
   // This is used only if authentication is enabled
+  //仅在启用认证时使用，负责为每个应用程序生成、存储和管理用于 Shuffle Fetch 请求的密钥（Secret）
   @VisibleForTesting
   ShuffleSecretManager secretManager;
-
+  //实际的网络服务器，负责监听端口并处理来自客户端的连接和请求
   // The actual server that serves shuffle files
   private TransportServer shuffleServer = null;
-
+  //封装了 Shuffle 服务网络层的配置、认证器和 RPC 处理程序
   private TransportContext transportContext = null;
-
+  //配置信息
   @VisibleForTesting
   Configuration _conf = null;
 
   // The recovery path used to shuffle service recovery
+  //NodeManager 提供的、用于存储服务可恢复状态的本地路径
   @VisibleForTesting
   Path _recoveryPath = null;
 
   // Handles registering executors and opening shuffle blocks
+  //核心业务逻辑处理器，负责处理 Shuffle Fetch 请求，管理执行器注册信息，以及查找和打开本地 Shuffle 数据块
   @VisibleForTesting
   ExternalBlockHandler blockHandler;
 
   // Handles merged shuffle registration, push blocks and finalization
+  //负责处理 Push-Based Shuffle 中的合并块注册、推送和最终化操作。如果未启用 Push-Based Shuffle，则为 NoOpMergedShuffleFileManager
   @VisibleForTesting
   MergedShuffleFileManager shuffleMergeManager;
 
@@ -199,9 +221,9 @@ public class YarnShuffleService extends AuxiliaryService {
   // Where to store & reload merge manager info for recovering state after an NM restart
   @VisibleForTesting
   File mergeManagerFile;
-
+  //用于持久化存储应用程序密钥和状态（例如 LevelDB），以便在 NodeManager 重启后恢复状态。
   private DB db;
-
+  //后端存储数据库的枚举值，leveldb 还是 rocksdb
   private DBBackend dbBackend = null;
 
   public YarnShuffleService() {
@@ -229,17 +251,20 @@ public class YarnShuffleService extends AuxiliaryService {
   /**
    * Start the shuffle server with the given configuration.
    */
+  //Spark 外部 Shuffle 服务在 YARN NodeManager 进程中执行初始化和启动网络服务的核心逻辑
   @Override
   protected void serviceInit(Configuration externalConf) throws Exception {
+    //使用 NodeManager 传入的 Hadoop 配置 (externalConf) 创建一个副本，存储在内部变量 _conf 中。这是后续所有配置的基础
     _conf = new Configuration(externalConf);
     URL confOverlayUrl = Thread.currentThread().getContextClassLoader()
         .getResource(SHUFFLE_SERVICE_CONF_OVERLAY_RESOURCE_NAME);
     if (confOverlayUrl != null) {
       logger.info("Initializing Spark YARN shuffle service with configuration overlay from {}",
           confOverlayUrl);
+      //表明将使用该文件中的配置来覆盖默认或 YARN 传入的配置
       _conf.addResource(confOverlayUrl);
     }
-
+    //如果配置了自定义命名空间，则重新创建一个新的 Logger 实例，将日志输出归类到特定的命名空间下
     String logsNamespace = _conf.get(SPARK_SHUFFLE_SERVICE_LOGS_NAMESPACE_KEY, "");
     if (!logsNamespace.isEmpty()) {
       String className = YarnShuffleService.class.getName();
@@ -247,15 +272,16 @@ public class YarnShuffleService extends AuxiliaryService {
     }
 
     super.serviceInit(_conf);
-
+    //读取配置，确定如果 Shuffle 服务启动失败，NodeManager 是否应该停止 (stopOnFailure)
     boolean stopOnFailure = _conf.getBoolean(STOP_ON_FAILURE_KEY, DEFAULT_STOP_ON_FAILURE);
-
+    //仅在 NM 未设置恢复路径 (_recoveryPath == null) 且配置了集成测试模式时，创建一个临时目录作为恢复路径。这是为了方便测试
     if (_recoveryPath == null && _conf.getBoolean(INTEGRATION_TESTING, false)) {
       File tempDir = JavaUtils.createDirectory(System.getProperty("java.io.tmpdir"), "spark");
       tempDir.deleteOnExit();
       _recoveryPath = new Path(tempDir.toURI());
     }
-
+    //如果 NodeManager 启用了恢复功能，并且设置了恢复路径 (_recoveryPath 不为 null)
+    //从配置中获取持久化存储（如 LevelDB）的后端实现名称，默认使用 LevelDB
     if (_recoveryPath != null) {
       String dbBackendName = _conf.get(Constants.SHUFFLE_SERVICE_DB_BACKEND,
         DBBackend.LEVELDB.name());
@@ -270,24 +296,28 @@ public class YarnShuffleService extends AuxiliaryService {
       // If we don't find one, then we choose a file to use to save the state next time.  Even if
       // an application was stopped while the NM was down, we expect yarn to call stopApplication()
       // when it comes back
+      //如果启用了恢复，调用 initRecoveryDb 方法来确定并处理持久化文件位置，用于存储执行器注册状态和 Merge Shuffle 状态
       if (_recoveryPath != null) {
         registeredExecutorFile = initRecoveryDb(dbBackend.fileName(RECOVERY_FILE_NAME));
         mergeManagerFile =
           initRecoveryDb(dbBackend.fileName(SPARK_SHUFFLE_MERGE_RECOVERY_FILE_NAME));
       }
-
+      //使用服务配置 _conf 创建网络传输配置 (TransportConf) 对象，指定其命名空间为 "shuffle"
       TransportConf transportConf = new TransportConf("shuffle", new HadoopConfigProvider(_conf));
       // Create new MergedShuffleFileManager if shuffleMergeManager is null.
       // This is because in the unit test, a customized MergedShuffleFileManager will
       // be created through setShuffleFileManager method.
+      //如果内部变量 shuffleMergeManager 为空（通常在生产环境中为空），则调用 newMergedShuffleFileManagerInstance 方法，根据配置动态加载并实例化 Push-Based Shuffle 的合并管理器
       if (shuffleMergeManager == null) {
         shuffleMergeManager = newMergedShuffleFileManagerInstance(transportConf, mergeManagerFile);
       }
+      //Shuffle 服务的核心业务逻辑组件，负责处理所有 Shuffle 数据块的查找和传输，并传入恢复文件和合并管理器
       blockHandler = new ExternalBlockHandler(
         transportConf, registeredExecutorFile, shuffleMergeManager);
 
       // If authentication is enabled, set up the shuffle server to use a
       // special RPC handler that filters out unauthenticated fetch requests
+      //用于存储需要添加到 Shuffle Server 的引导程序（如认证引导程序）
       List<TransportServerBootstrap> bootstraps = Lists.newArrayList();
       boolean authEnabled = _conf.getBoolean(SPARK_AUTHENTICATE_KEY, DEFAULT_SPARK_AUTHENTICATE);
       if (authEnabled) {
@@ -297,10 +327,11 @@ public class YarnShuffleService extends AuxiliaryService {
         }
         bootstraps.add(new AuthServerBootstrap(transportConf, secretManager));
       }
-
+      //从配置中获取 Shuffle Server 的监听端口，默认使用 7337
       int port = _conf.getInt(
         SPARK_SHUFFLE_SERVICE_PORT_KEY, DEFAULT_SPARK_SHUFFLE_SERVICE_PORT);
       transportContext = new TransportContext(transportConf, blockHandler, true);
+      //启动实际的 TransportServer，监听配置的端口，并应用所有的引导程序（如认证）
       shuffleServer = transportContext.createServer(port, bootstraps);
       // the port should normally be fixed, but for tests its useful to find an open port
       port = shuffleServer.getPort();
@@ -308,11 +339,15 @@ public class YarnShuffleService extends AuxiliaryService {
       String authEnabledString = authEnabled ? "enabled" : "not enabled";
 
       // register metrics on the block handler into the Node Manager's metrics system.
+      //将 TransportServer 报告的已注册连接数添加到 blockHandler 的指标集合中
       blockHandler.getAllMetrics().getMetrics().put("numRegisteredConnections",
           shuffleServer.getRegisteredConnections());
+      //将 TransportServer 报告的所有网络层指标添加到 blockHandler 的指标集合中。
       blockHandler.getAllMetrics().getMetrics().putAll(shuffleServer.getAllMetrics().getMetrics());
+      //获取 Shuffle 服务指标在 Hadoop Metrics2 系统中的命名空间
       String metricsNamespace = _conf.get(SPARK_SHUFFLE_SERVICE_METRICS_NAMESPACE_KEY,
           DEFAULT_SPARK_SHUFFLE_SERVICE_METRICS_NAME);
+      //将 blockHandler 的指标包装成一个 YarnShuffleServiceMetrics 对象
       YarnShuffleServiceMetrics serviceMetrics =
           new YarnShuffleServiceMetrics(metricsNamespace, blockHandler.getAllMetrics());
       YarnShuffleServiceMetrics mergeManagerMetrics =

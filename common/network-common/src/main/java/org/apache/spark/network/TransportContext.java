@@ -57,20 +57,28 @@ import org.apache.spark.network.util.TransportFrameDecoder;
  * data-plane "chunk fetching". The handling of the RPCs is performed outside of the scope of the
  * TransportContext (i.e., by a user-provided handler), and it is responsible for setting up streams
  * which can be streamed through the data plane in chunks using zero-copy IO.
- * 过 Netty 实现了客户端和服务器的消息传输。它主要用于管理传输层的配置和初始化，并创建和管理客户端、服务器的相关组件
  * The TransportServer and TransportClientFactory both create a TransportChannelHandler for each
  * channel. As each TransportChannelHandler contains a TransportClient, this enables server
  * processes to send messages back to the client on an existing channel.
  */
+// Spark 网络通信模块中一个核心的门面（Facade）类，它封装了创建和配置 Spark 网络通信客户端和服务器所需的所有上下文和资源
+// 主要作用是：
+// 资源集中管理：负责持有和管理网络通信的核心配置 (TransportConf)、应用层的请求处理器 (RpcHandler)，以及专用于 Shuffle 数据块拉取（Chunk Fetch） 的线程池
+// 工厂方法：提供工厂方法来创建 TransportServer（用于接收请求）和 TransportClientFactory（用于创建客户端连接）
+// Netty 管道初始化：负责配置和初始化 Netty 的 ChannelPipeline。这个管道是网络数据流经的路径，它定义了数据的编码、解码、帧处理、心跳检测和最终的业务逻辑处理顺序
 public class TransportContext implements Closeable {
   private static final Logger logger = LoggerFactory.getLogger(TransportContext.class);
 
   private static final NettyLogger nettyLogger = new NettyLogger();
-  private final TransportConf conf; //配置对象包含了很多网络通信的参数，例如超时设置、线程数等
+  // 网络配置对象，包含了所有网络参数，如超时、线程数、I/O 模式等。
+  private final TransportConf conf;
+  // 业务逻辑处理程序。用于处理所有传入的 RPC 消息（例如 Shuffle 请求）
   private final RpcHandler rpcHandler;
+  // 指示是否应关闭长时间空闲的连接（通过 IdleStateHandler 实现）
   private final boolean closeIdleConnections;
   // Number of registered connections to the shuffle service
-  private Counter registeredConnections = new Counter(); //当前已注册连接的数量
+  // 用于跟踪当前注册到 Shuffle Service 的连接数量
+  private Counter registeredConnections = new Counter();
 
   /**
    * Force to create MessageEncoder and MessageDecoder so that we can make sure they will be created
@@ -84,13 +92,17 @@ public class TransportContext implements Closeable {
    * RPC to load it and cause to load the non-exist matcher class again. JVM will report
    * `ClassCircularityError` to prevent such infinite recursion. (See SPARK-17714)
    */
-  private static final MessageEncoder ENCODER = MessageEncoder.INSTANCE;  //服务端编码器，编码服务端到客户端的消息
-  private static final MessageDecoder DECODER = MessageDecoder.INSTANCE;  //客户侧解码器，解码服务端到客户端的响应
+  // 静态且唯一的消息编码器实例。它将 Spark 协议消息编码为字节流，用于发送消息（服务器到客户端的响应，或客户端到服务器的请求）。被强制提前创建以避免类加载器问题。
+  private static final MessageEncoder ENCODER = MessageEncoder.INSTANCE;
+  // 静态且唯一的消息解码器实例。它将字节流解码为 Spark 协议消息，用于接收消息。被强制提前创建以避免类加载器问题
+  private static final MessageDecoder DECODER = MessageDecoder.INSTANCE;
 
   // Separate thread pool for handling ChunkFetchRequest. This helps to enable throttling
   // max number of TransportServer worker threads that are blocked on writing response
   // of ChunkFetchRequest message back to the client via the underlying channel.
-  private final EventLoopGroup chunkFetchWorkers; //处理“块获取请求”（ChunkFetchRequest）的专用线程池
+  // 一个专门的 Netty 线程池，仅用于处理 Shuffle 的数据块拉取请求 (ChunkFetchRequest)。
+  // 这样可以防止 I/O 密集型的数据拉取操作阻塞用于处理 RPC 请求的线程。如果配置不支持或非 Shuffle 模块，则为 null
+  private final EventLoopGroup chunkFetchWorkers;
 
   public TransportContext(TransportConf conf, RpcHandler rpcHandler) {
     this(conf, rpcHandler, false, false);
@@ -140,6 +152,7 @@ public class TransportContext implements Closeable {
    * a new Client. Bootstraps will be executed synchronously, and must run successfully in order
    * to create a Client.
    */
+  //创建客户端工厂
   public TransportClientFactory createClientFactory(List<TransportClientBootstrap> bootstraps) {
     return new TransportClientFactory(this, bootstraps);
   }

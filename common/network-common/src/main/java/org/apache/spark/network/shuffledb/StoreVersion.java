@@ -25,6 +25,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 /**
  * Used to identify the version of data stored in local shuffle state DB.
  */
+// shffle 状态数据库的数据版本
 public class StoreVersion {
 
     public static final byte[] KEY = "StoreVersion".getBytes(StandardCharsets.UTF_8);

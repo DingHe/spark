@@ -40,6 +40,12 @@ import org.apache.spark.network.util.TransportConf;
  * This supports a forward-secure authentication protocol based on X25519 Diffie-Hellman Key
  * Exchange, using a pre-shared key to derive an AES-GCM key encrypting key.
  */
+// Spark 网络模块中用于实现新的、前向安全（Forward-Secure）的身份验证和密钥协商协议的辅助类
+// 核心功能是使用 X25519 迪菲-赫尔曼（Diffie-Hellman）密钥交换算法，结合预共享密钥（Pre-Shared Key, PSK）和 HKDF（基于 HMAC 的密钥派生函数），
+// 来安全地派生出一个用于会话数据加密的 AES-GCM 会话密钥
+// 身份验证： 使用预共享密钥对 Diffie-Hellman 握手过程进行加密和认证，确保客户端和服务端身份的真实性
+// 前向安全： 即使长期的预共享密钥最终泄露，由于使用了临时的（Ephemeral）X25519 密钥对，历史会话数据也无法被解密
+// 密钥协商： 在客户端和服务器之间安全地协商出会话密钥（Session Key），用于后续数据传输的加密
 class AuthEngine implements Closeable {
   public static final byte[] DERIVED_KEY_INFO = "derivedKey".getBytes(UTF_8);
   public static final byte[] INPUT_IV_INFO = "inputIv".getBytes(UTF_8);

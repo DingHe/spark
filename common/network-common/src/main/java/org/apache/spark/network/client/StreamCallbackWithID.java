@@ -18,7 +18,8 @@
 package org.apache.spark.network.client;
 
 import java.nio.ByteBuffer;
-
+// 核心作用是为具有唯一标识符（ID）的流式数据回调提供一个扩展机制，并增加了在流处理完成时返回一个 RPC 响应的能力
+// 主要用于处理客户端上传流式数据到服务器的场景（尽管接口定义在 client 包下，但其功能更侧重于服务器端对流式上传的处理
 public interface StreamCallbackWithID extends StreamCallback {
   String getID();
 
@@ -26,6 +27,7 @@ public interface StreamCallbackWithID extends StreamCallback {
    * Response to return to client upon the completion of a stream. Currently only invoked in
    * {@link org.apache.spark.network.server.TransportRequestHandler#processStreamUpload}
    */
+  // 当整个数据流（由 onComplete 标记）接收并处理完成后，该方法会被调用。它返回一个 ByteBuffer 作为最终的 RPC 响应，发送回发起流式传输的客户端
   default ByteBuffer getCompletionResponse() {
     return ByteBuffer.allocate(0);
   }

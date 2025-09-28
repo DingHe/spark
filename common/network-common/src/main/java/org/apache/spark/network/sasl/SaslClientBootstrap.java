@@ -38,11 +38,16 @@ import org.apache.spark.network.util.TransportConf;
  * Bootstraps a {@link TransportClient} by performing SASL authentication on the connection. The
  * server should be setup with a {@link SaslRpcHandler} with matching keys for the given appId.
  */
+// Spark 网络通信模块中用于在客户端和服务器之间执行 SASL (Simple Authentication and Security Layer) 身份验证的引导类
+// 身份验证： 在 TransportClient 连接建立后，但在开始数据传输之前，通过标准的 SASL 挑战-响应（challenge-response）机制与服务器进行握手，证明客户端的身份（基于预共享密钥 PSK）
+// 安全性协商： 协商并确定连接的安全级别。如果配置启用了 SASL 加密 (saslEncryption) 且服务器同意，它将设置 Netty Channel 管道，为后续的数据传输启用 数据加密。
+// 兼容性保障： 在较新的 Spark 版本中，它通常作为 AuthClientBootstrap（使用新的 AES 认证协议）的回退机制而存在，用于兼容不支持新协议的旧组件（如旧版外部 Shuffle Service）
 public class SaslClientBootstrap implements TransportClientBootstrap {
   private static final Logger logger = LoggerFactory.getLogger(SaslClientBootstrap.class);
 
   private final TransportConf conf;
   private final String appId;
+  // 用于根据 appId 获取身份验证所需的预共享密钥（Secret Key）
   private final SecretKeyHolder secretKeyHolder;
 
   public SaslClientBootstrap(TransportConf conf, String appId, SecretKeyHolder secretKeyHolder) {
@@ -58,6 +63,7 @@ public class SaslClientBootstrap implements TransportClientBootstrap {
    */
   @Override
   public void doBootstrap(TransportClient client, Channel channel) {
+    // 是 Spark 对标准 Java SASL 客户端的包装，封装了挑战-响应逻辑
     SparkSaslClient saslClient = new SparkSaslClient(appId, secretKeyHolder, conf.saslEncryption());
     try {
       byte[] payload = saslClient.firstToken();

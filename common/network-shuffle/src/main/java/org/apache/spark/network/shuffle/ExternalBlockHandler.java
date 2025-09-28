@@ -63,6 +63,12 @@ import org.apache.spark.network.util.TransportConf;
  * Blocks are registered with the "one-for-one" strategy, meaning each Transport-layer Chunk
  * is equivalent to one block.
  */
+//Spark 外部 Shuffle Service 的核心网络处理器（RpcHandler）。它运行在一个独立的进程中，
+// 负责接收并处理来自 Spark 客户端（通常是 Executor 或 Driver）的所有关于 数据块管理和服务 的远程过程调用（RPC）请求
+  //要作用是作为一个中央枢纽，对外提供统一的接口，处理两类核心业务：
+  //Shuffle 数据服务（核心）: 接收 Reducer 的请求，提供存储在外部 Shuffle Service 或已停止的 Executor 磁盘上的 Shuffle 块 数据。
+  //元数据管理: 接收和存储 Executor 的元数据（例如 Shuffle 文件的位置）和 RDD 块信息。
+  //Push-based Shuffle 支持: 兼容并协调 MergedShuffleFileManager，处理 Mapper 推送的数据流，并提供合并后的 Shuffle 块服务。
 public class ExternalBlockHandler extends RpcHandler
     implements RpcHandler.MergedBlockMetaReqHandler {
   private static final Logger logger = LoggerFactory.getLogger(ExternalBlockHandler.class);

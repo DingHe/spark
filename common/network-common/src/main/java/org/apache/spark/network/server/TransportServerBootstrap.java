@@ -24,6 +24,7 @@ import io.netty.channel.Channel;
  * to the server. This allows customizing the client channel to allow for things such as SASL
  * authentication.
  */
+//服务启动前需要执行的初始化程序
 public interface TransportServerBootstrap {
   /**
    * Customizes the channel to include new features, if needed.

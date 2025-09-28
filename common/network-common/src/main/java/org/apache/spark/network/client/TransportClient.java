@@ -67,9 +67,10 @@ import static org.apache.spark.network.util.NettyUtils.getRemoteAddress;
  *
  * NB: This class is used to make requests to the server, while {@link TransportResponseHandler} is
  * responsible for handling responses from the server.
- * 客户端类，用于高效地从远程服务器获取流数据或执行远程过程调用 (RPC)
+
  * Concurrency: thread safe and can be called from multiple threads.
  */
+// 客户端类，用于高效地从远程服务器获取流数据或执行远程过程调用 (RPC)
 public class TransportClient implements Closeable {
   private static final Logger logger = LoggerFactory.getLogger(TransportClient.class);
 

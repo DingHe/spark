@@ -25,6 +25,8 @@ import org.apache.spark.network.buffer.ManagedBuffer;
  *
  * @since 3.2.0
  */
+// 核心作用是为 合并块元数据请求 (MergedBlockMetaRequest) 提供一个完整的、客户端回调机制的契约
+  //回调专门用于处理 Push-Based Shuffle（推送式 Shuffle） 中，Reduce 任务向 Shuffle Server 请求已合并的 Shuffle 数据块的元数据时的响应
 public interface MergedBlockMetaResponseCallback extends BaseResponseCallback {
   /**
    * Called upon receipt of a particular merged block meta.
@@ -37,5 +39,7 @@ public interface MergedBlockMetaResponseCallback extends BaseResponseCallback {
    * @param buffer the buffer contains an array of roaring bitmaps. The i-th roaring bitmap
    *               contains the mapIds that were merged to the i-th merged chunk.
    */
+  // 当成功从 Shuffle Server 接收到合并块的元数据时被调用。它提供了两个关键信息： 1. numChunks：这个合并块被逻辑上分割成了多少个分块 (Chunk)，后续客户端将按这个数量发起分块数据拉取。
+  // 2. buffer：一个 ManagedBuffer，它包含了一系列 Roaring Bitmap。第 i 个 Roaring Bitmap 存储着被合并到第 i 个分块中的所有 Map 任务的 ID
   void onSuccess(int numChunks, ManagedBuffer buffer);
 }

@@ -61,19 +61,28 @@ import org.apache.spark.network.util.TransportConf;
  * (local dirs) and how (shuffle manager). The logic for retrieval of individual files is replicated
  * from Spark's IndexShuffleBlockResolver.
  */
+// Spark 外部 Shuffle Service 的核心组件，通常运行在独立的进程或 NodeManager 上，与 Spark Executor 分离
+// 管理并提供对 Spark Executor 生成的 Shuffle 数据块的远程访问和解析
+  //注册 Executor 信息： 接收并持久化每个 Executor 注册的元数据（如 Shuffle 文件存储的本地目录 → localDirs），以便知道去哪里找数据。
+  //定位和提供 Shuffle Block： 根据远程拉取请求（Shuffle ID, Map ID, Reduce ID 范围），解析 Executor 存储的索引文件，计算出数据文件中的起始偏移量和长度，然后以 ManagedBuffer 的形式提供实际的 Shuffle 数据块。
+  //资源清理： 负责清理应用程序或 Executor 结束后留下的 Shuffle 数据和相关的本地文件。
+  //容灾和持久化： 利用 LevelDB 或其他数据库持久化 Executor 的注册信息，以便 Shuffle Service 重启后能够恢复服务，提高 Shuffle 服务的可用性。
 public class ExternalShuffleBlockResolver {
   private static final Logger logger = LoggerFactory.getLogger(ExternalShuffleBlockResolver.class);
-
+  // Jackson 库的对象映射器，用于将 ExecutorShuffleInfo 和 AppExecId 序列化/反序列化为 JSON 格式，以便存储到 LevelDB 或其他数据库
   private static final ObjectMapper mapper = new ObjectMapper();
 
   /**
    * This a common prefix to the key for each app registration we stick in leveldb, so they
    * are easy to find, since leveldb lets you search based on prefix.
    */
+  // 用于在 LevelDB/数据库中存储 Executor 注册信息时，作为键的公共前缀，方便使用数据库的范围查询功能来重载（Reload）所有已注册的 Executor
   private static final String APP_KEY_PREFIX = "AppExecShuffleInfo";
+  //标识 Shuffle Service 数据库的当前存储格式版本，用于数据库的兼容性检查和升级。
   private static final StoreVersion CURRENT_VERSION = new StoreVersion(1, 0);
 
   // Map containing all registered executors' metadata.
+  //存储所有已注册的 Executor 的元数据 (ExecutorShuffleInfo)，键是 AppExecId。这个 Map 是线程安全的
   @VisibleForTesting
   final ConcurrentMap<AppExecId, ExecutorShuffleInfo> executors;
 
@@ -81,17 +90,21 @@ public class ExternalShuffleBlockResolver {
    *  Caches index file information so that we can avoid open/close the index files
    *  for each block fetch.
    */
+  //用于缓存 Shuffle 索引文件 (.index) 的信息。通过缓存，可以避免每次拉取数据块时都重新打开、读取和关闭索引文件，提高数据检索效率。使用文件路径作为键
   private final LoadingCache<String, ShuffleIndexInformation> shuffleIndexCache;
 
   // Single-threaded Java executor used to perform expensive recursive directory deletion.
+  // 一个单线程的 Java Executor，用于在后台执行耗时的文件和目录删除操作（如应用或 Executor 移除时）。
+  // 使用单线程保证清理操作不会阻塞 Shuffle Service 的核心工作线程
   private final Executor directoryCleaner;
-
+  //存储 Shuffle Service 的配置信息
   private final TransportConf conf;
-
+  // 指示是否允许 Shuffle Service 同时提供磁盘持久化的 RDD 块（不仅仅是 Shuffle 块）
   private final boolean rddFetchEnabled;
-
+  // 存储持久化 Executor 注册信息所使用的 LevelDB 或其他数据库的本地文件目录
   @VisibleForTesting
   final File registeredExecutorFile;
+  // 用于持久化存储 Executor 注册信息（实现容灾/恢复）的数据库实例，通常是 LevelDB 或 RocksDB
   @VisibleForTesting
   final DB db;
 
@@ -410,7 +423,9 @@ public class ExternalShuffleBlockResolver {
 
   /** Simply encodes an executor's full ID, which is appId + execId. */
   public static class AppExecId {
+    //标识 Spark 应用程序的唯一 ID
     public final String appId;
+    //标识 Spark Executor 的唯一 ID。
     public final String execId;
 
     @JsonCreator
