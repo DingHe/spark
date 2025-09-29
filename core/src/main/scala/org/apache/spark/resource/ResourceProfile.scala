@@ -43,22 +43,30 @@ import org.apache.spark.util.Utils
  * @param taskResources Resource requests for tasks. Mapped from the resource
  *                      name (e.g., cores, memory, CPU) to its specific request.
  */
-//描述和管理RDD阶段的资源需求。通过这种方式，用户可以为不同的RDD阶段配置不同的资源要求，如内存、CPU等。
+//Spark 3.1.0 引入的资源配置抽象。它的核心作用是允许用户为 Spark 应用程序定义多套资源需求配置，并可以在不同的 Stage 之间动态切换
+//在引入 ResourceProfile 之前，整个 Spark 应用程序中的所有 Executor 和 Task 都必须使用一套全局配置（即 spark-defaults.conf 或命令行参数）
+//细粒度资源管理： 允许用户指定 RDD（进而影响 Stage）所需的执行器资源（如核心数、内存、GPU 数量）和任务资源（如每个 Task 的 CPU 数）
+//异构集群支持： Spark 能够请求不同大小和配置的 Executor，从而在异构集群环境中更高效地运行工作负载。
+//动态资源分配增强： 在启用动态分配时，ResourceProfile 用于指导集群管理器（如 YARN、Kubernetes）请求满足特定 Stage 需求的 Executor。
 @Evolving
 @Since("3.1.0")
 class ResourceProfile(
-    val executorResources: Map[String, ExecutorResourceRequest],
-    val taskResources: Map[String, TaskResourceRequest]) extends Serializable with Logging {
+    val executorResources: Map[String, ExecutorResourceRequest], //一个 Map，存储了整个 Executor 所需的资源请求。键是资源名称（如 "cores"、"memory"、"gpu"），值是具体的 ExecutorResourceRequest 对象。
+    val taskResources: Map[String, TaskResourceRequest]) extends Serializable with Logging { //任务的资源请求
 
   // _id is only a var for testing purposes
-  private var _id = ResourceProfile.getNextProfileId  //表示资源配置的唯一标识符
+  private var _id = ResourceProfile.getNextProfileId  //唯一的整型 ID，用于标识这个 ResourceProfile
   // This is used for any resources that use fractional amounts, the key is the resource name
   // and the value is the number of tasks that can share a resource address. For example,
   // if the user says task gpu amount is 0.5, that results in 2 tasks per resource address.
-  private var _executorResourceSlotsPerAddr: Option[Map[String, Int]] = None //存储与每个资源地址相关的任务槽数
-  private var _limitingResource: Option[String] = None   //存储限制资源（例如，执行器核心数）决定最大任务数的资源类型
-  private var _maxTasksPerExecutor: Option[Int] = None //存储每个执行器可运行的最大任务数
-  private var _coresLimitKnown: Boolean = false   //表示执行器的核心数是否已知
+  //用于处理分数资源请求。如果一个 Task 请求 0.5 个 GPU，那么这个 Map 会存储该 GPU 地址可共享的 Task 槽数（例如 2 个）。
+  private var _executorResourceSlotsPerAddr: Option[Map[String, Int]] = None
+  //表示在当前配置下，限制每个 Executor 最大任务数 的资源类型（例如 "cpus" 或 "gpu"）
+  private var _limitingResource: Option[String] = None
+  // 基于任务和执行器资源请求计算出的单个 Executor 可同时运行的最大 Task 数量
+  private var _maxTasksPerExecutor: Option[Int] = None
+  // 指示在计算最大任务数时，是否使用了 Executor 的核心数（cores）配置。对于某些集群管理器（如 Standalone），默认可能没有显式设置核心数。
+  private var _coresLimitKnown: Boolean = false
 
   /**
    * A unique id of this ResourceProfile
@@ -94,11 +102,11 @@ class ResourceProfile(
   private[spark] def getExecutorMemory: Option[Long] = {
     executorResources.get(ResourceProfile.MEMORY).map(_.amount)
   }
-  //获取自定义的任务和执行器资源，这些资源不包括Spark默认的资源（如cpus、memory等）
+  //获取任务的自定义资源，这些资源不包括Spark默认的资源（如cpus、memory等）
   private[spark] def getCustomTaskResources(): Map[String, TaskResourceRequest] = {
     taskResources.filterKeys(k => !k.equals(ResourceProfile.CPUS)).toMap
   }
-
+  //获取执行器的自定义资源
   protected[spark] def getCustomExecutorResources(): Map[String, ExecutorResourceRequest] = {
     executorResources.
       filterKeys(k => !ResourceProfile.allSupportedExecutorResources.contains(k)).toMap
@@ -113,13 +121,13 @@ class ResourceProfile(
    * the correct number of times. ie task requirement amount=0.25 -> addrs["0", "0", "0", "0"]
    * and scheduler task amount=1. See ResourceAllocator.slotsPerAddress.
    */
-  //获取调度器所需的任务资源量
+  //用于调度器。如果任务请求的分数资源量小于 1，则返回 1（因为调度器按 1 个逻辑槽处理），否则返回请求的整数数量。
   private[spark] def getSchedulerTaskResourceAmount(resource: String): Int = {
     val taskAmount = taskResources.getOrElse(resource,
       throw new SparkException(s"Resource $resource doesn't exist in profile id: $id"))
    if (taskAmount.amount < 1) 1 else taskAmount.amount.toInt
   }
-  //根据资源名称和配置，返回每个资源地址上的槽位数
+  //返回特定资源（用于分数资源）在每个物理资源地址上可以运行的任务槽数。如果未缓存，则调用 calculateTasksAndLimitingResource 计算
   private[spark] def getNumSlotsPerAddress(resource: String, sparkConf: SparkConf): Int = {
     _executorResourceSlotsPerAddr.getOrElse {
       calculateTasksAndLimitingResource(sparkConf)
@@ -132,6 +140,7 @@ class ResourceProfile(
   // If the executor cores config is not present this value is based on the other resources
   // available or 1 if no other resources. You need to check the isCoresLimitKnown to
   // calculate proper value.
+  // 基于最限制性的资源，计算并返回单个执行器可运行的最大任务数。如果未缓存，则调用计算方法。
   private[spark] def maxTasksPerExecutor(sparkConf: SparkConf): Int = {
     _maxTasksPerExecutor.getOrElse {
       calculateTasksAndLimitingResource(sparkConf)
@@ -142,6 +151,7 @@ class ResourceProfile(
   // Returns whether the executor cores was available to use to calculate the max tasks
   // per executor and limiting resource. Some cluster managers (like standalone and coarse
   // grained mesos) don't use the cores config by default so we can't use it to calculate slots.
+  // 指示是否基于 Executor Cores 进行了最大任务数计算
   private[spark] def isCoresLimitKnown: Boolean = _coresLimitKnown
 
   // The resource that has the least amount of slots per executor. Its possible multiple or all
@@ -149,6 +159,7 @@ class ResourceProfile(
   // If the executor cores config is not present this value is based on the other resources
   // available or empty string if no other resources. You need to check the isCoresLimitKnown to
   // calculate proper value.
+  // 返回限制每个执行器最大任务数的资源名称。如果未缓存，则调用计算方法。
   private[spark] def limitingResource(sparkConf: SparkConf): String = {
     _limitingResource.getOrElse {
       calculateTasksAndLimitingResource(sparkConf)
@@ -159,6 +170,7 @@ class ResourceProfile(
   // executor cores config is not set for some masters by default and the default value
   // only applies to yarn/k8s
   //确定是否需要检测执行器的cores
+  //条件是如何配置了spark.executor.cores 或者是yarn k8s 资源管理器
   private def shouldCheckExecutorCores(sparkConf: SparkConf): Boolean = {
     val master = sparkConf.getOption("spark.master")
     sparkConf.contains(EXECUTOR_CORES) ||
@@ -174,8 +186,7 @@ class ResourceProfile(
    * This function also sets the limiting resource, isCoresLimitKnown and number of slots per
    * resource address.
    */
-    //用于计算任务（task）资源限制和执行器（executor）资源限制的工具函数。
-  // 其目的是帮助计算每个执行器上可以运行的任务数，并确定限制资源（例如 CPU 或 GPU）以及每个资源地址上可以运行的任务数量。
+    //核心计算函数。 根据 Executor 和 Task 的资源请求（包括分数资源），确定限制任务数的资源，计算出每个 Executor 的最大任务数
   private def calculateTasksAndLimitingResource(sparkConf: SparkConf): Unit = synchronized {
     val shouldCheckExecCores = shouldCheckExecutorCores(sparkConf)
     var (taskLimit, limitingResource) = if (shouldCheckExecCores) {
@@ -271,7 +282,7 @@ class ResourceProfile(
     s"Profile: id = ${_id}, executor resources: ${executorResources.mkString(",")}, " +
       s"task resources: ${taskResources.mkString(",")}"
   }
-}
+} //一个 Map，存储了单个 Task 所需的资源请求。键是资源名称（如 "cpus"、"gpu"），值是具体的 TaskResourceRequest 对象。
 
 /**
  * Resource profile which only contains task resources, can be used for stage level task schedule
@@ -340,6 +351,7 @@ object ResourceProfile extends Logging {
    * Return all supported Spark built-in executor resources, custom resources like GPUs/FPGAs
    * are excluded.
    */
+    //包含了所有 Spark 内建的执行器资源名称（不包括自定义资源）的数组。
   def allSupportedExecutorResources: Array[String] =
     Array(CORES, MEMORY, OVERHEAD_MEM, PYSPARK_MEM, OFFHEAP_MEM)
 
@@ -353,12 +365,13 @@ object ResourceProfile extends Logging {
 
   // The default resource profile uses the application level configs.
   // var so that it can be reset for testing purposes.
+  //配置默认的资源
   @GuardedBy("DEFAULT_PROFILE_LOCK")
   private var defaultProfile: Option[ResourceProfile] = None
   private var defaultProfileExecutorResources: Option[DefaultProfileExecutorResources] = None
 
   private[spark] def getNextProfileId: Int = nextProfileId.getAndIncrement()
-
+  //获取或基于 SparkConf 创建应用程序的默认 ResourceProfile。
   private[spark] def getOrCreateDefaultProfile(conf: SparkConf): ResourceProfile = {
     DEFAULT_PROFILE_LOCK.synchronized {
       defaultProfile match {
@@ -376,7 +389,7 @@ object ResourceProfile extends Logging {
       }
     }
   }
-
+  //基于 SparkConf 中读取的配置项，计算出默认的 Executor 和 Task 资源请求 Map。
   private[spark] def getDefaultProfileExecutorResources(
       conf: SparkConf): DefaultProfileExecutorResources = {
     defaultProfileExecutorResources.getOrElse {
@@ -384,14 +397,15 @@ object ResourceProfile extends Logging {
       defaultProfileExecutorResources.get
     }
   }
-
+  //计算任务资源
   private def getDefaultTaskResources(conf: SparkConf): Map[String, TaskResourceRequest] = {
+    //每个任务需要的cpus
     val cpusPerTask = conf.get(CPUS_PER_TASK)
     val treqs = new TaskResourceRequests().cpus(cpusPerTask)
     ResourceUtils.addTaskResourceRequests(conf, treqs)
     treqs.requests
   }
-
+  //根据配置文件，计算executor默认的资源
   private def getDefaultExecutorResources(conf: SparkConf): Map[String, ExecutorResourceRequest] = {
     val ereqs = new ExecutorResourceRequests()
 
@@ -495,6 +509,8 @@ object ResourceProfile extends Logging {
    * specified in the profile or fall back to the default profile resource size for everything
    * except for custom resources.
    */
+    //根据给定的 ResourceProfile ID 和资源请求，确定集群管理器（如 YARN）应该请求的最终 Executor 资源配置（包括内存、核心数、开销内存、自定义资源等）。
+  // 如果不是默认配置，未显式指定的资源会回退到默认配置的值。
   private[spark] def getResourcesForClusterManager(
       rpId: Int,
       execResources: Map[String, ExecutorResourceRequest],

@@ -325,7 +325,8 @@ package object config {
     .version("0.7.0")
     .bytesConf(ByteUnit.MiB)
     .createWithDefaultString("1g")
-
+  //Executor 进程除了 JVM Heap 以外，还需要额外的内存，用来存放 非堆内存开销，这个参数就是为这些 额外的开销 预留的内存大小。
+  //如果不配置，默认max(384MB, 0.10 * spark.executor.memory)
   private[spark] val EXECUTOR_MEMORY_OVERHEAD = ConfigBuilder("spark.executor.memoryOverhead")
     .doc("The amount of non-heap memory to be allocated per executor, in MiB unless otherwise" +
       " specified.")
