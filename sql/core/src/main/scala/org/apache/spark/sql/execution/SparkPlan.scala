@@ -618,7 +618,8 @@ object UnaryExecNode {
     case _ => None
   }
 }
-//表示所有具有 单子节点 结构的执行节点。执行节点是 Spark SQL 查询计划的实际执行步骤
+//表示所有具有 单子节点 结构的执行节点。
+// 执行节点是 Spark SQL 查询计划的实际执行步骤
 trait UnaryExecNode extends SparkPlan with UnaryLike[SparkPlan] {
   //生成该节点的详细字符串表示
   override def verboseStringWithOperatorId(): String = {

@@ -3634,7 +3634,8 @@ class Dataset[T] private[sql](
   def repartition(numPartitions: Int): Dataset[T] = withTypedPlan {
     Repartition(numPartitions, shuffle = true, logicalPlan)
   }
-
+  //numPartitions 表示用户可选地指定目标分区数量
+  //partitionExprs 表达式定义了用于哈希分区的键（例如，col("key1"), col("key2")）
   private def repartitionByExpression(
       numPartitions: Option[Int],
       partitionExprs: Seq[Column]): Dataset[T] = {
@@ -3642,6 +3643,7 @@ class Dataset[T] private[sql](
     // However, we don't want to complicate the semantics of this API method.
     // Instead, let's give users a friendly error message, pointing them to the new method.
     val sortOrders = partitionExprs.filter(_.expr.isInstanceOf[SortOrder])
+    //如果 sortOrders 集合非空（即用户传入了排序表达式），则执行条件体
     if (sortOrders.nonEmpty) throw new IllegalArgumentException(
       s"""Invalid partitionExprs specified: $sortOrders
          |For range partitioning use repartitionByRange(...) instead.
@@ -3679,7 +3681,7 @@ class Dataset[T] private[sql](
   def repartition(partitionExprs: Column*): Dataset[T] = {
     repartitionByExpression(None, partitionExprs)
   }
-
+  //作用是基于指定的表达式（作为排序键）对数据进行范围分区（Range Partitioning），它会保证数据在分区内和分区间的顺序
   private def repartitionByRange(
       numPartitions: Option[Int],
       partitionExprs: Seq[Column]): Dataset[T] = {

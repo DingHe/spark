@@ -67,7 +67,7 @@ object AttributeSet {
  * and also makes doing transformations hard (we always try keep older trees instead of new ones
  * when the transformation was a no-op).
  */
-//AttributeSet 是 Apache Spark 中用于存储和操作 AttributeReference 对象的集合类。
+// AttributeSet 是 Apache Spark 中用于存储和操作 AttributeReference 对象的集合类。
 // 它通过使用表达式 ID（exprId）来进行等价性检查，而不是使用 Java 的标准等价性（如名称等）。
 // 这种方式保证了即使 AttributeReference 的名字在大小写等方面有所不同，仍能正确判断其是否属于同一集合
 // AttributeEquals 是一个封装了 Attribute 的类，用于实现 Attribute 的比较和存储

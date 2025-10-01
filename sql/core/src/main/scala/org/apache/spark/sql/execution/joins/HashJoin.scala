@@ -68,7 +68,7 @@ trait HashJoin extends JoinCodegenSupport {
   override def outputPartitioning: Partitioning = buildSide match {
     case BuildLeft =>
       joinType match {
-        case _: InnerLike | RightOuter => right.outputPartitioning  //如果连接类型是InnerLike或RightOuter，则分区策略是右侧的输出分区
+        case _: InnerLike | RightOuter => right.outputPartitioning  // 如果连接类型是InnerLike或RightOuter，则分区策略是右侧的输出分区
         case x =>
           throw new IllegalArgumentException(
             s"HashJoin should not take $x as the JoinType with building left side")

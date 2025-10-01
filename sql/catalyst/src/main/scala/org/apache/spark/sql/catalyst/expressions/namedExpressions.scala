@@ -109,20 +109,33 @@ trait NamedExpression extends Expression {
   //返回该表达式的一个副本，但具有一个新的 exprId。这是在复制表达式时更新 exprId 的方法
   def newInstance(): NamedExpression
 }
-
+// Attribute（属性）类在 Spark SQL 中用于表示逻辑数据流中的某一列。它充当了数据列的唯一标识符和元数据载体，
+// 是连接逻辑计划（LogicalPlan）和物理计划（PhysicalPlan）的基础
+//列标识符： Attribute 封装了一列的名称（name）、唯一 ID（exprId）和可选的限定符（qualifier），使得 Spark 可以在复杂的查询中精确地识别和跟踪某一列
+//元数据容器： 它存储了列的数据类型（dataType）、是否允许为空（nullable）以及用户自定义的元数据（metadata）
+//表达式基石： 作为 NamedExpression 的一部分，它代表了查询结果中的一列。在 Spark 优化器和执行器中，Attribute 是所有列操作的起点
+//不可变更新： 它提供了一系列 with 方法，允许在不改变原始对象的前提下创建具有新属性的 Attribute 实例（即，使用不可变对象模式）
 abstract class Attribute extends LeafExpression with NamedExpression with NullIntolerant {
-
+   //返回一个包含 this 属性自身的 AttributeSet。
+   // 在表达式求值和分析阶段，它表明 Attribute 自身就是它所引用的唯一属性
   @transient
   override lazy val references: AttributeSet = AttributeSet(this)
-
+  // Attribute 类是不可变的（Immutable），所有修改属性的方法都遵循 with* 模式，返回一个新的 Attribute 实例
+  //返回一个新的 Attribute 实例，其可空性 (nullable) 设置为 newNullability
   def withNullability(newNullability: Boolean): Attribute
+  //返回一个新的 Attribute 实例，其限定符 (qualifier) 设置为 newQualifier。限定符常用于区分来自不同表或子查询的同名列
   def withQualifier(newQualifier: Seq[String]): Attribute
+  //返回一个新的 Attribute 实例，其名称 (name) 设置为 newName
   def withName(newName: String): Attribute
+  //返回一个新的 Attribute 实例，其元数据 (metadata) 设置为 newMetadata。元数据用于存储额外信息，例如列的注释或来源
   def withMetadata(newMetadata: Metadata): Attribute
+  //返回一个新的 Attribute 实例，其表达式 ID (exprId) 设置为 newExprId。ExprId 是一个全局唯一的 ID，用于在整个查询生命周期内确定性地识别一列
   def withExprId(newExprId: ExprId): Attribute
+  //返回一个新的 Attribute 实例，其数据类型 (dataType) 设置为 newType
   def withDataType(newType: DataType): Attribute
-
+  // 实现了 NamedExpression 特质的要求。对于 Attribute 自身，它就是其自身的属性，因此直接返回 this
   override def toAttribute: Attribute = this
+  // 要求子类实现创建具有相同列名、类型等属性，但拥有全新唯一 ID (ExprId) 的 Attribute 实例的逻辑。这在涉及别名、重命名等操作时非常重要，确保新列具有唯一标识
   def newInstance(): Attribute
 
 }
@@ -268,16 +281,19 @@ object AttributeReferenceTreeBits {
  *                  qualified way. Consider the examples tableName.name, subQueryAlias.name.
  *                  tableName and subQueryAlias are possible qualifiers.
  */
-// AttributeReference 用于标识查询中的列，尤其是涉及到引用已经计算或生成的字段时。
-// AttributeReference 是不可计算的（Unevaluable），
-// 它通常用于查询计划中的“属性”层面，表示数据表中的列或表达式中的字段
+// Spark SQL 中用于精确标识和引用数据集中某一列的不可变（Immutable）类。
+// 它是 Spark 逻辑查询计划（Logical Plan）中的基础构建块，继承自抽象类 Attribute
+// 唯一身份追踪： 它的核心在于 exprId 属性。在复杂的查询（如包含别名、子查询、连接等）中，列的名称可能会改变，但 exprId 保持不变。这使得 Spark 能够在整个查询优化的过程中，精确地追踪一个逻辑列的起源
+//列元数据载体： 它存储了一列的所有基本元信息，包括名称、数据类型、可空性以及限定符（用于完全限定名称）
+// 引用机制： 顾名思义，它是一个 “引用”。它代表了上游操作符（父节点）输出的某个属性。例如，在一个 Filter 操作中，其条件表达式中引用的 AttributeReference 就指向了其子节点（数据源或另一个操作）输出的列
+// 不可计算性（Unevaluable）： AttributeReference 只是一个元数据标记，它本身没有计算逻辑（即它不是像 Add(a, b) 这样的表达式）。它在物理执行阶段，会被替换为实际的输入数据列索引
 case class AttributeReference(
-    name: String,  //标识该属性在查询中的名称
-    dataType: DataType,  //表示列的数据类型，如 IntegerType、StringType 等
-    nullable: Boolean = true,
-    override val metadata: Metadata = Metadata.empty)(  //通常包含关于属性的附加信息，例如描述、注释等
-    val exprId: ExprId = NamedExpression.newExprId,  //唯一标识符。ExprId 用于确保在查询计划中，具有相同 exprId 的 AttributeReference 被视为相同的属性引用
-    val qualifier: Seq[String] = Seq.empty[String])  //属性的限定符，表示该属性的完全限定名称
+    name: String,  //列名。仅用于分析阶段和调试输出。在运行时，Spark 依靠 exprId 来识别列
+    dataType: DataType,  // 数据类型。表示列的数据类型（如 IntegerType、StringType 等）
+    nullable: Boolean = true, //可空性。如果该列允许包含 NULL 值，则为 true（默认值）
+    override val metadata: Metadata = Metadata.empty)(  //元数据。包含列的附加信息，如注释、时间水印（Watermark）信息等。
+    val exprId: ExprId = NamedExpression.newExprId,  //表达式唯一 ID。核心属性。 这是一个全局唯一的 ID。具有相同 exprId 的 AttributeReference 被认为是同一个逻辑属性，即使它们的 name 或 qualifier 不同
+    val qualifier: Seq[String] = Seq.empty[String])  //限定符。用于限定该属性的来源，通常是表名、别名或子查询名。例如，tableA.columnX 中的 tableA 就是限定符
   extends Attribute with Unevaluable {
 
   override lazy val treePatternBits: BitSet = AttributeReferenceTreeBits.bits
@@ -288,13 +304,16 @@ case class AttributeReference(
     //判断当前的 AttributeReference 是否与另一个 AttributeReference 表示同一个属性，依据是它们的 exprId 是否相同
   def sameRef(other: AttributeReference): Boolean = this.exprId == other.exprId
 
+  //对象相等性检查。覆写 Scala 的标准相等性检查。
+  // 仅当所有属性（name, dataType, nullable, metadata, exprId, qualifier）都完全相同时，才返回 true
   override def equals(other: Any): Boolean = other match {
     case ar: AttributeReference =>
       name == ar.name && dataType == ar.dataType && nullable == ar.nullable &&
         metadata == ar.metadata && exprId == ar.exprId && qualifier == ar.qualifier
     case _ => false
   }
-
+  //语义哈希值。用于表达式的语义等价性比较。它只基于 exprId.hashCode() 进行计算。
+  // 这表明在比较两个表达式是否逻辑等价时，AttributeReference 仅关心它们是否引用了同一个底层属性
   override def semanticHash(): Int = {
     this.exprId.hashCode()
   }
@@ -310,18 +329,21 @@ case class AttributeReference(
     h = h * 37 + qualifier.hashCode()
     h
   }
-  //名称为 "none"，数据类型为当前属性的数据类型，exprId 保持不变
+  //规范化。返回一个最小化且标准形式的表达式。
+  // 对于 AttributeReference，它返回一个只有 exprId 和 dataType 被保留的副本（name 被替换为 "none"）。
+  // 这用于在优化阶段判断两个查询计划部分是否具有相同的结构，而忽略像 name 这样的不影响语义的属性
   override lazy val canonicalized: Expression = {
     AttributeReference("none", dataType)(exprId)
   }
-  //返回一个新的 AttributeReference 实例，保持原有的属性值
+  //创建新实例。返回一个具有相同元数据（name, dataType, qualifier 等）但具有全新唯一 exprId 的 AttributeReference 实例。
+  // 用于产生新的列，例如在投影（Project）操作中创建别名或在 Stage 之间传递属性时
   override def newInstance(): AttributeReference =
     AttributeReference(name, dataType, nullable, metadata)(qualifier = qualifier)
 
   /**
    * Returns a copy of this [[AttributeReference]] with changed nullability.
    */
-    //返回一个新的 AttributeReference，该实例的 nullable 属性已更改为 newNullability
+  //返回一个新的 AttributeReference，该实例的 nullable 属性已更改为 newNullability
   override def withNullability(newNullability: Boolean): AttributeReference = {
     if (nullable == newNullability) {
       this
@@ -396,6 +418,7 @@ case class AttributeReference(
  * A place holder used when printing expressions without debugging information such as the
  * expression id or the unresolved indicator.
  */
+// 占位符
 case class PrettyAttribute(
     name: String,
     dataType: DataType = NullType)

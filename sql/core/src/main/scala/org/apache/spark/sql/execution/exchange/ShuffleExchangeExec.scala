@@ -93,7 +93,8 @@ sealed trait ShuffleOrigin
 // Indicates that the shuffle operator was added by the internal `EnsureRequirements` rule. It
 // means that the shuffle operator is used to ensure internal data partitioning requirements and
 // Spark is free to optimize it as long as the requirements are still ensured.
-//表示 Shuffle 操作是由 Spark 内部的 EnsureRequirements 规则添加的。EnsureRequirements 规则通常用于确保内部的数据分区要求得到满足
+//表示 Shuffle 操作是由 Spark 内部的 EnsureRequirements 规则添加的。
+// EnsureRequirements 规则通常用于确保内部的数据分区要求得到满足
 case object ENSURE_REQUIREMENTS extends ShuffleOrigin
 
 // Indicates that the shuffle operator was added by the user-specified repartition operator. Spark
@@ -123,17 +124,26 @@ case object REBALANCE_PARTITIONS_BY_COL extends ShuffleOrigin
 /**
  * Performs a shuffle that will result in the desired partitioning.
  */
+ // ShuffleExchangeExec 是 Spark 物理查询计划中一个至关重要的节点，
+// 它负责执行 数据洗牌（Shuffle） 操作，从而实现数据的重新分区（re-partitioning）
+//实现分区策略： 它的主要职责是根据其 outputPartitioning 属性指定的策略（如哈希分区、范围分区、轮询分区等），将子执行计划 (child) 输出的数据行重新分布到集群中的指定数量的分区（即 Reduce 任务）中
+//划分 Stage： 在 Spark DAG 中，ShuffleExchangeExec 节点是划分新 Stage 的边界。在其之上的操作（Reduce 端）在一个新的 Stage 中执行，需要从前一个 Stage（Map 端）通过网络拉取数据
+// Shuffle 依赖构建： 它将子执行计划的结果 RDD 转换成一个 ShuffleDependency 对象，这是 Spark Core 启动 Shuffle 过程所必需的元数据结构
+// 简而言之，任何导致数据跨节点重新分布的操作（如 JOIN、groupBy、repartition） 在物理计划中都会表现为 ShuffleExchangeExec
 case class ShuffleExchangeExec(
-    override val outputPartitioning: Partitioning,  //指定了输出数据的分区方式
-    child: SparkPlan,  //子执行计划，这个子执行计划的输出会被传递到 shuffle 操作
-    shuffleOrigin: ShuffleOrigin = ENSURE_REQUIREMENTS, //指定 shuffle 操作的来源
-    advisoryPartitionSize: Option[Long] = None)  //建议的每个分区的大小，单位是字节
+    override val outputPartitioning: Partitioning,  //核心属性。 决定了 Shuffle 后数据将如何分区（如 HashPartitioning(key, N) 或 RangePartitioning(...)）。它决定了下游 Reduce 任务的数量 N
+    child: SparkPlan,  //表示 Shuffle 操作的输入数据来源。ShuffleExchangeExec 会执行这个子计划，并将其输出进行 Shuffle
+    shuffleOrigin: ShuffleOrigin = ENSURE_REQUIREMENTS, //标记 Shuffle 是由哪个逻辑优化规则或查询语义触发的。默认值为 ENSURE_REQUIREMENTS（确保要求），常用于优化器在满足排序或分区要求时插入 Shuffle。
+    advisoryPartitionSize: Option[Long] = None)  //建议的每个分区字节数。主要用于 AQE (Adaptive Query Execution) 优化，指导 AQE 决定是否需要合并分区
   extends ShuffleExchangeLike {
-
+  // 懒加载的写入侧性能指标，用于记录 Map 任务完成 Shuffle 写入时的数据量、记录数、时间等
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+
+  // 懒加载的读取侧性能指标，用于记录 Reduce 任务从 Map 端拉取 Shuffle 数据时的数据量、记录数、时间等
   private[sql] lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
+  //聚合了 readMetrics、writeMetrics 以及两个核心指标：dataSize（数据总大小）和 numPartitions（分区总数）
   override lazy val metrics = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
     "numPartitions" -> SQLMetrics.createMetric(sparkContext, "number of partitions")
@@ -143,11 +153,11 @@ case class ShuffleExchangeExec(
   //用于序列化 ShuffleExchangeExec 输出的每一行数据，确保数据可以跨机器或线程传输
   private lazy val serializer: Serializer =
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
-  //执行计划的输入 RDD，表示子执行计划 child 的输出结果
+  //懒加载的瞬态属性，表示对子计划 child.execute() 的执行结果的引用
   @transient lazy val inputRDD: RDD[InternalRow] = child.execute()
 
   // 'mapOutputStatisticsFuture' is only needed when enable AQE.
-  //如果输入 RDD 的分区数为 0，则立即返回 null。否则，提交一个 shuffle 作业来计算输出统计信息
+  //懒加载的瞬态属性。它提交一个 Map Stage 作业来异步计算 Shuffle Map 任务的输出统计信息。这对于 AQE 动态调整分区数是至关重要的
   @transient
   override lazy val mapOutputStatisticsFuture: Future[MapOutputStatistics] = {
     if (inputRDD.getNumPartitions == 0) {
@@ -156,9 +166,9 @@ case class ShuffleExchangeExec(
       sparkContext.submitMapStage(shuffleDependency)
     }
   }
-  //返回 shuffle 操作的映射器数量
+  //返回 Shuffle 依赖的 RDD 的分区数，即上游 Map Stage 的并行度
   override def numMappers: Int = shuffleDependency.rdd.getNumPartitions
-  //返回 shuffle 操作的分区数
+  //返回 Shuffle 依赖的分区器中定义的分区数，即下游 Reduce Stage 的并行度
   override def numPartitions: Int = shuffleDependency.partitioner.numPartitions
   //根据指定的分区规格返回 shuffle 的 RDD
   override def getShuffleRDD(partitionSpecs: Array[ShufflePartitionSpec]): RDD[InternalRow] = {
@@ -176,6 +186,8 @@ case class ShuffleExchangeExec(
    * the partitioning scheme defined in `newPartitioning`. Those partitions of
    * the returned ShuffleDependency will be the input of shuffle.
    */
+  // 最重要的属性之一。
+  // 它是 Shuffle 机制的元数据，封装了：输入 RDD、分区器（Partitioner）和序列化器。它负责在逻辑上定义了 Shuffle 的工作方式
   @transient
   lazy val shuffleDependency : ShuffleDependency[Int, InternalRow, InternalRow] = {
     val dep = ShuffleExchangeExec.prepareShuffleDependency(
@@ -266,18 +278,20 @@ object ShuffleExchangeExec {
     }
   }
 
-  /** 根据指定的分区方案（newPartitioning）对数据进行分区，并在数据进行 shuffle 之前进行序列化处理
+  /**
    * Returns a [[ShuffleDependency]] that will partition rows of its child based on
    * the partitioning scheme defined in `newPartitioning`. Those partitions of
    * the returned ShuffleDependency will be the input of shuffle.
    */
+  // 用于准备和配置 Shuffle 依赖关系的核心逻辑。它将输入数据 RDD 转化为 Spark Core 可以执行 Shuffle 的 ShuffleDependency 对象
+  //
   def prepareShuffleDependency(
-      rdd: RDD[InternalRow],
-      outputAttributes: Seq[Attribute],
-      newPartitioning: Partitioning,
-      serializer: Serializer,
-      writeMetrics: Map[String, SQLMetric])
-    : ShuffleDependency[Int, InternalRow, InternalRow] = {
+      rdd: RDD[InternalRow], //输入数据 RDD, 上游执行计划输出的 RDD，其中包含 InternalRow（Spark SQL 内部紧凑数据结构）
+      outputAttributes: Seq[Attribute],// 输出列属性,参数： 输入 RDD 的列的元数据（Attribute 列表）。用于投影（Projection）和数据类型信息
+      newPartitioning: Partitioning, // 描述 Shuffle 结束后期望的分区方式（如 HashPartitioning、RangePartitioning）
+      serializer: Serializer, // 用于在网络传输前将数据行序列化的对象（通常是 UnsafeRowSerializer）
+      writeMetrics: Map[String, SQLMetric]) // 用于在 Shuffle 写入阶段报告性能指标的集合
+    : ShuffleDependency[Int, InternalRow, InternalRow] = { // 方法返回一个 ShuffleDependency，其键是分区 ID（Int），值是数据行（InternalRow）
     //根据newPartitioning获取对应的Partitioner
     val part: Partitioner = newPartitioning match {
       //当 newPartitioning 为 RoundRobinPartitioning(numPartitions) 时，
@@ -289,10 +303,13 @@ object ShuffleExchangeExec {
         // For HashPartitioning, the partitioning key is already a valid partition ID, as we use
         // `HashPartitioning.partitionIdExpression` to produce partitioning key.
         new PartitionIdPassthrough(n)
+      // 如果是范围分区，需要根据排序表达式来确定分区边界。
       case RangePartitioning(sortingExpressions, numPartitions) =>
         // Extract only fields used for sorting to avoid collecting large fields that does not
         // affect sorting result when deciding partition bounds in RangePartitioner
         val rddForSampling = rdd.mapPartitionsInternal { iter =>
+          //为了确定范围分区的边界，需要一个 RDD 来进行数据采样。这个 RDD 只投影出用于排序的键（sortingExpressions），
+          // 以避免收集和处理不必要的大的字段，同时对采样键进行 copy() 以确保其不可变性，保证采样的准确性
           val projection =
             UnsafeProjection.create(sortingExpressions.map(_.child), outputAttributes)
           val mutablePair = new MutablePair[InternalRow, Null]()
@@ -310,15 +327,17 @@ object ShuffleExchangeExec {
           rddForSampling,
           ascending = true,
           samplePointsPerPartitionHint = SQLConf.get.rangeExchangeSampleSizePerPartition)
+      // 如果是单分区（数据全部集中到一个分区），使用 ConstantPartitioner
       case SinglePartition => new ConstantPartitioner
       case _ => throw new IllegalStateException(s"Exchange not implemented for $newPartitioning")
       // TODO: Handle BroadcastPartitioning.
     }
 
 
-    //将 InternalRow 映射到某种分区键的函数
+    //创建分区键提取器（Partition Key Extractor）
+    //作用是接收一行数据（InternalRow），并根据分区策略计算出用于分区的键
     def getPartitionKeyExtractor(): InternalRow => Any = newPartitioning match {
-      //轮询分区，将数据均匀分配到多个分区中
+      //实现轮询逻辑。它不依赖行内容，而是依赖任务本地的状态
       case RoundRobinPartitioning(numPartitions) =>
         // Distributes elements evenly across output partitions, starting from a random partition.
         // nextInt(numPartitions) implementation has a special case when bound is a power of 2,
@@ -327,17 +346,20 @@ object ShuffleExchangeExec {
         // and lack of scrambling, the position values for power-of-two numPartitions always
         // end up being almost the same regardless of the index. substantially scrambling the
         // seed by hashing will help. Refer to SPARK-21782 for more details.
+        // 获取当前 Map 任务的物理分区 ID，作为随机数生成器的种子，以确保确定性。
         val partitionId = TaskContext.get().partitionId()
+        //使用一个确定的随机数生成器（基于任务 ID）来初始化一个随机的起始分区位置
         var position = new XORShiftRandom(partitionId).nextInt(numPartitions)
         (row: InternalRow) => {
           // The HashPartitioner will handle the `mod` by the number of partitions
           position += 1
           position
         }
-        //哈希分区，
+      // 根据 HashPartitioning 中定义的表达式（该表达式计算出哈希值并取模得到分区 ID），将输入行映射为分区 ID
       case h: HashPartitioning =>
         val projection = UnsafeProjection.create(h.partitionIdExpression :: Nil, outputAttributes)
         row => projection(row).getInt(0)
+      // 创建一个 UnsafeProjection，将输入行投影成用于排序的键（即范围分区的键）
       case RangePartitioning(sortingExpressions, _) =>
         val projection = UnsafeProjection.create(sortingExpressions.map(_.child), outputAttributes)
         row => projection(row)
@@ -347,7 +369,8 @@ object ShuffleExchangeExec {
 
     val isRoundRobin = newPartitioning.isInstanceOf[RoundRobinPartitioning] &&
       newPartitioning.numPartitions > 1
-
+    // 应用分区键并创建带 ID 的 RDD
+    //将上游 RDD 的数据行与目标分区 ID 关联起来，生成 Shuffle Map 端需要的 (partitionId, row) 格式的 RDD
     val rddWithPartitionIds: RDD[Product2[Int, InternalRow]] = {
       // [SPARK-23207] Have to make sure the generated RoundRobinPartitioning is deterministic,
       // otherwise a retry task may output different rows and thus lead to data loss.
@@ -357,6 +380,9 @@ object ShuffleExchangeExec {
       //
       // Note that we don't perform local sort if the new partitioning has only 1 partition, under
       // that case all output rows go to the same partition.
+      //解决轮询不确定性问题（SPARK-23207）。 如果是轮询分区且配置（spark.sql.sortBeforeRepartition）允许，
+      // 则在每个 Map 任务（分区）内部先对数据进行一次本地排序。
+      // 这确保了如果一个任务失败重试，数据行的顺序是确定的，从而保证轮询结果的确定性，避免数据丢失
       val newRdd = if (isRoundRobin && SQLConf.get.sortBeforeRepartition) {
         rdd.mapPartitionsInternal { iter =>
           val recordComparatorSupplier = new Supplier[RecordComparator] {
@@ -396,6 +422,7 @@ object ShuffleExchangeExec {
       }
 
       // round-robin function is order sensitive if we don't sort the input.
+      // 如果是轮询分区且没有进行本地排序，则该操作对顺序敏感，需要设置 isOrderSensitive=true，以确保 RDD 在调度重试时能正确处理
       val isOrderSensitive = isRoundRobin && !SQLConf.get.sortBeforeRepartition
       if (needToCopyObjectsBeforeShuffle(part)) {
         newRdd.mapPartitionsWithIndexInternal((_, iter) => {
@@ -414,6 +441,7 @@ object ShuffleExchangeExec {
     // Now, we manually create a ShuffleDependency. Because pairs in rddWithPartitionIds
     // are in the form of (partitionId, row) and every partitionId is in the expected range
     // [0, part.numPartitions - 1]. The partitioner of this is a PartitionIdPassthrough.
+    // 步骤四：创建 ShuffleDependency
     val dependency =
       new ShuffleDependency[Int, InternalRow, InternalRow](
         rddWithPartitionIds,

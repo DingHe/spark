@@ -34,7 +34,10 @@ import org.apache.spark.sql.types.{DataType, IntegerType}
  * are partitioned across physical machines in a cluster. Knowing this property allows some
  * operators (e.g., Aggregate) to perform partition local operations instead of global ones.
  */
-//定义了查询在执行时如何将数据划分到集群中的各个物理机器
+//关注的是约束、事前的要求。它回答的是：“为了执行 Join，我的两个输入必须满足什么条件？
+//示例： SortMergeJoinExec 算子的 requiredChildDistribution 要求左右输入都是 ClusteredDistribution(joinKeys)，即数据必须按照 Join 键分组到同一分区上
+//它是 ShuffleExchangeExec 算子是否需要被插入的依据。当一个算子的输入数据的 Partitioning 不满足其 Distribution 要求时，Spark 优化器就会在两者之间插入一个 ShuffleExchangeExec
+//Distribution（分布要求）：消费者（某个物理算子）对其输入数据如何分布/排序的逻辑要求（“我需要数据被按某种方式分布或排序”）
 sealed trait Distribution {
   /**
    * The required number of partitions for this distribution. If it's None, then any number of
@@ -53,7 +56,7 @@ sealed trait Distribution {
 /**
  * Represents a distribution where no promises are made about co-location of data.
  */
-//表示数据分布没有明确规定的分布类型。在 Spark 中，这意味着在进行分布式计算时，Spark 不对数据的分布方式做出任何保证。这通常用于没有明确分布要求的情况
+// 表示没有对数据分布有具体的要求
 case object UnspecifiedDistribution extends Distribution {
   override def requiredNumPartitions: Option[Int] = None
 
@@ -66,7 +69,7 @@ case object UnspecifiedDistribution extends Distribution {
  * Represents a distribution that only has a single partition and all tuples of the dataset
  * are co-located.
  */
-//单分区分布
+//表示所有的数据都在一个分区
 case object AllTuples extends Distribution {
   override def requiredNumPartitions: Option[Int] = Some(1)
 
@@ -83,7 +86,7 @@ case object AllTuples extends Distribution {
  * @param requireAllClusterKeys When true, `Partitioning` which satisfies this distribution,
  *                              must match all `clustering` expressions in the same ordering.
  */
-// 表示数据在分区中根据 clustering 表达式的值进行分布的分布类型。
+// 表示数据要按照clustering表达式集合进行分布
 // 在这种分布方式下，相同的 clustering 值的元组会被放置到同一个分区中
 case class ClusteredDistribution(
     clustering: Seq[Expression], //表示决定数据如何在分区中分布的列或字段
@@ -169,7 +172,7 @@ case class StatefulOpClusteredDistribution(
  * In other words, this distribution requires the rows to be ordered across partitions, but not
  * necessarily within a partition.
  */
-//表示数据按给定的排序规则（ordering）分布。
+// 表示数据要按照ordering表达排序
 // 它的要求是相邻的分区之间，第二个分区的所有行必须大于或等于第一个分区中的任何一行，排序是基于 ordering 表达式
 case class OrderedDistribution(ordering: Seq[SortOrder]) extends Distribution {
   require(
@@ -189,6 +192,7 @@ case class OrderedDistribution(ordering: Seq[SortOrder]) extends Distribution {
  * Represents data where tuples are broadcasted to every node. It is quite common that the
  * entire set of tuples is transformed into different data structure.
  */
+//要求数据是广播分布
 case class BroadcastDistribution(mode: BroadcastMode) extends Distribution {
   override def requiredNumPartitions: Option[Int] = Some(1)
 
@@ -204,7 +208,15 @@ case class BroadcastDistribution(mode: BroadcastMode) extends Distribution {
  *   1. number of partitions.
  *   2. if it can satisfy a given distribution.
  */
-//描述如何将操作符的输出数据分布到多个分区中的特征
+//关注的是静态、事后的组织结构。它回答的是：“这个数据集现在是什么样子的？”
+//示例： 如果一个 DataFrame 经过 repartition(10, 'key') 操作，那么它的 outputPartitioning 就是一个 HashPartitioning，分区数为 10，分区键是 'key'。
+//它是 ShuffleSpec 的输出目标：Shuffle 操作的目标就是产生一个新的 Partitioning 状态。
+//它是 Distribution 的实际现状：一个数据集当前的 Partitioning 状态，用于判断它是否满足下一个算子的 Distribution 要求。
+//Partitioning（分区属性）：一个物理子算子/节点实际提供给上游的数据分区方式与分区数（“我产出的数据是怎么划分的”），用于判断是否满足某个 Distribution。
+//核心作用是：
+//量化并行度： 通过 numPartitions 属性，确定了数据集可以并行处理的最大任务数。
+//约束检查（核心）： 通过 satisfies(required: Distribution) 方法，允许 Spark 优化器判断当前数据集的结构（Partitioning）是否满足下一个操作所需的输入条件（Distribution）。这是避免不必要的 Shuffle 操作、优化执行效率的关键机制。
+//生成 Shuffle 规范： 能够将自身的分区状态转化为 ShuffleSpec，用于指导 Join 等操作如何进行数据对齐。
 trait Partitioning {
   /** Returns the number of partitions that the data is split across */
   val numPartitions: Int  //表示数据被划分成多少个分区
@@ -253,7 +265,7 @@ trait Partitioning {
     case _ => false
   }
 }
-//通常用于表示无法确定具体分区方案的情况，numPartitions，表示期望的分区数量，但不明确数据如何在这些分区中分布
+//分区数量已知，但数据的分布规律或组织方式是未知的。通常是加载数据后的初始状态。
 case class UnknownPartitioning(numPartitions: Int) extends Partitioning
 
 /**
@@ -261,9 +273,9 @@ case class UnknownPartitioning(numPartitions: Int) extends Partitioning
  * by starting from a random target partition number and distributing rows in a round-robin
  * fashion. This partitioning is used when implementing the DataFrame.repartition() operator.
  */
- //采用轮询方式将数据均匀地分配到指定的分区中。它从一个随机的目标分区开始，并以轮询的方式将数据行分配到输出分区
- //通常用于 DataFrame 操作符 repartition()
+ //表示数据从一个随机目标分区开始，以轮询方式均匀分配到各个分区。通常由用户显式调用 DataFrame.repartition() 但不指定分区键时生成。
 case class RoundRobinPartitioning(numPartitions: Int) extends Partitioning
+
 //表示整个数据集被单一分区处理的情况，数据没有被拆分成多个分区
 case object SinglePartition extends Partitioning {
   val numPartitions = 1
@@ -276,7 +288,7 @@ case object SinglePartition extends Partitioning {
   override def createShuffleSpec(distribution: ClusteredDistribution): ShuffleSpec =
     SinglePartitionShuffleSpec
 }
-//定义了与哈希分区相关的一些逻辑操作，尤其是针对 HashPartitioning 的分区要求和验证
+//最常见的按键分区方式。保证具有相同哈希键值的行必定在同一个分区
 trait HashPartitioningLike extends Expression with Partitioning with Unevaluable {
   def expressions: Seq[Expression]  //表示与当前分区相关的表达式集合
 
@@ -339,8 +351,6 @@ case class CoalescedBoundary(startReducerIndex: Int, endReducerIndex: Int)
  * Represents a partitioning where partitions have been coalesced from a HashPartitioning into a
  * fewer number of partitions.
  */
-//是一个表示哈希分区在经过合并后产生的新分区的类。
-// 它继承自 HashPartitioningLike，并基于原始的 HashPartitioning 和合并后的分区边界信息来创建新的分区方案
 case class CoalescedHashPartitioning(from: HashPartitioning, partitions: Seq[CoalescedBoundary])
   extends HashPartitioningLike {
   //from: 一个 HashPartitioning 实例，表示原始的哈希分区。
@@ -378,8 +388,8 @@ case class CoalescedHashPartitioning(from: HashPartitioning, partitions: Seq[Coa
  * @param partitionValues the values for the cluster keys of the distribution, must be
  *                        in ascending order.
  */
-//表示基于指定表达式的分区方案的类，其中行会根据 expressions 中定义的转换被划分到不同的分区。
-// 它不仅包含分区的数量，还包括每个输入分区的分区键值（partitionValues）
+//键分组分区。
+//用于描述基于转换表达式（如 years(ts_col)）进行分区的情况，常见于 Hive/Delta Lake 分区表的读取或 Bucket Join 场景。
 case class KeyGroupedPartitioning(
     expressions: Seq[Expression], //定义了用于分区的转换函数
     numPartitions: Int,
@@ -455,7 +465,7 @@ object KeyGroupedPartitioning {
  * This class extends expression primarily so that transformations over expression will descend
  * into its child.
  */
-//基于指定排序顺序对数据进行分区的类。数据在分区过程中会依据 ordering 中指定的排序规则进行划分，并且保证相邻分区之间的数据是严格有序的。
+// 基于数据的总顺序（Total Ordering）进行分区，保证相邻分区之间的数据是严格有序且无重叠的。
 case class RangePartitioning(ordering: Seq[SortOrder], numPartitions: Int)
   extends Expression with Partitioning with Unevaluable {
   //ordering: 这是一个 SortOrder 序列，定义了对数据进行排序的方式
@@ -521,7 +531,9 @@ case class RangePartitioning(ordering: Seq[SortOrder], numPartitions: Int)
  * `HashPartitioning(B.key2)`. It is also worth noting that `partitionings`
  * in this collection do not need to be equivalent, which is useful for
  * Outer Join operators.
- *///表示多个分区方式的集合,用于描述一个物理操作符的输出分区方案，特别是在该操作符有多个子节点时
+ */
+//分区集合。
+//用于描述一个操作符（如 Join）的输出可以同时以多种方式被分区的情况。例如，Inner Join 的输出可以同时被左表的键和右表的键来描述分区
 case class PartitioningCollection(partitionings: Seq[Partitioning]) //包含多个 Partitioning 对象的集合，描述了操作符输出的多个分区方式
   extends Expression with Partitioning with Unevaluable {
 
@@ -564,6 +576,7 @@ case class PartitioningCollection(partitionings: Seq[Partitioning]) //包含多�
  * Represents a partitioning where rows are collected, transformed and broadcasted to each
  * node in the cluster.
  */
+//表示数据已被收集、转换并广播到集群中的每个节点，是 Broadcast Join 的输出分区状态。
 case class BroadcastPartitioning(mode: BroadcastMode) extends Partitioning {
   override val numPartitions: Int = 1
 
@@ -585,13 +598,21 @@ case class BroadcastPartitioning(mode: BroadcastMode) extends Partitioning {
  *   - Creating a partitioning that can be used to re-partition another child, so that to make it
  *      having a compatible partitioning as this node.
  */
-// 主要用于操作符（如连接操作符）具有多个子节点的情况，尤其是当其中一个或多个子节点对数据的分区方式有特殊要求时。
-// 它提供了一些方法来检查分区是否兼容以及如何创建可以用于重新分区的方案
+// 关注的是动作、过程的蓝图。它回答的是：“如果需要 Shuffle，具体应该怎么做？”
+// ShuffleSpec 结合了所需的分区键和分区器类型，为数据重分布提供了完整的执行方案。它定义了如何将前一个阶段的数据（Map 端）高效地写入磁盘，以便后一个阶段（Reduce 端）能够正确地读取
+//Spark SQL 物理执行计划中用于精确描述数据洗牌（Shuffle）操作的规范
+//核心作用在于：
+//定义分区数量： 明确 Shuffle 后数据将被分成多少个分区。
+//判断兼容性（isCompatibleWith）： 这是最关键的作用。它提供了一种机制，用于判断两个数据集的当前分区方式是否足够相似，以至于在执行 Join、Coalesce 等需要数据对齐的操作时，可以跳过昂贵的数据重分布（Shuffle）步骤，
+// 从而实现性能优化。如果两个 Shuffle 规范兼容，则认为它们是 "Co-partitioned" (共同分区) 的
+//提供分区创建能力（canCreatePartitioning/createPartitioning）： 在需要进行 Shuffle 对齐但当前分区不兼容时，提供了一种基于当前规范为另一侧数据创建兼容的新分区方案的能力
 trait ShuffleSpec {
   /**
    * Returns the number of partitions of this shuffle spec
    */
-  def numPartitions: Int  //描述的洗牌方案中的分区数量
+  //描述的分区数量。
+  //返回此 Shuffle 规范执行后，数据集将被划分成的分区总数。
+  def numPartitions: Int
 
   /**
    * Returns true iff this spec is compatible with the provided shuffle spec.
@@ -602,13 +623,15 @@ trait ShuffleSpec {
    *
    * Note that Spark assumes this to be reflexive, symmetric and transitive.
    */
-  //当两个 ShuffleSpec 兼容时，表示它们的数据分区方式可以认为是共同分区的，因此在进行连接等操作时，Spark 可以跳过洗牌操作，避免不必要的数据传输
+  //检查兼容性。
+  //判断当前 ShuffleSpec 是否与另一个 other 兼容。如果返回 true，则表示两个数据集的分区方式是共同对齐的，可以进行高效的 Join 等操作而无需再次 Shuffle。Spark 假定此关系具有自反性、对称性和传递性
   def isCompatibleWith(other: ShuffleSpec): Boolean
 
   /**
    * Whether this shuffle spec can be used to create partitionings for the other children.
    */
-  //表示当前的 ShuffleSpec 是否可以用来为其他子节点创建分区
+  //是否能创建对齐分区。
+  //指示当前的 Shuffle 规范是否可以用来为其他子节点（即另一个输入数据集）创建兼容的 Partitioning 方案
   def canCreatePartitioning: Boolean
 
   /**
@@ -618,14 +641,15 @@ trait ShuffleSpec {
    * This will only be called when:
    *  - [[isCompatibleWith]] returns false on the side where the `clustering` is from.
    */
-    //创建一个新的分区方案（Partitioning），该方案可以用来重新分区另一侧的数据，使其与当前节点的数据分区方式兼容
-    //当 isCompatibleWith 返回 false 时，才会调用此方法，目的是将当前节点的数据分区方式与另一个节点的数据分区方式对齐
+  //创建对齐分区方案。
+  //仅在不兼容且需要对齐时调用。 它基于当前的 Shuffle 规范（本侧）和另一个数据集的聚簇表达式（clustering），生成一个新的 Partitioning 方案，用于对另一侧数据进行重新分区，以实现数据对齐。
   def createPartitioning(clustering: Seq[Expression]): Partitioning =
     throw new UnsupportedOperationException("Operation unsupported for " +
         s"${getClass.getCanonicalName}")
 }
-
+//表示数据被强制放入单个分区的 Shuffle 规范。常用于 Broadcast Join 后的输入或需要进行本地聚合的场景
 case object SinglePartitionShuffleSpec extends ShuffleSpec {
+  //分区数量都是1就能兼容
   override def isCompatibleWith(other: ShuffleSpec): Boolean = {
     other.numPartitions == 1
   }
@@ -637,7 +661,10 @@ case object SinglePartitionShuffleSpec extends ShuffleSpec {
 
   override def numPartitions: Int = 1
 }
-//专门用于处理 RangePartitioning 的 ShuffleSpec 类型。它用于表示通过范围分区方式（RangePartitioning）进行数据重分区时的分区信息和分布要求
+// 表示基于**范围分区（RangePartitioning）**的 Shuffle 规范。
+// 用于需要对数据进行排序的操作（如 SortMergeJoin 的排序阶段）
+//numPartitions: 分区数量。
+//distribution: 所需的聚簇分布 (ClusteredDistribution) 要求。
 case class RangeShuffleSpec(
     numPartitions: Int,
     distribution: ClusteredDistribution) extends ShuffleSpec {
@@ -645,6 +672,7 @@ case class RangeShuffleSpec(
   // `RangePartitioning` is not compatible with any other partitioning since it can't guarantee
   // data are co-partitioned for all the children, as range boundaries are randomly sampled. We
   // can't let `RangeShuffleSpec` to create a partitioning.
+  // 大多数情况下返回 false。因为范围分区的边界是基于数据样本随机确定的，无法保证两个数据集的分区边界完全一致，因此通常不被认为是兼容或可用于创建对齐分区的
   override def canCreatePartitioning: Boolean = false
 
   override def isCompatibleWith(other: ShuffleSpec): Boolean = other match {
@@ -655,7 +683,9 @@ case class RangeShuffleSpec(
     case _ => false
   }
 }
-//常用于通过哈希算法对数据进行分区，从而实现数据的分布式处理
+//最常见的 Shuffle 规范，表示基于**哈希分区（HashPartitioning）**的 Shuffle。它确保具有相同哈希键的数据行都被发送到同一个分区。
+//partitioning: 具体的哈希分区方案 (HashPartitioning)，包含分区键表达式和分区数
+//distribution: 所需的聚簇分布 (ClusteredDistribution) 要求。
 case class HashShuffleSpec(
     partitioning: HashPartitioning,
     distribution: ClusteredDistribution) extends ShuffleSpec {
@@ -670,6 +700,7 @@ case class HashShuffleSpec(
    * [a, b] and [x, z], they are compatible. With the positions, we can do the compatibility check
    * by looking at if the positions of hash partition keys from two sides have overlapping.
    */
+  //用于快速检查兼容性。它记录了 HashPartitioning 的分区键在 ClusteredDistribution 的聚簇键序列中的位置
   lazy val hashKeyPositions: Seq[mutable.BitSet] = {
     val distKeyToPos = mutable.Map.empty[Expression, mutable.BitSet]
     distribution.clustering.zipWithIndex.foreach { case (distKey, distKeyPos) =>
@@ -677,7 +708,8 @@ case class HashShuffleSpec(
     }
     partitioning.expressions.map(k => distKeyToPos.getOrElse(k.canonicalized, mutable.BitSet.empty))
   }
-
+  //检查两个 HashShuffleSpec 是否满足四个条件：聚簇键数量相同、分区数量相同、哈希分区键数量相同，并且最关键的是，每一对哈希分区键在它们各自的聚簇键中必须有重叠的位置（通过 hashKeyPositions 的交集判断）。
+  // 这确保了两个数据集虽然可能使用不同的列进行 Shuffle，但它们都有效地按照公共的 Join 键对齐了
   override def isCompatibleWith(other: ShuffleSpec): Boolean = other match {
     case SinglePartitionShuffleSpec =>
       partitioning.numPartitions == 1
@@ -688,7 +720,9 @@ case class HashShuffleSpec(
       //  3. both partitioning have the same number of expressions
       //  4. each pair of partitioning expression from both sides has overlapping positions in their
       //     corresponding distributions.
+      //表达式数量一致
       distribution.clustering.length == otherDistribution.clustering.length &&
+      //分区数量一致
       partitioning.numPartitions == otherPartitioning.numPartitions &&
       partitioning.expressions.length == otherPartitioning.expressions.length && {
         val otherHashKeyPositions = otherHashSpec.hashKeyPositions
@@ -713,7 +747,7 @@ case class HashShuffleSpec(
       true
     }
   }
-
+  //基于另一侧的聚簇键（clustering），创建一个新的 HashPartitioning 方案，以确保数据对齐
   override def createPartitioning(clustering: Seq[Expression]): Partitioning = {
     val exprs = hashKeyPositions.map(v => clustering(v.head))
     HashPartitioning(exprs, partitioning.numPartitions)
@@ -721,7 +755,7 @@ case class HashShuffleSpec(
 
   override def numPartitions: Int = partitioning.numPartitions
 }
-
+//表示一个**合并（Coalesced）**后的哈希 Shuffle 规范。通常用于在 Shuffle 结果上执行 coalesce() 缩小分区数的场景，且不涉及完整 Shuffle
 case class CoalescedHashShuffleSpec(
     from: ShuffleSpec,
     partitions: Seq[CoalescedBoundary]) extends ShuffleSpec {
@@ -741,7 +775,10 @@ case class CoalescedHashShuffleSpec(
 
   override def numPartitions: Int = partitions.length
 }
-
+// 表示基于 Key-Grouped 分区（KeyGroupedPartitioning） 的 Shuffle 规范，
+// 常用于 Bucket Join 或使用 Transform 表达式（如 bucket, years）进行分区对齐的场景
+//partitioning: 具体的 Key-Grouped 分区方案
+//distribution: 所需的聚簇分布要求。
 case class KeyGroupedShuffleSpec(
     partitioning: KeyGroupedPartitioning,
     distribution: ClusteredDistribution) extends ShuffleSpec {
@@ -754,6 +791,7 @@ case class KeyGroupedShuffleSpec(
    * Note that we only allow each partition expression to contain a single partition key.
    * Therefore the mapping here is very similar to that from `HashShuffleSpec`.
    */
+    //用于将分区表达式（可能包含 TransformExpression）映射到聚簇键的位置
   lazy val keyPositions: Seq[mutable.BitSet] = {
     val distKeyToPos = mutable.Map.empty[Expression, mutable.BitSet]
     distribution.clustering.zipWithIndex.foreach { case (distKey, distKeyPos) =>
@@ -767,7 +805,7 @@ case class KeyGroupedShuffleSpec(
   }
 
   override def numPartitions: Int = partitioning.numPartitions
-
+  // 聚簇键数量相同、分区数量相同、分区键表达式兼容（通过位置重叠和转换函数 TransformExpression 的一致性判断），以及分区值必须遵循相同的顺序。
   override def isCompatibleWith(other: ShuffleSpec): Boolean = other match {
     // Here we check:
     //  1. both distributions have the same number of clustering keys
@@ -818,7 +856,7 @@ case class KeyGroupedShuffleSpec(
 
   override def canCreatePartitioning: Boolean = false
 }
-//将多个 ShuffleSpec 聚集在一起的类型，它表示一个包含多个 ShuffleSpec 的集合
+// 用于将多个可能的 ShuffleSpec 聚合在一起。例如，当一个数据集可能以多种方式满足下游算子的分布要求时
 case class ShuffleSpecCollection(specs: Seq[ShuffleSpec]) extends ShuffleSpec {
   //检查 specs 中的每一个 ShuffleSpec 是否与 other 兼容，若其中任何一个 ShuffleSpec 兼容 other，就返回 true
   override def isCompatibleWith(other: ShuffleSpec): Boolean = {

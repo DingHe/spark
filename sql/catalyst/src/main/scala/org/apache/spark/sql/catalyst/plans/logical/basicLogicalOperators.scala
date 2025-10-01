@@ -1807,8 +1807,16 @@ case class Distinct(child: LogicalPlan) extends UnaryNode {
 /**
  * A base interface for [[RepartitionByExpression]] and [[Repartition]]
  */
+//Spark SQL 逻辑计划（Logical Plan）中的一个抽象基类，用于表示所有涉及更改数据分区方式和/或分区数量的操作
+//核心作用是：
+//抽象共性： 为具体的重分区操作（如 RepartitionByExpression 和 Repartition）定义了必须包含的关键信息（如是否 Shuffle、目标分区数、分区方案
+//定义结构： 作为 UnaryNode 的子类，它明确了重分区操作是一个一元节点，只有一个子节点（即需要被重新分区的数据集）
+//指导物理计划： 它包含的信息将直接被 Spark 优化器和物理规划器用于：
+//插入 ShuffleExchangeExec： 如果 shuffle 为 true，则指示后续的物理计划必须包含数据移动（Shuffle）。
+//确定新的分区状态： partitioning 属性定义了操作完成后数据集将具备的新的分区结构。
 abstract class RepartitionOperation extends UnaryNode {
   def shuffle: Boolean
+  //目标分区数量
   def numPartitions: Int
   override final def maxRows: Option[Long] = child.maxRows
   override def output: Seq[Attribute] = child.output
@@ -1822,21 +1830,33 @@ abstract class RepartitionOperation extends UnaryNode {
  * asked for `coalesce` or `repartition`. [[RepartitionByExpression]] is used when the consumer
  * of the output requires some specific ordering or distribution of the data.
  */
+//Repartition 类是 Spark SQL **逻辑计划（Logical Plan）**中的一个具体算子（Logical Operator），它继承自抽象类 RepartitionOperation
+//核心作用是：
+//实现用户意图： 专门用于表示用户在 DataFrame API 中调用 df.repartition(N) 或 df.coalesce(N) 这类显式操作
+//更改并行度： 明确地将数据集（child）的分区数量更改为精确的 numPartitions
+//如果 shuffle=true（对应 repartition），则使用 RoundRobinPartitioning 来实现数据的均匀分布。
+//如果 shuffle=false（对应 coalesce），它将依赖于底层物理执行时的优化，但逻辑上它是一个窄依赖，仅用于减少分区数。
+//child 需要被重新分区的原始数据集。
 case class Repartition(numPartitions: Int, shuffle: Boolean, child: LogicalPlan)
   extends RepartitionOperation {
   require(numPartitions > 0, s"Number of partitions ($numPartitions) must be positive.")
-
+  //定义新的分区方案。
   override def partitioning: Partitioning = {
     require(shuffle, "Partitioning can only be used in shuffle.")
     numPartitions match {
       case 1 => SinglePartition
+      //表示数据将以循环（轮询）方式均匀分布
       case _ => RoundRobinPartitioning(numPartitions)
     }
   }
   override protected def withNewChildInternal(newChild: LogicalPlan): Repartition =
     copy(child = newChild)
 }
-
+// 是 Spark SQL 中的一个 特质（Trait），旨在为任何混入（mixin）它的类提供处理分区键表达式和确定分区策略的能力
+//标准化分区逻辑： 它定义了一个通用的接口和默认实现，用于根据一组给定的表达式 (partitionExpressions) 来构造具体的 Partitioning 策略，
+// 如 HashPartitioning、RangePartitioning 或 RoundRobinPartitioning。
+//管理分区数： 它负责获取和验证所需的分区数量 (numPartitions)，优先使用可选值，否则回退到默认的 Shuffle 分区数。
+//约束分区键类型： 它强制要求混入的类在定义分区表达式时，必须要么全部是 SortOrder 表达式（用于范围分区），要么全部是非 SortOrder 表达式（用于哈希分区），从而保证分区策略的清晰和正确性。
 trait HasPartitionExpressions extends SQLConfHelper {
 
   val numPartitions = optNumPartitions.getOrElse(conf.numShufflePartitions)
@@ -1860,9 +1880,11 @@ trait HasPartitionExpressions extends SQLConfHelper {
            |SortOrder: $sortOrder
            |NonSortOrder: $nonSortOrder
        """.stripMargin)
+    //如果全部是排序表达式，则选择范围分区
     if (sortOrder.nonEmpty) {
       RangePartitioning(sortOrder.map(_.asInstanceOf[SortOrder]), numPartitions)
     } else {
+      //其他为hash
       HashPartitioning(partitionExpressions, numPartitions)
     }
   }
@@ -1875,10 +1897,15 @@ trait HasPartitionExpressions extends SQLConfHelper {
  * `coalesce` and `repartition`. If no `optNumPartitions` is given, by default it partitions data
  * into `numShufflePartitions` defined in `SQLConf`, and could be coalesced by AQE.
  */
+//Spark SQL 逻辑计划中的一个操作符，它表示一个明确的、基于表达式（Expression） 的数据重分区操作
+//核心职责：
+//基于键的重分区（Shuffle）： 它的主要作用是指示 Spark 必须通过 Shuffle 操作来重新划分数据。
+// 重分区的逻辑（例如是哈希分区还是范围分区）由其继承的 HasPartitionExpressions 特质来决定，分区键由 partitionExpressions 指定
+//满足下游要求： 该操作通常用于满足查询结果消费者（即下游操作符，如 Join 或 Window）所期望的特定数据分布（Distribution） 或排序（Ordering） 要求
 case class RepartitionByExpression(
     partitionExpressions: Seq[Expression],
     child: LogicalPlan,
-    optNumPartitions: Option[Int],
+    optNumPartitions: Option[Int],//可选的分区数，用户或系统指定的所需分区数量。如果为 None，则使用 SQLConf 中配置的默认 Shuffle 分区数。
     optAdvisoryPartitionSize: Option[Long] = None)
   extends RepartitionOperation with HasPartitionExpressions {
 
