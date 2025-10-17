@@ -29,6 +29,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap;
  *
  * @since 3.0.0
  */
+// Spark DataSource V2 API 中的一个 mixin 接口，用于表示某个 Table 是可读的
 @Evolving
 public interface SupportsRead extends Table {
 

@@ -37,7 +37,13 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap;
  *
  * @since 3.0.0
  */
-//属于 v2 版本数据源接口（Spark SQL 数据源 v2 API）。该接口设计用于支持无实际目录（Catalog）的数据源
+// TableProvider 是 Spark DataSource V2 API 中用于实现不具备自身元数据目录（Catalog）的数据源的基础接口。
+// 它通常用于读取和写入文件系统数据（如 Parquet、CSV）或 流数据源（如 Kafka），这些数据源的“表”是由一组配置选项（例如文件路径、主题名称）临时定义的。
+// 核心职责：
+// 模式和分区推断： 负责根据用户提供的选项（如路径）自动推断出数据的 Schema（模式）和 Partitioning（分区信息）
+// 创建 Table 实例： 核心目标是根据推断或外部提供的元数据（Schema、Partitioning、Properties）创建一个具体的 Table 实例。这个 Table 实例才是真正执行读取（Read）和写入（Write）等数据操作的对象。
+// 限制 DDL 操作： 该接口明确不支持需要更改元数据的操作，例如 CREATE TABLE 或 DROP TABLE。它主要支持针对现有数据的数据操作（DML/DQL），如读取、追加、删除和覆盖
+
 @Evolving
 public interface TableProvider {
 
@@ -47,8 +53,9 @@ public interface TableProvider {
    * @param options an immutable case-insensitive string-to-string map that can identify a table,
    *                e.g. file path, Kafka topic name, etc.
    */
-  //用于推断表的模式（Schema）
-  //大小写不敏感的字符串到字符串的映射，包含标识表的选项，比如文件路径、Kafka 主题名称等。通过这些选项，Spark 确定要操作的表
+  //推断模式
+  // 数据源 Schema 发现逻辑的关键方法。
+  // 接收一个 options 映射（通常包含文件路径、格式选项等），并返回该数据源的底层数据的 StructType 模式信息
   StructType inferSchema(CaseInsensitiveStringMap options);
 
   /**
@@ -60,8 +67,8 @@ public interface TableProvider {
    * @param options an immutable case-insensitive string-to-string map that can identify a table,
    *                e.g. file path, Kafka topic name, etc.
    */
-  //用于推断表的分区信息
-  //默认实现返回一个空的 Transform 数组，表示不支持分区
+  //推断分区
+  // 默认返回一个空的 Transform 数组（即 new Transform[0]），表示不推断分区
   default Transform[] inferPartitioning(CaseInsensitiveStringMap options) {
     return new Transform[0];
   }
@@ -78,6 +85,9 @@ public interface TableProvider {
    *                   insensitively. It should be able to identify a table, e.g. file path, Kafka
    *                   topic name, etc.
    */
+  // 获取 Table 实例（核心）
+  // 接收确定的 Schema、Partitioning 和 Properties，并基于这些信息创建一个具体的 Table 实例。
+  // 这个返回的 Table 对象是执行实际的 Read 或 Write 操作的 V2 API 句柄
   Table getTable(StructType schema, Transform[] partitioning, Map<String, String> properties);
 
   /**
@@ -95,8 +105,10 @@ public interface TableProvider {
    * if this source has expensive schema/partitioning inference and wants external table metadata
    * to avoid inference.
    */
-  //返回 true 表示该数据源支持外部表元数据的传入
-  //当数据源能够接受外部表元数据时，Spark 可以避免推断表的模式和分区信息，直接使用外部传入的元数据
+  // 支持外部元数据。
+  // 这是一个 default 方法，默认返回 false。
+  // 如果返回 true，则表示该数据源能够接受外部提供的表元数据（例如用户在 DataFrameReader 中指定的 Schema 或 Spark Catalog 中存储的 Schema/Partitioning），
+  // 从而避免执行昂贵的 inferSchema 和 inferPartitioning 推断过程
   default boolean supportsExternalMetadata() {
     return false;
   }

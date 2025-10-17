@@ -182,9 +182,9 @@ case class CatalogTablePartition(
 // 用于存储与“分桶（Bucketing）”相关的信息。
 // 分桶是一种将数据集分解为更易于管理的部分的技术，通常用于提高查询效率。与动态分区不同，分桶的数量是固定的，并且不会随着数据量的变化而变化
 case class BucketSpec(
-    numBuckets: Int, //表示分桶的数量
-    bucketColumnNames: Seq[String],  //用来生成桶 ID 的列名,每个桶的生成依据是这些列的值
-    sortColumnNames: Seq[String]) extends SQLConfHelper { //用来对每个桶内的数据进行排序的列名。排序列是对每个桶内的数据进行排序的依据
+    numBuckets: Int, // 表示分桶的数量
+    bucketColumnNames: Seq[String],  // 用来生成桶 ID 的列名,每个桶的生成依据是这些列的值
+    sortColumnNames: Seq[String]) extends SQLConfHelper { // 用来对每个桶内的数据进行排序的列名。排序列是对每个桶内的数据进行排序的依据
 
   if (numBuckets <= 0 || numBuckets > conf.bucketingMaxBuckets) {
     throw QueryCompilationErrors.invalidBucketNumberError(

@@ -39,8 +39,11 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
+ * Spark/Hive 数据类型与互操作性
  * 1. The Underlying data type in catalyst and in Hive
+ * 1. Catalyst 与 Hive 中的底层数据类型
  * In catalyst:
+ * 在 Catalyst 中：
  *  Primitive  =>
  *     UTF8String
  *     int / scala.Int
@@ -54,15 +57,18 @@ import org.apache.spark.unsafe.types.UTF8String
  *     Array[Byte]
  *     java.sql.Date
  *     java.sql.Timestamp
+ *     复杂类型 (Complex Types)：
  *  Complex Types =>
  *    Map: `MapData`
  *    List: `ArrayData`
  *    Struct: [[org.apache.spark.sql.catalyst.InternalRow]]
  *    Union: NOT SUPPORTED YET
+ *     复杂类型充当容器，可以容纳任意数据类型。
  *  The Complex types plays as a container, which can hold arbitrary data types.
  *
  * In Hive, the native data types are various, in UDF/UDAF/UDTF, and associated with
  * Object Inspectors, in Hive expression evaluation framework, the underlying data are
+ * Hive 的原生数据类型多种多样。在 UDF/UDAF/UDTF（用户自定义函数/聚合函数/表生成函数）以及相关的 Hive 表达式求值框架中，底层数据表现为：
  * Primitive Type
  *   Java Boxed Primitives:
  *       org.apache.hadoop.hive.common.type.HiveVarchar
@@ -80,6 +86,7 @@ import org.apache.spark.unsafe.types.UTF8String
  *       java.sql.Date
  *       java.sql.Timestamp
  *   Writables:
+ *   可写类型 (Writables):
  *       org.apache.hadoop.hive.serde2.io.HiveVarcharWritable
  *       org.apache.hadoop.hive.serde2.io.HiveCharWritable
  *       org.apache.hadoop.io.Text
@@ -95,11 +102,12 @@ import org.apache.spark.unsafe.types.UTF8String
  *       org.apache.hadoop.hive.serde2.io.TimestampWritable
  *       org.apache.hadoop.hive.serde2.io.HiveDecimalWritable
  * Complex Type
+ * 复杂类型 (Complex Type)：
  *   List: Object[] / java.util.List
  *   Map: java.util.Map
  *   Struct: Object[] / java.util.List / java POJO
  *   Union: class StandardUnion { byte tag; Object object }
- *
+ * 重要注意 (NOTICE)： Catalyst 不支持 HiveVarchar / HiveChar 类型，它们将被简单地视为 String 类型
  * NOTICE: HiveVarchar/HiveChar is not supported by catalyst, it will be simply considered as
  *  String type.
  *
@@ -107,24 +115,27 @@ import org.apache.spark.unsafe.types.UTF8String
  * 2. Hive ObjectInspector is a group of flexible APIs to inspect value in different data
  *  representation, and developers can extend those API as needed, so technically,
  *  object inspector supports arbitrary data type in java.
- *
+ *  Hive ObjectInspector 是一组灵活的 API，用于检查不同数据表示中的值，开发人员可以根据需要扩展这些 API。因此，从技术上讲，对象检查器支持 Java 中的任意数据类型。
  * Fortunately, only few built-in Hive Object Inspectors are used in generic udf/udaf/udtf
  * evaluation.
+ *  幸运的是，在泛型 UDF/UDAF/UDTF 求值中，只使用了少数内置的 Hive ObjectInspector：
  * 1) Primitive Types (PrimitiveObjectInspector & its sub classes)
-  {{{
-   public interface PrimitiveObjectInspector {
-     // Java Primitives (java.lang.Integer, java.lang.String etc.)
-     Object getPrimitiveJavaObject(Object o);
-     // Writables (hadoop.io.IntWritable, hadoop.io.Text etc.)
-     Object getPrimitiveWritableObject(Object o);
-     // ObjectInspector only inspect the `writable` always return true, we need to check it
-     // before invoking the methods above.
-     boolean preferWritable();
-     ...
-   }
-  }}}
-
+ *  基本类型 (PrimitiveObjectInspector 及其子类)
+  *{{{
+   *public interface PrimitiveObjectInspector {
+     *// Java Primitives (java.lang.Integer, java.lang.String etc.)
+     *Object getPrimitiveJavaObject(Object o);
+     *// Writables (hadoop.io.IntWritable, hadoop.io.Text etc.)
+     *Object getPrimitiveWritableObject(Object o);
+     *// ObjectInspector only inspect the `writable` always return true, we need to check it
+     *// before invoking the methods above.
+     *boolean preferWritable();
+     *...
+   *}
+  *}}}
+ *
  * 2) Complex Types:
+  * 复杂类型 (Complex Types):
  *   ListObjectInspector: inspects java array or [[java.util.List]]
  *   MapObjectInspector: inspects [[java.util.Map]]
  *   Struct.StructObjectInspector: inspects java array, [[java.util.List]] and
@@ -132,15 +143,16 @@ import org.apache.spark.unsafe.types.UTF8String
  *   UnionObjectInspector: (tag: Int, object data) (TODO: not supported by SparkSQL yet)
  *
  * 3) ConstantObjectInspector:
+    * 常量对象检查器可以是基本类型或复杂类型，它将一个常量值作为其属性捆绑在一起。通常，该值是在常量对象检查器构造时创建的。
  * Constant object inspector can be either primitive type or Complex type, and it bundles a
  * constant value as its property, usually the value is created when the constant object inspector
  * constructed.
  * {{{
-   public interface ConstantObjectInspector extends ObjectInspector {
-      Object getWritableConstantValue();
-      ...
-    }
-  }}}
+   *public interface ConstantObjectInspector extends ObjectInspector {
+      *Object getWritableConstantValue();
+      *...
+    *}
+  *}}}
  * Hive provides 3 built-in constant object inspectors:
  * Primitive Object Inspectors:
  *     WritableConstantStringObjectInspector
@@ -181,9 +193,12 @@ import org.apache.spark.unsafe.types.UTF8String
  *       We don't need to unwrap the data for printf and wrap it again and passes in data_add
  */
 private[hive] trait HiveInspectors {
-
+  //主要作用是建立 Java 类型系统（特别是 Hive UDF 和 SerDe 中使用的类型）与 Spark Catalyst 数据类型之间的映射关系
+  //使用 Scala 的 模式匹配 (match) 来判断传入的 Java 类型 (clz) 属于哪种类别，并返回对应的 Spark DataType
+  //接收一个 Java 反射中的 Type 对象
   def javaTypeToDataType(clz: Type): DataType = clz match {
     // writable
+    //这部分将 Hadoop 和 Hive I/O 中常用的 Writable 对象映射到 Spark 类型
     case c: Class[_] if c == classOf[hadoopIo.DoubleWritable] => DoubleType
     case c: Class[_] if c == classOf[hiveIo.DoubleWritable] => DoubleType
     case c: Class[_] if c == classOf[hiveIo.HiveDecimalWritable] => DecimalType.SYSTEM_DEFAULT
@@ -199,6 +214,7 @@ private[hive] trait HiveInspectors {
     case c: Class[_] if c == classOf[hadoopIo.BytesWritable] => BinaryType
 
     // java class
+    //这部分将 Java 封装类（Boxed Types）和 SQL API 中使用的类型映射到 Spark 类型
     case c: Class[_] if c == classOf[java.lang.String] => StringType
     case c: Class[_] if c == classOf[java.sql.Date] => DateType
     case c: Class[_] if c == classOf[java.sql.Timestamp] => TimestampType
@@ -214,6 +230,7 @@ private[hive] trait HiveInspectors {
     case c: Class[_] if c == classOf[java.lang.Boolean] => BooleanType
 
     // primitive type
+    //这部分将 Java 的基本类型（未封装的）映射到 Spark 类型
     case c: Class[_] if c == java.lang.Short.TYPE => ShortType
     case c: Class[_] if c == java.lang.Integer.TYPE => IntegerType
     case c: Class[_] if c == java.lang.Long.TYPE => LongType
@@ -221,21 +238,23 @@ private[hive] trait HiveInspectors {
     case c: Class[_] if c == java.lang.Byte.TYPE => ByteType
     case c: Class[_] if c == java.lang.Float.TYPE => FloatType
     case c: Class[_] if c == java.lang.Boolean.TYPE => BooleanType
-
+    //返回一个 ArrayType，并递归调用 javaTypeToDataType 来确定数组元素的类型（通过 c.getComponentType 获取）
     case c: Class[_] if c.isArray => ArrayType(javaTypeToDataType(c.getComponentType))
 
     // Hive seems to return this for struct types?
+    //指出 Hive 有时可能为 Struct 类型返回一个泛型的 java.lang.Object。在这种模糊的情况下，Spark 暂时将其视为 NullType（空类型），表示它不能确定具体结构
     case c: Class[_] if c == classOf[java.lang.Object] => NullType
-
+    //匹配带有参数化类型（泛型）信息的类型，例如 List<String>
     case p: ParameterizedType if isSubClassOf(p.getRawType, classOf[java.util.List[_]]) =>
       val Array(elementType) = p.getActualTypeArguments
       ArrayType(javaTypeToDataType(elementType))
-
+    //检查原始类型是否是 java.util.Map 的子类
     case p: ParameterizedType if isSubClassOf(p.getRawType, classOf[java.util.Map[_, _]]) =>
       val Array(keyType, valueType) = p.getActualTypeArguments
       MapType(javaTypeToDataType(keyType), javaTypeToDataType(valueType))
 
     // raw java list type unsupported
+    // 这部分处理那些缺乏泛型信息或无法识别的类型，并抛出异常
     case c: Class[_] if isSubClassOf(c, classOf[java.util.List[_]]) =>
       throw new AnalysisException(
         "Raw list type in java is unsupported because Spark cannot infer the element type.")
@@ -257,7 +276,7 @@ private[hive] trait HiveInspectors {
     case cls: Class[_] => parent.isAssignableFrom(cls)
     case _ => false
   }
-
+  //加上了空值判断的逻辑
   private def withNullSafe(f: Any => Any): Any => Any = {
     input => if (input == null) null else f(input)
   }
@@ -265,6 +284,9 @@ private[hive] trait HiveInspectors {
   /**
    * Wraps with Hive types based on object inspector.
    */
+  // 作用是根据给定的 Hive ObjectInspector（对象检查器）和 Spark DataType（数据类型），返回一个数据转换函数（或称 “封装器”）
+  //封装器是一个 Any => Any 类型的函数，它接收一个 Catalyst 内部数据对象，
+  // 并将其转换为 Hive SerDe 期望的 Java/Writable 对象。这是 Spark 向 Hive 写入数据时执行的数据类型桥接逻辑
   protected def wrapperFor(oi: ObjectInspector, dataType: DataType): Any => Any = oi match {
     case _ if dataType.isInstanceOf[UserDefinedType[_]] =>
       val sqlType = dataType.asInstanceOf[UserDefinedType[_]].sqlType
@@ -458,10 +480,14 @@ private[hive] trait HiveInspectors {
    * @return A function that unwraps data objects.
    *         Use the overloaded HiveStructField version for in-place updating of a MutableRow.
    */
+  //作用是根据给定的 Hive ObjectInspector，预先构建一个高效的数据转换函数（或称 “解封装器”）
+  //接收一个 Hive 兼容的数据对象（如 Java 对象或 Writable），并将其转换为 Spark Catalyst 内部数据对象（如 UTF8String, InternalRow, ArrayData 等）。这是 Spark 从 Hive 读取或与 Hive 函数交互时执行的数据类型桥接逻辑
   def unwrapperFor(objectInspector: ObjectInspector): Any => Any =
     objectInspector match {
+      // 匹配 Null 常量
       case coi: ConstantObjectInspector if coi.getWritableConstantValue == null =>
         _ => null
+      // 匹配 String 常量，转换为 UTF8String
       case poi: WritableConstantStringObjectInspector =>
         val constant = UTF8String.fromString(poi.getWritableConstantValue.toString)
         _ => constant
@@ -758,6 +784,8 @@ private[hive] trait HiveInspectors {
    * @return A function that performs in-place updating of a MutableRow.
    *         Use the overloaded ObjectInspector version for assignments.
    */
+  //unwrapperFor 方法的另一个重载版本，它专门用于将 Hive 数据解封装后，原地（in-place）更新 Spark 的可变行 (MutableRow)
+  //这个方法旨在避免在每行数据处理时进行类型检查和模式匹配，提高数据读取性能。它接收一个 Hive 结构体字段引用 (HiveStructField)，返回一个能直接修改 InternalRow 的函数
   def unwrapperFor(field: HiveStructField): (Any, InternalRow, Int) => Unit =
     field.getFieldObjectInspector match {
       case oi: BooleanObjectInspector =>
@@ -815,6 +843,10 @@ private[hive] trait HiveInspectors {
    * @return Hive java object inspector (recursively), not the Writable ObjectInspector
    * We can easily map to the Hive built-in object inspector according to the data type.
    */
+  //主要作用是建立从 Spark Catalyst 数据类型 (DataType) 到 Hive ObjectInspector 的映射
+  //该方法是 Spark 在与 Hive 兼容的组件（如 Hive SerDe 或 Hive UDF）交互时，
+  // 将 Spark 内部类型系统暴露给 Hive 的关键桥梁。
+  // 它返回的是非 Writable 的 Java ObjectInspector，这意味着它指导 Hive 使用标准的 Java 封装类型（如 java.lang.String、java.lang.Integer），而不是 Hadoop 的 Writable 类型
   def toInspector(dataType: DataType): ObjectInspector = dataType match {
     case ArrayType(tpe, _) =>
       ObjectInspectorFactory.getStandardListObjectInspector(toInspector(tpe))
@@ -855,6 +887,10 @@ private[hive] trait HiveInspectors {
    * @param expr Catalyst expression to be mapped
    * @return Hive java objectinspector (recursively).
    */
+  //toInspector 方法的另一个重载版本。它的作用是将 Catalyst 表达式 (Expression) 映射到对应的 Hive ObjectInspector
+  //核心逻辑是：
+  //优先检查常量： 如果表达式是 Literal（字面量）或可折叠的 (foldable)，则返回 常量对象检查器 (ConstantObjectInspector)
+  //默认行为： 否则，返回一个基于表达式 数据类型 的普通 非常量对象检查器
   def toInspector(expr: Expression): ObjectInspector = expr match {
     case Literal(value, StringType) =>
       getStringWritableConstantObjectInspector(value)
@@ -923,7 +959,8 @@ private[hive] trait HiveInspectors {
     // For those non constant expression, map to object inspector according to its data type
     case _ => toInspector(expr.dataType)
   }
-
+  // 主要作用是建立从 Hive ObjectInspector（对象检查器）到 Spark Catalyst 数据类型 (DataType) 的映射
+  //该方法是 Spark 从 Hive 表或 UDF/SerDe 读取数据时，用于推断其数据结构和类型的关键步骤。
   def inspectorToDataType(inspector: ObjectInspector): DataType = inspector match {
     case s: StructObjectInspector =>
       StructType(s.getAllStructFieldRefs.asScala.map(f =>

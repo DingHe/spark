@@ -75,6 +75,8 @@ private[sql] object LogicalExpressions {
 /**
  * Allows Spark to rewrite the given references of the transform during analysis.
  */
+// 作用是标记并提供机制给 Spark 的 Catalyst 分析器（Analyzer）来重写（Rewrite）或更新一个分区转换（Transform）表达式中的列引用（NamedReference）
+// 它使得一个分区转换表达式能够适应 Spark 分析器对列引用的解析和重写，是 Spark 内部处理 V2 分区规范（Partitioning）正确性的关键机制
 private[sql] sealed trait RewritableTransform extends Transform {
   /** Creates a copy of this transform with the new analyzed references. */
   def withReferences(newReferences: Seq[NamedReference]): Transform
@@ -83,16 +85,21 @@ private[sql] sealed trait RewritableTransform extends Transform {
 /**
  * Base class for simple transforms of a single column.
  */
+// 作为 Spark SQL 单列分区转换函数（例如 year(ts)、day(ts)、truncate(col, L) 等）的基类
+// 简化单列转换： 它封装了所有基于单列进行分区转换的 Transform 实现所共有的逻辑
+// 明确知道它只有一个参数（即被引用的列）
+// 它的所有引用就是这一个参数
+// 接收一个 NamedReference（命名引用，即要进行转换的列或字段）作为参数，并在内部存储为私有的 ref 字段
 private[sql] abstract class SingleColumnTransform(ref: NamedReference) extends RewritableTransform {
-
+  // 获取引用的列
   def reference: NamedReference = ref
-
+  // 获取引用的集合
   override def references: Array[NamedReference] = Array(ref)
-
+  // 获取转换参数
   override def arguments: Array[Expression] = Array(ref)
 
   override def toString: String = name + "(" + reference.describe + ")"
-
+  // 抽象方法：创建新实例。 这是一个 protected 的抽象方法，强制子类实现
   protected def withNewRef(ref: NamedReference): Transform
 
   override def withReferences(newReferences: Seq[NamedReference]): Transform = {
@@ -294,15 +301,22 @@ private[sql] object MonthsTransform {
       None
   }
 }
-
+// 表示一个 “按天（Days）” 的分区转换函数
+// 它在逻辑上代表了 SQL 分区表达式 days(column)，用于指导数据源创建按天划分的分区结构
 private[sql] final case class DaysTransform(
     ref: NamedReference) extends SingleColumnTransform(ref) {
+  // 转换函数的名称
   override val name: String = "days"
+
+   // 使用 Scala case class 提供的 copy 方法，
+  // 基于新的列引用 (ref) 创建并返回一个 DaysTransform 的新实例
   override protected def withNewRef(ref: NamedReference): Transform = this.copy(ref)
 }
-
+// 伴生对象主要提供 unapply 方法，用于在 Spark 的模式匹配逻辑中解构（或识别）该 Transform 表达式
 private[sql] object DaysTransform {
   def unapply(expr: Expression): Option[FieldReference] = expr match {
+    // 检查传入的 Expression 是否是一个 DaysTransform 实例。
+    // 如果是，则返回该转换所引用的列的 FieldReference（字段引用）
     case transform: Transform =>
       transform match {
         case DaysTransform(ref) =>
@@ -313,7 +327,9 @@ private[sql] object DaysTransform {
     case _ =>
       None
   }
-
+   // 用于解构未解析的 Transform。
+   // 这是一个重载的模式匹配器，用于解构尚未被分析器完全解析的 Transform 逻辑表达式。
+   // 它通过内部模式 NamedTransform("days", Seq(Ref(parts))) 匹配： 1. 转换名称是否为 "days"。 2. 参数是否是一个简单的列引用（Ref(parts)）
   def unapply(transform: Transform): Option[FieldReference] = transform match {
     case NamedTransform("days", Seq(Ref(parts))) =>
       Some(FieldReference(parts))

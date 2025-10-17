@@ -27,14 +27,15 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.datasources.v2.FileTable
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
-
+// ParquetTable 是 Spark DataSource V2 中针对 Parquet 格式文件 的表（Table）实现类。
+// 它代表了一个 Parquet 数据源对应的“表”，并封装了读取和写入 Parquet 文件时的相关逻辑
 case class ParquetTable(
     name: String,
     sparkSession: SparkSession,
     options: CaseInsensitiveStringMap,
-    paths: Seq[String],
-    userSpecifiedSchema: Option[StructType],
-    fallbackFileFormat: Class[_ <: FileFormat])
+    paths: Seq[String], // 表对应的一个或多个底层文件路径。Spark 会基于这些路径构建 FileIndex
+    userSpecifiedSchema: Option[StructType], // 用户在读取时显式指定的 Schema，如果没有，Spark 会自动推断
+    fallbackFileFormat: Class[_ <: FileFormat]) // 回退使用的 V1 FileFormat 类（比如老的 ParquetFileFormat），用于兼容 V1 逻辑
   extends FileTable(sparkSession, options, paths, userSpecifiedSchema) {
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ParquetScanBuilder =

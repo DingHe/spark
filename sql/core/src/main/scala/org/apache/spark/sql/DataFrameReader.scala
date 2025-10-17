@@ -610,8 +610,10 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *                  Note that, the global temporary view database is also valid here.
    * @since 1.4.0
    */
+  // 返回指定的表（Table）或视图（View）作为 DataFrame
   def table(tableName: String): DataFrame = {
     assertNoSpecifiedSchema("table")
+    //使用 SQL 解析器将用户传入的表名字符串（例如 "db1.tableA" 或 "tableB"）解析成一个**多部分标识符（Multipart Identifier）**序列
     val multipartIdentifier =
       sparkSession.sessionState.sqlParser.parseMultipartIdentifier(tableName)
     Dataset.ofRows(sparkSession, UnresolvedRelation(multipartIdentifier,

@@ -39,6 +39,8 @@ import java.util.Set;
  *
  * @since 3.0.0
  */
+// Table 接口是 Spark DataSource V2 API 中对逻辑结构化数据集的最高层次抽象。
+// 它代表了数据源中的一个具体“表”或数据集。无论是文件系统上的目录、Kafka 的主题，还是 Catalog 中的实际表，在 Spark V2 架构中都被抽象为 Table
 @Evolving
 public interface Table {
 
@@ -46,7 +48,7 @@ public interface Table {
    * A name to identify this table. Implementations should provide a meaningful name, like the
    * database and table name from catalog, or the location of files for this table.
    */
-  String name();  //表名
+  String name();  //表名/数据集名称
 
   /**
    * Returns the schema of this table. If the table is not readable and doesn't have a schema, an
@@ -61,7 +63,7 @@ public interface Table {
    * Returns the columns of this table. If the table is not readable and doesn't have a schema, an
    * empty array can be returned here.
    */
-  //表的列
+  //表的列信息（推荐）
   default Column[] columns() {
     return CatalogV2Util.structTypeToV2Columns(schema());
   }
@@ -85,5 +87,7 @@ public interface Table {
   /**
    * Returns the set of capabilities for this table.
    */
+  // 能力声明
+  // 明确声明了该表支持哪些操作（例如：支持读取、支持写入、支持列式读取、支持删除等
   Set<TableCapability> capabilities();
 }

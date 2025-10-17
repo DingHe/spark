@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution.streaming.{FileStreamSink, MetadataLogFile
 import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.util.SchemaUtils
-//Spark 3.x 数据源 V2 API 中的一个抽象类，用于定义基于文件的数据源（如 Parquet、ORC、CSV 等）。
+// Spark 3.x 数据源 V2 API 中的一个抽象类，用于定义基于文件的数据源（如 Parquet、ORC、CSV 等）。
 // 它同时支持读（SupportsRead）和写（SupportsWrite），并封装了文件索引、Schema 处理等逻辑
 abstract class FileTable(
     sparkSession: SparkSession,

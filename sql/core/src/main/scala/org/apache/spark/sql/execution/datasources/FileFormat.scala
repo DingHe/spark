@@ -37,22 +37,34 @@ import org.apache.spark.sql.types._
 /**
  * Used to read and write data stored in files to/from the [[InternalRow]] format.
  */
+//Spark 读取和写入所有基于文件的数据源（如 Parquet、ORC、CSV、JSON 等）的核心抽象层
+//FileFormat 特质是 Spark SQL 文件数据源的基础合同。任何希望作为文件格式被 Spark 支持的库或实现（例如 ParquetFileFormat 或 CsvFileFormat），都必须实现这个特质
+//核心职责：
+//定义 I/O 接口： 它提供了读写数据到/自文件的标准接口，数据格式在 Spark 内部统一为 InternalRow。
+//Schema 管理： 负责从文件中推断数据的结构（Schema）
+//读写准备： 负责准备 Hadoop Job，配置输出提交器（Output Committer）等，以进行数据的写入操作。
+//读取优化： 提供了构建高效数据读取器（Reader）的机制，包括支持列式批量读取（Columnar Batch） 和处理 数据本地性（通过文件可拆分性 isSplitable）。
 trait FileFormat {
-  /**  用于推断文件的 schema（结构化数据的格式） files: Seq[FileStatus]：待读取的文件列表
+  /**
    * When possible, this method should return the schema of the given `files`.  When the format
    * does not support inference, or no valid files are given should return None.  In these cases
    * Spark will require that user specify the schema manually.
    */
+  //推断文件 Schema
+  //尝试根据给定文件列表 (files) 的内容和用户选项 (options) 来自动推断数据的 StructType。
+  // 如果格式不支持推断或文件无效，应返回 None，此时 Spark 要求用户手动指定 Schema
   def inferSchema(
       sparkSession: SparkSession,
       options: Map[String, String],
       files: Seq[FileStatus]): Option[StructType]
 
-  /** 准备写入数据的作业。可以在此方法中进行客户端作业准备工作，如配置用户定义的输出提交器
+  /**
    * Prepares a write job and returns an [[OutputWriterFactory]].  Client side job preparation can
    * be put here.  For example, user defined output committer can be configured here
    * by setting the output committer class in the conf of spark.sql.sources.outputCommitterClass.
-   */ //job: Job：Hadoop 作业对象，用于配置写入作业  dataSchema: StructType：写入数据的 schema
+   */
+  // 准备写入作业
+  //在数据写入开始前执行客户端设置。它接收一个 Job 对象用于配置（例如设置自定义的 OutputCommitter），并返回一个 OutputWriterFactory，后者用于在执行器端创建实际的写入器
   def prepareWrite(
       sparkSession: SparkSession,
       job: Job,
@@ -68,7 +80,9 @@ trait FileFormat {
    * For ParquetFileFormat and OrcFileFormat, passing this option is required.
    *
    * TODO: we should just have different traits for the different formats.
-   */ //该文件格式是否支持列式批量输出（columnar batch output）。列式输出可以提高读取性能，尤其是在处理大数据量时
+   */
+  // 支持列式批量读取
+  // 判断该文件格式是否支持以 列式批量（Columnar Batch） 的方式输出数据。列式读取通常性能更高。默认返回 false
   def supportBatch(sparkSession: SparkSession, dataSchema: StructType): Boolean = {
     false
   }
@@ -76,7 +90,9 @@ trait FileFormat {
   /**
    * Returns concrete column vector class names for each column to be used in a columnar batch
    * if this format supports returning columnar batch.
-   */ //返回每个列的具体的列容器类名
+   */
+  // 列向量类型
+  // 如果 supportBatch 返回 true，此方法返回一个序列，指定在列式批量读取中每一列应使用的具体列容器类名。
   def vectorTypes(
       requiredSchema: StructType,
       partitionSchema: StructType,
@@ -86,7 +102,9 @@ trait FileFormat {
 
   /**
    * Returns whether a file with `path` could be split or not.
-   *///判断给定路径下的文件是否可拆分
+   */
+  // 判断给定路径下的文件是否可拆分
+  // 检查给定路径 (path) 的文件是否可以被 Hadoop InputFormat 切分成多个输入分片（Input Splits）。可拆分的文件可以实现更好的并行度和数据本地性。
   def isSplitable(
       sparkSession: SparkSession,
       options: Map[String, String],
@@ -109,7 +127,10 @@ trait FileFormat {
    * @param filters A set of filters than can optionally be used to reduce the number of rows output
    * @param options A set of string -> string configuration options.
    * @return
-   */ //构建一个读取文件的函数，该函数将每个文件读取为 InternalRow 的迭代器
+   */
+  // 构建基本数据读取器
+  // 受保护方法。 返回一个函数，该函数接收一个 PartitionedFile 并返回一个包含文件数据的 Iterator[InternalRow]。
+  // 这是读取文件数据的核心逻辑，负责处理列裁剪 (requiredSchema) 和谓词下推 (filters)。注意： 它通常不包含分区列的值。
   protected def buildReader(
       sparkSession: SparkSession,
       dataSchema: StructType,
@@ -125,7 +146,11 @@ trait FileFormat {
    * Exactly the same as [[buildReader]] except that the reader function returned by this method
    * appends partition values to [[InternalRow]]s produced by the reader function [[buildReader]]
    * returns.
-   *///与 buildReader 方法类似，但返回的迭代器将文件的数据行与分区值合并，以便于分区列的信息与数据一起返回
+   */
+  // 构建带分区值的读取器
+  // 主要的公共读取接口。 它调用 buildReader 获取文件数据，然后使用 JoinedRow 和 UnsafeProjection 将文件数据 (dataRow) 与 分区列的值 (file.partitionValues)
+  // 合并成一个完整的 InternalRow，
+  // 并将其转换为高效的 UnsafeRow 格式
   def buildReaderWithPartitionValues(
       sparkSession: SparkSession,
       dataSchema: StructType,
@@ -167,7 +192,8 @@ trait FileFormat {
 
   /**
    * Create a file metadata struct column containing fields supported by the given file format.
-   *///创建一个包含文件格式元数据的结构化列。每个文件格式可以有一些特定的元数据，如文件路径、文件大小、修改时间等
+   */
+  // 创建文件元数据列
   def createFileMetadataCol(): AttributeReference = {
     // Strip out the fields' metadata to avoid exposing it to the user. [[FileSourceStrategy]]
     // avoids confusion by mapping back to [[metadataSchemaFields]].
@@ -180,12 +206,16 @@ trait FileFormat {
    * Returns whether this format supports the given [[DataType]] in read/write path.
    * By default all data types are supported.
    */
+  // 数据类型支持检查
+  // 检查该文件格式是否支持给定的 DataType 进行读写。默认支持所有类型。
   def supportDataType(dataType: DataType): Boolean = true
 
   /**
    * Returns whether this format supports the given filed name in read/write path.
    * By default all field name is supported.
-   *///检查该文件格式是否支持给定的字段名。默认情况下，所有字段名都是支持的
+   */
+  // 字段名支持检查
+  // 检查该文件格式是否支持给定的 字段名。默认支持所有字段名。
   def supportFieldName(name: String): Boolean = true
 
   /**
@@ -206,7 +236,9 @@ trait FileFormat {
    * so will often pair with a custom reader that can populate those columns. For example,
    * [[ParquetFileFormat]] defines a "_metadata.row_index" column that relies on
    * [[VectorizedParquetRecordReader]] to extract the actual row index values from the parquet scan.
-   *///返回文件格式支持的元数据字段。每个文件格式可以定义不同的元数据字段。BASE_METADATA_FIELDS 是 FileFormat 定义的默认元数据字段，包括文件路径、文件大小等
+   */
+  //返回文件格式支持的元数据字段。
+  // 每个文件格式可以定义不同的元数据字段。BASE_METADATA_FIELDS 是 FileFormat 定义的默认元数据字段，包括文件路径、文件大小等
   def metadataSchemaFields: Seq[StructField] = FileFormat.BASE_METADATA_FIELDS
 
   /**
@@ -220,7 +252,9 @@ trait FileFormat {
    * NOTE: Extractors are lazy, invoked only if the query actually selects their column at runtime.
    *
    * See also [[FileFormat.getFileConstantMetadataColumnValue]].
-   *///一个映射，指示如何提取文件的常量元数据。每个文件格式可以定义如何从 PartitionedFile 中提取特定的元数据字段
+   */
+  // 常量元数据提取器
+  // 用于指定如何从 PartitionedFile 实例中提取特定元数据字段的值。这允许自定义元数据列。默认使用 BASE_METADATA_EXTRACTORS
   def fileConstantMetadataExtractors: Map[String, PartitionedFile => Any] =
     FileFormat.BASE_METADATA_EXTRACTORS
 }

@@ -26,14 +26,19 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.json.{JacksonGenerator, JSONOptions, JSONOptionsInRead}
 import org.apache.spark.sql.execution.datasources.{CodecStreams, OutputWriter}
 import org.apache.spark.sql.types.StructType
+// 核心作用是在 Spark 执行器（Executor）端，将 DataFrame 的数据行以 JSON 格式写入到目标文件系统
+// 设计专注于以下方面：
+// JSON 格式化： 它不直接操作字节，而是依赖 JacksonGenerator (基于 Jackson 库) 来处理复杂的 JSON 格式化和转义逻辑，确保 InternalRow 被正确地转换成 JSON 对象字符串
+// 编码处理： 它严格遵守用户在 options 中指定的字符编码（如 UTF-8），确保写入的 JSON 文件编码正确。
+// 单行记录（默认）： 默认情况下，它将每个 InternalRow 写入文件的一行，构成一个 JSON Lines (JSONL) 文件，这也是 Spark 默认的 JSON 读写模式，便于并行处理。
 
 class JsonOutputWriter(
-    val path: String,
-    options: JSONOptions,
-    dataSchema: StructType,
+    val path: String, // 文件写入路径。
+    options: JSONOptions, // JSON 配置选项 ， 用户为 JSON 数据源提供的配置选项，例如编码 (encoding)、日期格式、时间戳格式等。这些选项决定了 JSON 字符串的具体格式
+    dataSchema: StructType, // 数据 Schema ， 待写入数据的结构信息。JsonOutputWriter 必须使用这个 Schema 来知道如何正确地将 InternalRow 的字段映射到 JSON 对象的键和类型
     context: TaskAttemptContext)
   extends OutputWriter with Logging {
-
+  // 编码方式
   private val encoding = options.encoding match {
     case Some(charsetName) => Charset.forName(charsetName)
     case None => StandardCharsets.UTF_8

@@ -49,12 +49,20 @@ import org.apache.spark.unsafe.types.UTF8String;
  * format. Since it is expected to reuse the ColumnVector instance while loading data, the storage
  * footprint is negligible.
  */
+// Apache Spark SQL 向量化执行（Vectorized Execution）和 列式读取机制中的基本单元。它表示内存中一列数据的一个批次（Batch）
+// 核心职责：
+// 列式数据存储： 抽象地表示一个批次（通常是几千行）中某个字段的所有值，旨在以连续的内存块存储数据，最大限度地提高 CPU 效率（缓存友好，支持 SIMD 指令）
+// 类型特定访问： 提供了一套丰富的、针对具体 Spark 数据类型（如 boolean, int, double, UTF8String 等）的 get 方法，供 Spark 引擎高效地按行或按批次访问数据。
+// 支持复杂类型： 通过 getChild(int) 方法，支持将自身组织成树形结构，以表示嵌套类型（如 Struct, Array, Map）。
+// ColumnVector 是 Spark 向量化处理中“一列数据块”的抽象，它提供了访问和管理该数据块的标准化 API
 @Evolving
 public abstract class ColumnVector implements AutoCloseable {
 
   /**
    * Returns the data type of this column vector.
    */
+  // 获取数据类型。
+  // 返回该列向量中数据值的 Spark SQL 数据类型
   public final DataType dataType() { return type; }
 
   /**
@@ -82,22 +90,29 @@ public abstract class ColumnVector implements AutoCloseable {
   /**
    * Returns true if this column vector contains any null values.
    */
+  // 检查是否有空值。
+  // 返回该列向量的整个批次中是否包含任何 NULL 值。
+  // 用于快速路径检查。
   public abstract boolean hasNull();
 
   /**
    * Returns the number of nulls in this column vector.
    */
+  // 获取空值数量
   public abstract int numNulls();
 
   /**
    * Returns whether the value at {@code rowId} is NULL.
    */
+  // 检查指定行是否为空
   public abstract boolean isNullAt(int rowId);
 
   /**
    * Returns the boolean type value for {@code rowId}. The return value is undefined and can be
    * anything, if the slot for {@code rowId} is null.
    */
+  // 按行访问。 抽象方法。
+  // 返回 rowId 处对应的原生类型值
   public abstract boolean getBoolean(int rowId);
 
   /**
@@ -312,11 +327,15 @@ public abstract class ColumnVector implements AutoCloseable {
   /**
    * @return child {@link ColumnVector} at the given ordinal.
    */
+  // 获取子列。 抽象方法。
+  // 返回该列向量的第 ordinal 个子列向量
   public abstract ColumnVector getChild(int ordinal);
 
   /**
    * Data type for this column.
    */
+  // 数据类型。
+  // 存储该列向量中数据值的 Spark SQL 数据类型
   protected DataType type;
 
   /**

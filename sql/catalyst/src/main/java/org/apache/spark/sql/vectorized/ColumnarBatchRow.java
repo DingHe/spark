@@ -29,9 +29,20 @@ import org.apache.spark.unsafe.types.UTF8String;
  *
  * @since 3.3.0
  */
+// ColumnarBatchRow 类在 Apache Spark SQL 的向量化执行模型中扮演着**行式视图（Row View）**的角色
+// 核心作用：
+// 列式转行式视图： 它将一个 ColumnarBatch（由一组 ColumnVector 组成的批次）中的数据，以不可变的 InternalRow 形式展现给 Spark 内部的表达式求值或 UDF 等操作。
+// 数据读取适配器： 允许 Spark 引擎通过传统的行式访问 API（如 getInt(i)、getUTF8String(j)）来读取存储在高性能列式内存（ColumnVector）中的数据，实现了列式存储与行式操作的兼容。
+// 零拷贝访问： 通过简单地委托（Delegate）给底层 ColumnVector 的读取方法，它避免了实际的数据复制，只改变了数据的访问方式，从而保持了向量化读取的高性能优势。
+// ColumnarBatchRow 是一个轻量级的包装器，它指向一个 ColumnarBatch 中的特定行，并允许 Spark 以传统行模型的方式访问这行数据。
+
 @DeveloperApi
 public final class ColumnarBatchRow extends InternalRow {
+  // 行索引。
+  // 表示当前 ColumnarBatchRow 实例指向的行在底层 ColumnVector 数组中的批次内索引（0-based）
   public int rowId;
+  // 底层列向量数组。
+  // 存储了组成整个 ColumnarBatch 的所有列向量
   private final ColumnVector[] columns;
 
   public ColumnarBatchRow(ColumnVector[] columns) {

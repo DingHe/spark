@@ -41,9 +41,9 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 import org.apache.spark.util.collection.BitSet
-//表示在物理计划中进行数据源扫描的节点
+// 表示在物理计划中进行数据源扫描的节点
 trait DataSourceScanExec extends LeafExecNode {
-  def relation: BaseRelation  //表示数据源的基本关系，通常是数据源的元数据表示
+  def relation: BaseRelation  // 表示数据源的基本关系，通常是数据源的元数据表示
   def tableIdentifier: Option[TableIdentifier] //表示表的标识符，用来指定扫描的表格
 
   protected val nodeNamePrefix: String = ""  //用于构建节点名称时的前缀
@@ -53,10 +53,10 @@ trait DataSourceScanExec extends LeafExecNode {
   }
 
   // Metadata that describes more details of this scan.
-  protected def metadata: Map[String, String]  //存储有关扫描操作的元数据信息
+  protected def metadata: Map[String, String]  // 存储有关扫描操作的元数据信息
 
-  protected val maxMetadataValueLength = conf.maxMetadataStringLength  //从配置中获取最大元数据字符串的长度
-  //返回一个简化的字符串描述，包括节点名称、输出字段、元数据（按照最大字段数限制）等
+  protected val maxMetadataValueLength = conf.maxMetadataStringLength  // 从配置中获取最大元数据字符串的长度
+  // 返回一个简化的字符串描述，包括节点名称、输出字段、元数据（按照最大字段数限制）等
   override def simpleString(maxFields: Int): String = {
     val metadataEntries = metadata.toSeq.sorted.map {
       case (key, value) =>
@@ -100,14 +100,19 @@ trait DataSourceScanExec extends LeafExecNode {
 }
 
 /** Physical plan node for scanning data from a relation. */
+//Spark 物理计划中的一个具体执行节点，它负责从外部数据源（如 Hive、Parquet 文件、JDBC 等）读取数据
+//核心职责：
+//数据读取起点： 它标志着数据流在物理执行计划中的起点，其底层是通过一个预先构造好的 RDD[InternalRow] 来获取数据
+//Schema 适配与优化记录： 它记录了从数据源中实际需要读取的列 (requiredSchema)，以及在逻辑优化阶段尝试下推（Push Down）到数据源层面的 过滤条件 (handledFilters 和 pushedDownOperators)
+//格式转换： 它执行必要的数据格式转换，将底层 RDD 产生的数据行（通常是 InternalRow）转换为 Spark 内部最高效的 UnsafeRow 格式，以利于后续的 Tungsten 优化和代码生成
 case class RowDataSourceScanExec(
-    output: Seq[Attribute],
-    requiredSchema: StructType,
-    filters: Set[Filter],
-    handledFilters: Set[Filter],
-    pushedDownOperators: PushedDownOperators,
-    rdd: RDD[InternalRow],
-    @transient relation: BaseRelation,
+    output: Seq[Attribute], //输出列，该扫描节点向上层操作符（父节点）提供的最终输出列列表
+    requiredSchema: StructType, //所需 Schem，实际需要从数据源读取的列的结构。这是 列裁剪（Column Pruning） 后的结果，通常是全表 Schema 的一个子集，以减少 I/O
+    filters: Set[Filter],//所有过滤器，所有应用于该扫描操作的逻辑过滤条件集合
+    handledFilters: Set[Filter], //已处理的过滤器，已被下推到数据源并由数据源处理的过滤条件子集。这用于展示哪些优化成功了
+    pushedDownOperators: PushedDownOperators, //下推的操作，记录除了过滤器之外，还下推到数据源执行的其他高级操作，例如 Limit、Sort、Top-N、Aggregate、Sample 等
+    rdd: RDD[InternalRow],//底层 RDD，实际执行数据读取的 RDD。这个 RDD 封装了与外部数据源交互的逻辑，并生成 InternalRow 格式的数据
+    @transient relation: BaseRelation,//基础关系对象，描述被扫描的数据源的基本信息（如数据源类型、路径等）。它被标记为 @transient，表示在序列化时不包含这个字段
     tableIdentifier: Option[TableIdentifier])
   extends DataSourceScanExec with InputRDDCodegen {
 
@@ -122,6 +127,7 @@ case class RowDataSourceScanExec(
       proj.initialize(index)
       iter.map( r => {
         numOutputRows += 1
+        //用于将 InternalRow 转换为 UnsafeRow）
         proj(r)
       })
     }
@@ -131,7 +137,10 @@ case class RowDataSourceScanExec(
   override protected val createUnsafeProjection: Boolean = true
 
   override def inputRDD: RDD[InternalRow] = rdd
-
+  // 元数据信息
+  // 收集和格式化该扫描操作的所有重要元数据（如下推的过滤器、聚合、Limit 等），用于在 Spark UI 的执行计划详情中展示，帮助用户理解优化效果。 -
+  // 它会标记哪些过滤器被处理 (*filter)，哪些没有。
+  // 它格式化了下推的 Top-N（Sort + Limit）、Offset、聚合和 Sample 等信息
   override val metadata: Map[String, String] = {
 
     def seqToString(seq: Seq[Any]): String = seq.mkString("[", ", ", "]")
@@ -193,17 +202,17 @@ trait FileSourceScanLike extends DataSourceScanExec {
   // [[DisableUnnecessaryBucketedScan]] for details.
   def disableBucketedScan: Boolean  //指示是否禁用基于物理查询计划的分桶扫描
   // Bucket ids for bucket pruning.
-  def optionalBucketSet: Option[BitSet] //表示用于分桶裁剪的桶 ID 集合
+  def optionalBucketSet: Option[BitSet] // 表示用于分桶裁剪的桶 ID 集合
   // Number of coalesced buckets.
-  def optionalNumCoalescedBuckets: Option[Int] //表示合并桶的数量。桶合并是指在读取时将多个桶合并为一个桶，这通常用于减少任务数
+  def optionalNumCoalescedBuckets: Option[Int] // 表示合并桶的数量。桶合并是指在读取时将多个桶合并为一个桶，这通常用于减少任务数
   // Output attributes of the scan, including data attributes and partition attributes.
-  def output: Seq[Attribute] //表示扫描结果的输出列，包括数据列和分区列
+  def output: Seq[Attribute] // 表示扫描结果的输出列，包括数据列和分区列
   // Predicates to use for partition pruning.
-  def partitionFilters: Seq[Expression]  //表示应用在分区列上的过滤条件
+  def partitionFilters: Seq[Expression]  // 表示应用在分区列上的过滤条件
   // The file-based relation to scan.
-  def relation: HadoopFsRelation  //表示要扫描的文件源关系（Hadoop 文件系统关系）。HadoopFsRelation 包含文件格式、路径、分区模式等信息
+  def relation: HadoopFsRelation  // 表示要扫描的文件源关系（Hadoop 文件系统关系）。HadoopFsRelation 包含文件格式、路径、分区模式等信息
   // Required schema of the underlying relation, excluding partition columns.
-  def requiredSchema: StructType  //表示底层数据关系所需的模式（不包括分区列）
+  def requiredSchema: StructType  // 表示底层数据关系所需的模式（不包括分区列）
   // Identifier for the table in the metastore.
   def tableIdentifier: Option[TableIdentifier]  //表示元数据中表的标识符。用于标识扫描的表
 
@@ -212,7 +221,7 @@ trait FileSourceScanLike extends DataSourceScanExec {
     // Collect metadata columns to be handled outside of the scan by appending constant columns.
     case FileSourceConstantMetadataAttribute(attr) => attr
   }
-  //返回支持的向量化读取类型。如果文件格式支持向量化读取（例如，Parquet 或 ORC），则返回相应的向量类型，此外，还会考虑常量元数据列
+  // 返回支持的向量化读取类型。如果文件格式支持向量化读取（例如，Parquet 或 ORC），则返回相应的向量类型，此外，还会考虑常量元数据列
   override def vectorTypes: Option[Seq[String]] =
     relation.fileFormat.vectorTypes(
       requiredSchema = requiredSchema,

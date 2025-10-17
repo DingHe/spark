@@ -49,6 +49,7 @@ import org.apache.spark.util.{NextIterator, SerializableConfiguration, ShutdownH
 /**
  * A Spark split class that wraps around a Hadoop InputSplit.
  */
+// Spark 对 Hadoop InputSplit 的封装。每个 HadoopPartition 对应一个 Spark Task 的输入数据块
 private[spark] class HadoopPartition(rddId: Int, override val index: Int, s: InputSplit)
   extends Partition {
 
@@ -95,9 +96,14 @@ private[spark] class HadoopPartition(rddId: Int, override val index: Int, s: Inp
  * @note Instantiating this class directly is not recommended, please use
  * `org.apache.spark.SparkContext.hadoopRDD()`
  */
+// HadoopRDD 是 Spark 架构中负责集成和兼容旧版 Hadoop MapReduce API (org.apache.hadoop.mapred 包) 的核心 RDD
+// 桥接 Hadoop I/O： 它封装了所有与 Hadoop 数据源（如 HDFS 文件、Hive 表数据、HBase）交互的逻辑。
+// 生成分区： 它调用 Hadoop 的 InputFormat.getSplits() 方法，将数据源分割成逻辑块（InputSplit），并将每个 InputSplit 转换为一个 Spark HadoopPartition
+// 分布式读取： 它在每个 Spark Executor 上，为每个 HadoopPartition 创建一个 Hadoop RecordReader，负责逐条读取数据记录，并将其转换为 Spark 的 Key-Value 对 (K, V)。
 @DeveloperApi
 class HadoopRDD[K, V](
     sc: SparkContext,
+                     //广播的 Hadoop 配置。配置对象被序列化包装后广播到所有 Executor，确保每个 Task 都能获得正确的配置
     broadcastedConf: Broadcast[SerializableConfiguration],
     initLocalJobConfFuncOpt: Option[JobConf => Unit],
     inputFormatClass: Class[_ <: InputFormat[K, V]],
@@ -127,7 +133,7 @@ class HadoopRDD[K, V](
       valueClass,
       minPartitions)
   }
-
+  // 用于在 Executor 进程本地缓存 JobConf 和 InputFormat 实例的键
   protected val jobConfCacheKey: String = "rdd_%d_job_conf".format(id)
 
   protected val inputFormatCacheKey: String = "rdd_%d_input_format".format(id)
@@ -201,18 +207,22 @@ class HadoopRDD[K, V](
     }
     newInputFormat
   }
-
+  // Spark Driver 上运行。它的作用是调用 Hadoop 的逻辑来确定如何将输入数据分割成可并行处理的块（即 InputSplit），并将这些 InputSplit 转换为 Spark 的 Partition 对象
   override def getPartitions: Array[Partition] = {
     val jobConf = getJobConf()
     // add the credentials here as this can be called before SparkContext initialized
+    // 向 JobConf 中添加必要的安全凭证（Credentials）。这是确保 Spark Task 能够访问安全 Hadoop 集群（如 Kerberos 认证的 HDFS）上的数据所必需的
     SparkHadoopUtil.get.addCredentials(jobConf)
     try {
+      //实例化该 RDD 对应的 Hadoop InputFormat（数据格式读取器，如 TextInputFormat）
+      // 根据 jobConf 中的文件路径和配置（如文件大小、分块大小），将输入数据分割成一个或多个 InputSplit（数据块）
       val allInputSplits = getInputFormat(jobConf).getSplits(jobConf, minPartitions)
       val inputSplits = if (ignoreEmptySplits) {
         allInputSplits.filter(_.getLength > 0)
       } else {
         allInputSplits
       }
+      // 检查这个文件的 Split 长度是否超过了配置的大文件阈值
       if (inputSplits.length == 1 && inputSplits(0).isInstanceOf[FileSplit]) {
         val fileSplit = inputSplits(0).asInstanceOf[FileSplit]
         val path = fileSplit.getPath

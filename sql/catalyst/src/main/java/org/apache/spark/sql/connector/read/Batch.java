@@ -26,6 +26,9 @@ import org.apache.spark.annotation.Evolving;
  *
  * @since 3.0.0
  */
+// Spark DataSource V2 API 中对批处理查询的物理执行的表示
+// 由逻辑 Scan 接口通过 toBatch() 方法生成的，用于指导 Spark 如何在集群上实际执行数据读取任务
+// 定义物理分片： 负责将整个数据集定义为一组可并行处理的输入分区（InputPartitions）。每个 InputPartition 对应一个 Spark 任务，决定了 RDD 分区的数量
 @Evolving
 public interface Batch {
 
@@ -39,10 +42,16 @@ public interface Batch {
    * <p>
    * This method will be called only once during a data source scan, to launch one Spark job.
    */
+  // 规划输入分区
+  // 每个 InputPartition 代表数据集的一个物理分片（Split），它将被分配给一个 Spark 任务（Task）进行处理
   InputPartition[] planInputPartitions();
 
   /**
    * Returns a factory to create a {@link PartitionReader} for each {@link InputPartition}.
    */
+  // 创建读取器工厂。
+  // 返回一个 PartitionReaderFactory 实例。
+  // 这个工厂对象会被序列化并发送到集群的各个执行器（Executor）上。
+  // 在执行器上，该工厂会根据传入的 InputPartition 实例，创建出真正负责从底层存储（如 HDFS、S3）读取数据的 PartitionReader 实例
   PartitionReaderFactory createReaderFactory();
 }

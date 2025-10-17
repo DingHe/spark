@@ -80,7 +80,7 @@ object CodecStreams {
    * If compression is enabled in the [[JobContext]] the stream will write compressed data to disk.
    * An exception will be thrown if the file already exists.
    */
-  //创建一个输出流，如果在 JobContext 中开启了压缩，会对输出流进行压缩包装
+  // 创建一个输出流，如果在 JobContext 中开启了压缩，会对输出流进行压缩包装
   def createOutputStream(context: JobContext, file: Path): OutputStream = {
     val fs = file.getFileSystem(context.getConfiguration)
     val outputStream: OutputStream = fs.create(file, false)

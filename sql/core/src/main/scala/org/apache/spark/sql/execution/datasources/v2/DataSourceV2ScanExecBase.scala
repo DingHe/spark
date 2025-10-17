@@ -31,8 +31,14 @@ import org.apache.spark.sql.internal.connector.SupportsMetadata
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
+// Spark SQL 物理执行计划中专门用于 DataSource V2 读取 的基类
+// 主要的职责是：
+// 封装 V2 数据源 Scan 执行节点的通用逻辑
+// 管理 V2 数据源读取的 InputPartition → RDD 的转换
+// 支持 V2 分区信息与排序信息 的下推与传播（用于避免 Shuffle）
+// 处理 Columnar 读取模式（批处理，矢量化读取）
 trait DataSourceV2ScanExecBase extends LeafExecNode {
-
+  // 注册当前 Scan 支持的自定义指标
   lazy val customMetrics = scan.supportedCustomMetrics().map { customMetric =>
     customMetric.name() -> SQLMetrics.createV2CustomMetric(sparkContext, customMetric)
   }.toMap
@@ -41,19 +47,23 @@ trait DataSourceV2ScanExecBase extends LeafExecNode {
     Map("numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows")) ++
       customMetrics
   }
-
+  // 表示对应的 V2 数据源扫描对象
+  // Scan 是 DataSource V2 读取的核心接口，封装了 partition 列表、列剪裁、谓词下推等信息
   def scan: Scan
-
+  // 表示如何为每个 InputPartition 创建一个 PartitionReader
   def readerFactory: PartitionReaderFactory
 
   /** Optional partitioning expressions provided by the V2 data sources, through
    * `SupportsReportPartitioning` */
+  // 描述 V2 数据源提供的 分区键表达式
   def keyGroupedPartitioning: Option[Seq[Expression]]
 
   /** Optional ordering expressions provided by the V2 data sources, through
    * `SupportsReportOrdering` */
+  // 描述 V2 数据源提供的 输出排序信息
   def ordering: Option[Seq[SortOrder]]
-
+  // 当前 Scan 返回的所有输入分区（InputPartition）
+  // 每个分区对应 Spark 任务执行的一个输入 split
   protected def inputPartitions: Seq[InputPartition]
 
   override def simpleString(maxFields: Int): String = {
@@ -61,7 +71,9 @@ trait DataSourceV2ScanExecBase extends LeafExecNode {
       s"$nodeName${truncatedString(output, "[", ", ", "]", maxFields)} ${scan.description()}"
     redact(result)
   }
-
+  // 用于将 InputPartition 按照 key 分组
+  // 如果 groupedPartitions 存在，则返回其内部的分区列表
+  // 否则，将每个分区单独包装成单元素列表
   def partitions: Seq[Seq[InputPartition]] =
     groupedPartitions.map(_.map(_._2)).getOrElse(inputPartitions.map(Seq(_)))
 
@@ -89,7 +101,7 @@ trait DataSourceV2ScanExecBase extends LeafExecNode {
        |${metaDataStr.mkString("\n")}
        |""".stripMargin
   }
-
+  // 根据 keyGroupedPartitioning 来推导 Spark 的 Partitioning
   override def outputPartitioning: physical.Partitioning = {
     keyGroupedPartitioning match {
       case Some(exprs) if KeyGroupedPartitioning.supportsExpressions(exprs) =>
@@ -102,7 +114,7 @@ trait DataSourceV2ScanExecBase extends LeafExecNode {
         super.outputPartitioning
     }
   }
-
+  // 当 keyGroupedPartitioning 存在时，尝试对 inputPartitions 进行分组
   @transient lazy val groupedPartitions: Option[Seq[(InternalRow, Seq[InputPartition])]] = {
     // Early check if we actually need to materialize the input partitions.
     keyGroupedPartitioning match {
@@ -171,7 +183,7 @@ trait DataSourceV2ScanExecBase extends LeafExecNode {
     val partitioningPreservesOrdering = groupedPartitions.forall(_.forall(_._2.length <= 1))
     ordering.filter(_ => partitioningPreservesOrdering).getOrElse(super.outputOrdering)
   }
-
+  // 决定是否支持列式读取
   override def supportsColumnar: Boolean = {
     scan.columnarSupportMode() match {
       case Scan.ColumnarSupportMode.PARTITION_DEFINED =>
@@ -184,11 +196,11 @@ trait DataSourceV2ScanExecBase extends LeafExecNode {
       case Scan.ColumnarSupportMode.UNSUPPORTED => false
     }
   }
-
+  // 负责将 InputPartition 转换成对应的 Spark RDD
   def inputRDD: RDD[InternalRow]
 
   def inputRDDs(): Seq[RDD[InternalRow]] = Seq(inputRDD)
-
+  // DataSource V2 Scan 的实际执行入口
   override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     inputRDD.map { r =>
@@ -208,7 +220,7 @@ trait DataSourceV2ScanExecBase extends LeafExecNode {
     SQLMetrics.postDriverMetricUpdates(sparkContext, executionId,
       driveSQLMetrics)
   }
-
+  // 当 supportsColumnar = true 时，使用列式执行路径
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numOutputRows = longMetric("numOutputRows")
     inputRDD.asInstanceOf[RDD[ColumnarBatch]].map { b =>

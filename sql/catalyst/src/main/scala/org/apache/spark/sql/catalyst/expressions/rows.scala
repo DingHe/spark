@@ -26,6 +26,12 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
  * An extended version of [[InternalRow]] that implements all special getters, toString
  * and equals/hashCode by `genericGet`.
  */
+//  Spark SQL Catalyst 表达式模块中的 BaseGenericInternalRow 特质 (Trait) 及其伴生类 GenericInternalRow
+//  两个类共同构成了 Spark SQL 中一种基础的、通用的 行数据结构 (Row Data Structure) 实现
+//  在 Spark SQL 引擎（Catalyst）内部，所有数据都以 InternalRow 的形式表示。
+//  InternalRow 是一个高效、紧凑、支持随机访问的行接口，它定义了获取不同数据类型字段的方法（如 getInt, getUTF8String 等）
+//  基于数组存储： 它使用一个 Scala 数组 Array[Any] 作为底层存储，数组的每个元素对应行中的一个字段值。
+//  GenericInternalRow 是一个使用 Array[Any] 作为后备存储的 通用、慢速、基于反射/类型转换 的 InternalRow 实现
 trait BaseGenericInternalRow extends InternalRow {
 
   protected def genericGet(ordinal: Int): Any

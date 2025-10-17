@@ -35,10 +35,10 @@ trait OperationHelper extends AliasHelper with PredicateHelper {
 
   type IntermediateType =
     (Option[Seq[NamedExpression]], Seq[Expression], LogicalPlan, AttributeMap[Alias])
-  //Option[Seq[NamedExpression]]：存储投影字段，如果存在投影，保存字段表达式
-  //Seq[Expression]：存储过滤条件的表达式
-  //LogicalPlan：表示查询计划
-  //AttributeMap[Alias]：包含查询中别名的映射
+  //Option[Seq[NamedExpression]]：顶层收集到的投影列表（Project 节点中的表达式）
+  //Seq[Expression]：收集到的所有过滤条件（Filter 节点中的条件）
+  //LogicalPlan：停止递归的最底层逻辑计划（即非 Project/Filter 节点）
+  //AttributeMap[Alias]：在收集的 Project 节点中定义的别名映射关系（Key: 别名，Value: 别名所代表的底层表达式）
 
   protected def collectAllFilters: Boolean
 
@@ -56,23 +56,29 @@ trait OperationHelper extends AliasHelper with PredicateHelper {
    *   SELECT key AS c2 FROM t1 WHERE key > 10
    * }}}
    */
-    //收集查询计划中的所有相邻的投影（Project）和过滤（Filter）操作，并在需要时进行别名内联或替换
+  //模式匹配器（如 PhysicalOperation）的基础，用于递归地遍历逻辑计划，将所有相邻的 Project（投影）和 Filter（过滤）操作收集起来，并进行关键的别名内联/替换优化
+  // 从一个逻辑计划的顶部开始，向下遍历，收集连续的 Project 和 Filter 节点，直到遇到一个非 Project/Filter 的节点为止。
+  // 在收集过程中，它还会处理 Alias（别名），确保后续的过滤或投影操作引用的是底层真实的表达式，而不是中间的别名
   protected def collectProjectsAndFilters(
       plan: LogicalPlan,
       alwaysInline: Boolean): IntermediateType = {
     def empty: IntermediateType = (None, Nil, plan, AttributeMap.empty)
 
     plan match {
-      //如果当前是投影操作，则会递归处理子查询，并检查是否可以将当前的投影合并到子查询中
+      //匹配 Project
+      //匹配当前节点是一个 Project 操作，其中 fields 是投影列表，child 是其子计划
       case Project(fields, child) =>
+        //递归
         val (_, filters, other, aliases) = collectProjectsAndFilters(child, alwaysInline)
+        //检查当前的 fields 是否可以安全地向下合并到子计划的别名中。这通常涉及检查 fields 是否引用了 aliases 中的表达式，以及是否满足非确定性表达式等约束
         if (canCollapseExpressions(fields, aliases, alwaysInline)) {
           val replaced = fields.map(replaceAliasButKeepName(_, aliases))
           (Some(replaced), filters, other, getAliasMap(replaced))
         } else {
           empty
         }
-
+      //匹配 Filter
+      //匹配当前节点是一个 Filter 操作，condition 是过滤条件，child 是子计划。
       case Filter(condition, child) =>
         val (fields, filters, other, aliases) = collectProjectsAndFilters(child, alwaysInline)
         // When collecting projects and filters, we effectively push down filters through
@@ -80,6 +86,9 @@ trait OperationHelper extends AliasHelper with PredicateHelper {
         //   1) no Project collected so far or the collected Projects are all deterministic
         //   2) this filter does not repeat any expensive expressions from the collected
         //      projects.
+        // 关键的复杂检查，判断是否可以将当前的 Filter 条件下推到之前收集到的 Project 列表下方：
+        // 1. 条件 1： 之前收集到的所有 Project 表达式都必须是确定性的（fields.forall(_.forall(_.deterministic))）。
+        // 2. 条件 2： 当前的 condition 表达式可以安全地被别名内联（即不会重复计算昂贵的表达式）
         val canPushFilterThroughProject = fields.forall(_.forall(_.deterministic)) &&
           canCollapseExpressions(Seq(condition), aliases, alwaysInline)
         if (canPushFilterThroughProject) {
@@ -97,8 +106,11 @@ trait OperationHelper extends AliasHelper with PredicateHelper {
           empty
         }
 
+      //忽略 Hint
+      //如果是 ResolvedHint 节点（例如，BROADCAST 提示），则直接递归处理其子计划，忽略 Hint 节点本身
       case h: ResolvedHint => collectProjectsAndFilters(h.child, alwaysInline)
-
+      //默认情况
+      //匹配到任何其他类型的逻辑计划节点（如 Join、Aggregate 或 Relation）
       case _ => empty
     }
   }
@@ -111,15 +123,27 @@ trait OperationHelper extends AliasHelper with PredicateHelper {
  * together with the top project operator. [[Alias Aliases]] are in-lined/substituted if
  * necessary.
  */
+// Spark 优化器（Optimizer） 阶段充当一个模式匹配器（Pattern Matcher），用于识别和解构一系列连续的 Project（投影）和 Filter（过滤）逻辑操作
+// 主要作用是在 Spark 的逻辑优化和物理转换阶段，简化（Flatten） 一段连续的逻辑计划链，从而进行重要的优化：
+// 模式识别： 它识别出顶层可能包含连续的 Project 和 Filter 操作的逻辑计划结构。
+// 操作合并与下推（Optimization）： 通过解构，它将所有连续的 Filter 条件收集起来，将最上层的 Project 列表收集起来，并找出最底层的非 Project/Filter 操作（通常是数据源或 Join 等）
+//支持优化规则： 这种扁平化的结果为像 CollapseProject（合并多个 Project）和 CombineFilters（合并多个 Filter）以及谓词下推（Predicate Pushdown） 等关键优化规则提供了便利的数据结构。
+// 简而言之，它将 Project -> Filter -> Project -> Filter -> ... -> Relation 这样的复杂链条，抽象地简化为：(最终投影列表, 所有过滤条件, 基础数据源)
 object PhysicalOperation extends OperationHelper {
   // Returns: (the final project list, filters to push down, relation)
+  //(最终投影列表, 要下推的过滤条件, 基础逻辑计划)
   type ReturnType = (Seq[NamedExpression], Seq[Expression], LogicalPlan)
+  // 重写了 OperationHelper 中的方法。设置为 false 表明在收集 Filter 操作时，要遵循 CollapseProject 和 CombineFilters 规则的要求，
+  // 不一定收集所有（例如，如果过滤器包含非确定性表达式，可能只收集满足条件的）
   override protected def collectAllFilters: Boolean = false
 
   def unapply(plan: LogicalPlan): Option[ReturnType] = {
+    //读取 Spark 配置，确定是否应该总是内联（Substitute）Alias 表达式
     val alwaysInline = SQLConf.get.getConf(SQLConf.COLLAPSE_PROJECT_ALWAYS_INLINE)
+    //递归遍历 plan： 1. fields：顶层 Project 列表（如果有）。 2. filters：收集到的所有 Filter 表达式列表。 3. child：不再是 Project 或 Filter 的底层逻辑计划
     val (fields, filters, child, _) = collectProjectsAndFilters(plan, alwaysInline)
     // If more than 2 filters are collected, they must all be deterministic.
+    //如果收集到多于一个的过滤器（filters.length > 1），则断言所有这些过滤器都必须是确定性的
     if (filters.length > 1) assert(filters.forall(_.deterministic))
     Some((
       fields.getOrElse(child.output),

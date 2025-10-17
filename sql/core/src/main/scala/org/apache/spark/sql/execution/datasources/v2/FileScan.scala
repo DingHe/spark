@@ -36,43 +36,55 @@ import org.apache.spark.sql.internal.connector.SupportsMetadata
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
-//Batch：表示批量读取数据的能力
-
+//FileScan 特质是 Spark 文件数据源 V2 读取流程的核心抽象，
+// 它整合了逻辑扫描 (Scan)、批处理 (Batch)、统计报告 (SupportsReportStatistics) 和元数据支持 (SupportsMetadata) 的能力
+// 核心职责：
+// 文件分片和并行化： 实现了将文件索引 (FileIndex) 识别的文件列表，
+// 根据文件是否可拆分、最大分片大小等配置，拆分为一组可并行执行的 FilePartition (对应 InputPartition) 的逻辑。这是 Spark 任务并行执行的基础。
+// Schema 和过滤器管理： 维护了读取所需的数据 Schema 和分区 Schema，并管理用于分区裁剪 (partitionFilters) 和数据源下推 (dataFilters) 的表达式。
 trait FileScan extends Scan
   with Batch with SupportsReportStatistics with SupportsMetadata with Logging {
   /**
    * Returns whether a file with `path` could be split or not.
    */
-    //判断文件是否可被拆分（默认不可拆分）
-    //一些格式（如 Parquet）支持拆分，而一些（如 gzip 压缩的文本文件）不支持拆分
+    //判断文件是否可拆分
   def isSplitable(path: Path): Boolean = {
     false
   }
 
   def sparkSession: SparkSession
-
+  // 文件索引。
+  // 核心属性，包含要扫描的文件列表、根路径以及分区的 Schema 和值等元数据。它是文件读取的基础
   def fileIndex: PartitioningAwareFileIndex
-
+  // 文件的原始数据 Schema。
+  // 指的是文件本身存储的数据结构，不包括分区列
   def dataSchema: StructType
 
   /**
    * Returns the required data schema
    */
+  // 需要读取的数据 Schema
   def readDataSchema: StructType
 
   /**
    * Returns the required partition schema
    */
+  // 需要读取的分区 Schema。
+  // 是 fileIndex.partitionSchema 经过裁剪后的子集
   def readPartitionSchema: StructType
 
   /**
    * Returns the filters that can be use for partition pruning
    */
+  // 分区裁剪过滤器。
+  // 一组可以用于过滤掉不需要扫描的分区目录的表达式（基于分区列）
   def partitionFilters: Seq[Expression]
 
   /**
    * Returns the data filters that can be use for file listing
    */
+  // 数据下推过滤器。
+  // 一组可以下推到数据源内部（如 Parquet 或 ORC 文件格式）进行行级过滤的表达式
   def dataFilters: Seq[Expression]
 
   /**
@@ -182,7 +194,7 @@ trait FileScan extends Scan
 
     FilePartition.getFilePartitions(sparkSession, splitFiles, maxSplitBytes)
   }
-  //算输入的分区信息，并返回 InputPartition 数组
+  // 算输入的分区信息，并返回 InputPartition 数组
   override def planInputPartitions(): Array[InputPartition] = {
     partitions.toArray
   }
@@ -201,7 +213,8 @@ trait FileScan extends Scan
       override def numRows(): OptionalLong = OptionalLong.empty()
     }
   }
-
+  // 获取批处理执行器
+  // 实现 Scan 接口。对于文件扫描，自身即是批处理的物理表示，因此直接返回 this
   override def toBatch: Batch = this
   //读取扫描数据的 Schema，由数据字段 (readDataSchema) 和分区字段 (readPartitionSchema) 组成
   override def readSchema(): StructType =

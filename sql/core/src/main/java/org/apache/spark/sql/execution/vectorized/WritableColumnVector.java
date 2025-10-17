@@ -50,12 +50,18 @@ import org.apache.spark.unsafe.types.UTF8String;
  *
  * WritableColumnVector are intended to be reused.
  */
+// Apache Spark SQL 向量化执行中 ColumnVector 的抽象扩展，专注于提供写入（Write）API，使其能够作为目标向量来构建列式数据批次
+// 核心作用是作为一个可变的列式数据缓冲区。它为 Spark 的向量化写入操作提供了统一的接口，无论是从数据源读取数据到内存，还是在 Spark 内部进行数据转换和计算时将结果写入新的列向量。
+// WritableColumnVector 是 Spark 向量化执行中用于构建和修改列式数据块的“可写内存容器”
 public abstract class WritableColumnVector extends ColumnVector {
   private final byte[] byte8 = new byte[8];
 
   /**
    * Resets this column for writing. The currently stored values are no longer accessible.
    */
+  // 重置。
+  // 用于将列向量恢复到初始写入状态，以便重用。
+  // 它将 elementsAppended 设为 0，并清除所有 NULL 标记。如果存在子列，则递归调用子列的 reset()
   public void reset() {
     if (isConstant || isAllNull) return;
 
@@ -70,7 +76,8 @@ public abstract class WritableColumnVector extends ColumnVector {
       numNulls = 0;
     }
   }
-
+  // 释放资源。
+  // 释放自身和所有子列向量所占用的原生内存。释放后，该向量不可再用
   @Override
   public void close() {
     if (childColumns != null) {
@@ -91,11 +98,12 @@ public abstract class WritableColumnVector extends ColumnVector {
   public void closeIfFreeable() {
     // no-op
   }
-
+  // 预留额外容量。 相当于调用 reserve(elementsAppended + additionalCapacity)
   public void reserveAdditional(int additionalCapacity) {
     reserve(elementsAppended + additionalCapacity);
   }
-
+  // 预留容量。
+  // 确保列向量有足够的容量（至少 requiredCapacity 行）来存储数据
   public void reserve(int requiredCapacity) {
     if (requiredCapacity < 0) {
       throwUnsupportedException(requiredCapacity, null);
@@ -149,11 +157,15 @@ public abstract class WritableColumnVector extends ColumnVector {
    *
    * If it's not null, will be used to decode the value in getXXX().
    */
+  // 字典对象。
+  // 如果该列使用字典编码，则存储解码所需的字典对象。
   protected Dictionary dictionary;
 
   /**
    * Reusable column for ids of dictionary.
    */
+  // 字典 ID 向量。
+  // 如果使用字典编码，这是实际存储字典索引（而不是原始值）的整型向量
   protected WritableColumnVector dictionaryIds;
 
   /**
@@ -192,34 +204,43 @@ public abstract class WritableColumnVector extends ColumnVector {
    * Ensures that there is enough storage to store capacity elements. That is, the put() APIs
    * must work for all rowIds < capacity.
    */
+  // 内部内存分配
+  // 必须由具体的子类（如 OnHeapColumnVector 或 OffHeapColumnVector）实现，用于实际执行底层内存分配和数据拷贝。
   protected abstract void reserveInternal(int capacity);
 
   /**
    * Sets null/not null to the value at rowId.
    */
+  // 设置 NULL 状态（单行）。
+  // 设置指定 rowId 处的行值为 NULL 或 NOT NULL
   public abstract void putNotNull(int rowId);
   public abstract void putNull(int rowId);
 
   /**
    * Sets null/not null to the values at [rowId, rowId + count).
    */
+  // 设置 NULL 状态（批次）。
+  // 设置从 rowId 开始的 count 行的 NULL 状态
   public abstract void putNulls(int rowId, int count);
   public abstract void putNotNulls(int rowId, int count);
 
   /**
    * Sets `value` to the value at rowId.
    */
+  // 写入原生类型值（单行）
   public abstract void putBoolean(int rowId, boolean value);
 
   /**
    * Sets value to [rowId, rowId + count).
    */
+  // 写入原生类型值（批次）。 将单个值重复写入从 rowId 开始的 count 个位置。
   public abstract void putBooleans(int rowId, int count, boolean value);
 
   /**
    * Sets bits from [src[srcIndex], src[srcIndex + count]) to [rowId, rowId + count)
    * src must contain bit-packed 8 booleans in the byte.
    */
+  // 写入原生类型数组（批次）。 从源数组 src 复制 count 个元素到列向量的指定范围
   public void putBooleans(int rowId, int count, byte src, int srcIndex) {
     assert ((srcIndex + count) <= 8);
     byte8[0] = (byte)(src & 1);
@@ -469,6 +490,7 @@ public abstract class WritableColumnVector extends ColumnVector {
    * used if the sizes are not known up front.
    * In all these cases, the return value is the rowId for the first appended element.
    */
+  // 这些方法用于在不知道最终大小时，按顺序将数据追加到向量末尾。它们会自动调用 reserve() 并递增 elementsAppended
   public final int appendNull() {
     assert (!(dataType() instanceof StructType)); // Use appendStruct()
     reserve(elementsAppended + 1);
@@ -870,6 +892,8 @@ public abstract class WritableColumnVector extends ColumnVector {
   /**
    * Maximum number of rows that can be stored in this column.
    */
+  // 最大容量。
+  // 当前向量能够存储的最大行数
   protected int capacity;
 
   /**
@@ -881,18 +905,24 @@ public abstract class WritableColumnVector extends ColumnVector {
   /**
    * Number of nulls in this column. This is an optimization for the reader, to skip NULL checks.
    */
+  // 空值计数。
+  // 当前批次中 NULL 值的数量
   protected int numNulls;
 
   /**
    * True if this column's values are fixed. This means the column values never change, even
    * across resets.
    */
+  // 是否为常量。
+  // 如果为 true，则表示该列向量的值是固定的，即使在 reset() 后也不会改变
   protected boolean isConstant;
 
   /**
    * True if this column only contains nulls. This means the column values never change, even
    * across resets. Comparing to 'isConstant' above, this doesn't require any allocation of space.
    */
+  // 是否全为空。
+  // 如果为 true，表示该列只包含 NULL 值，是 isConstant 的特例
   protected boolean isAllNull;
 
   /**
@@ -903,11 +933,15 @@ public abstract class WritableColumnVector extends ColumnVector {
   /**
    * Current write cursor (row index) when appending data.
    */
+  // 写入光标。
+  // 当前已写入的逻辑行数（即下一行写入的索引）。主要用于 appendXXX() 方法
   protected int elementsAppended;
 
   /**
    * If this is a nested type (array or struct), the column for the child data.
    */
+  // 子列向量。
+  // 如果该列是嵌套类型（Struct, Array, Map, Interval），则存储其子字段或元素的向量。
   protected WritableColumnVector[] childColumns;
 
   /**

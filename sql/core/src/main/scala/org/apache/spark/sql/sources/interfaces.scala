@@ -229,7 +229,7 @@ abstract class BaseRelation {
    *
    * @since 1.4.0
    */
-    //是否需要将 Row 转换为内部表示（如字符串转换为 UTF8String）。通常，外部数据源应将其保持为 true
+    // 是否需要将 Row 转换为内部表示（如字符串转换为 UTF8String）。通常，外部数据源应将其保持为 true
   def needConversion: Boolean = true
 
   /**

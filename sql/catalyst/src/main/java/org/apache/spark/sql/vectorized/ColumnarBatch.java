@@ -26,12 +26,24 @@ import org.apache.spark.sql.catalyst.InternalRow;
  * batch so that Spark can access the data row by row. Instance of it is meant to be reused during
  * the entire data loading process. A data source may extend this class with customized logic.
  */
+// Apache Spark SQL 向量化（Columnar）读取机制中的核心数据结构
+// 作用是将底层的列式存储数据（如 Parquet、ORC）在内存中表示为一系列的 ColumnVector，并提供一个行式（Row-wise）视图，以便 Spark 的计算引擎可以像处理传统行一样访问数据
+// 核心职责：
+// 封装列式数据： 它封装了一个数组的 ColumnVector，每个 ColumnVector 包含一列数据的一个批次。这种列式表示方式极大地提高了数据处理效率（CPU 缓存友好、SIMD 优化）
+// 提供行式兼容性： 通过内部的 ColumnarBatchRow，它允许 Spark 的处理逻辑以行为单位迭代和访问数据，从而兼容 Spark 的标准 InternalRow API。
+// 批次处理： 它代表了数据源一次性读取并传递给查询引擎的固定大小（通常是 4096 行）数据块
 @DeveloperApi
 public class ColumnarBatch implements AutoCloseable {
+  // 行数。
+  // 存储当前批次中实际包含的逻辑行数
   protected int numRows;
+  // 列向量数组。
+  // 存储构成该批次的所有列的 ColumnVector 实例。它是该批次列式数据的核心。
   protected final ColumnVector[] columns;
 
   // Staging row returned from `getRow`.
+  // 暂存行。 一个内部辅助对象，用于在调用 getRow(int rowId) 或通过迭代器访问时，重用并表示当前正在访问的行。
+  // 它指向 columns 数组中的特定行索引，避免为每一行创建新的 InternalRow 对象
   protected final ColumnarBatchRow row;
 
   /**
@@ -58,6 +70,8 @@ public class ColumnarBatch implements AutoCloseable {
   /**
    * Returns an iterator over the rows in this batch.
    */
+  // 获取行迭代器
+  // 返回一个可以逐行迭代当前批次中数据的 Iterator<InternalRow>
   public Iterator<InternalRow> rowIterator() {
     final int maxRows = numRows;
     final ColumnarBatchRow row = new ColumnarBatchRow(columns);

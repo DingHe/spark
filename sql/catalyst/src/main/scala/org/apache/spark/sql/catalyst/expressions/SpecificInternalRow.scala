@@ -190,6 +190,11 @@ final class MutableAny extends MutableValue {
  * based on the dataTypes of each column.  The intent is to decrease garbage when modifying the
  * values of primitive columns.
  */
+// Spark 内部一种可变 (Mutable) 且类型特化 (Type Specialized) 的行数据实现，设计目标是提高对基本数据类型操作的性能，尤其是减少垃圾回收（GC）的开销
+// 减少 GC 开销： 它不直接存储 Java 或 Scala 对象，而是使用一个 Array[MutableValue] 数组作为底层存储。对于基本数据类型（如 Int, Long, Float），它使用特化的容器类（如 MutableInt, MutableLong）来存储值和空标志 (isNull)
+// 原地修改 (In-Place Mutation)： 由于使用了可变容器，当更新基本类型字段的值时，可以原地修改容器内的 value 字段，而不是创建新的 InternalRow 或新的 Any 对象。这使得它非常适合在聚合、排序和哈希表等需要在循环中频繁更新行值的操作符中使用。
+// 高性能 Getter/Setter： 它为所有基本数据类型实现了特化的 set* 和 get* 方法（如 setInt, getLong），避免了 BaseGenericInternalRow 中使用的慢速 Any 强制类型转换和装箱/拆箱操作，直接访问和修改特化容器中的原生值。
+// values 底层存储。 这是一个 final 值，存储构成行的所有字段。它的类型是 MutableValue 容器数组，其中每个元素都是根据字段的实际数据类型（如 MutableInt、MutableLong）特化过的对象
 final class SpecificInternalRow(val values: Array[MutableValue]) extends BaseGenericInternalRow {
 
   private[this] def dataTypeToMutableValue(dataType: DataType): MutableValue = dataType match {

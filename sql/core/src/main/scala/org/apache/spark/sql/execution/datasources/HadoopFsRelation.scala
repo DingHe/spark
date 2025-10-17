@@ -37,16 +37,16 @@ import org.apache.spark.sql.types.{StructField, StructType}
  * @param fileFormat A file format that can be used to read and write the data in files.
  * @param options Configuration used when reading / writing data.
  */
-//表示 基于 Hadoop 文件系统（HDFS、S3、Azure Blob 等）数据源 的核心类
-//具备 Spark 读取和操作文件数据源的能力。该类包含了读取和写入文件所需的所有元数据，如文件路径、数据模式（Schema）、分区信息、存储格式等
+// 表示 基于 Hadoop 文件系统（HDFS、S3、Azure Blob 等）数据源 的核心类
+// 具备 Spark 读取和操作文件数据源的能力。该类包含了读取和写入文件所需的所有元数据，如文件路径、数据模式（Schema）、分区信息、存储格式等
 case class HadoopFsRelation(
-    location: FileIndex, //文件索引对象，包含此关系对应的所有文件的路径及元数据，负责枚举文件的实际存储位置
-    partitionSchema: StructType, //分区列的 Schema，用于描述此关系中的分区字段，通常指基于目录路径的分区结构（如 /year=2023）
+    location: FileIndex, // 文件索引对象，包含此关系对应的所有文件的路径及元数据，负责枚举文件的实际存储位置
+    partitionSchema: StructType, // 分区列的 Schema，用于描述此关系中的分区字段，通常指基于目录路径的分区结构（如 /year=2023）
     // The top-level columns in `dataSchema` should match the actual physical file schema, otherwise
     // the ORC data source may not work with the by-ordinal mode.
-    dataSchema: StructType, //数据列的 Schema，描述文件中存储的实际数据列的结构，不包含分区列
-    bucketSpec: Option[BucketSpec], //分桶信息，如果存在，说明该数据源按某些列进行了 Hash 分桶，Spark 在分桶表中进行更高效的查询
-    fileFormat: FileFormat,//文件格式，用于描述数据的物理存储格式（如 Parquet、ORC、CSV、JSON 等）
+    dataSchema: StructType, // 数据列的 Schema，描述文件中存储的实际数据列的结构，不包含分区列
+    bucketSpec: Option[BucketSpec], // 分桶信息，如果存在，说明该数据源按某些列进行了 Hash 分桶，Spark 在分桶表中进行更高效的查询
+    fileFormat: FileFormat,// 文件格式，用于描述数据的物理存储格式（如 Parquet、ORC、CSV、JSON 等）
     options: Map[String, String])(val sparkSession: SparkSession)//读取/写入配置选项，如分隔符、压缩方式、是否多行解析等，通过 key-value 形式传递
   extends BaseRelation with FileRelation {
 

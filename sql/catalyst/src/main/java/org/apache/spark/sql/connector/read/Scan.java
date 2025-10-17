@@ -39,8 +39,13 @@ import org.apache.spark.sql.connector.catalog.TableCapability;
  *
  * @since 3.0.0
  */
-//用于表示数据源扫描（Scan）的逻辑层。它用于提供数据源的逻辑信息，例如实际读取的模式（schema），以及是否支持批处理或流式处理。
-// 这个接口可以用于批处理查询、微批处理流式查询（Micro-Batch Streaming），以及连续流式查询（Continuous Streaming）
+//Spark DataSource V2 API 中对数据源扫描操作的逻辑表示。
+// 它是在 Catalyst 优化器将查询计划转换为物理计划之前，用于封装和提供数据读取操作逻辑信息的关键接口
+// 核心职责：
+// 逻辑元数据提供： 负责提供扫描操作的逻辑信息，最重要的是实际读取的 Schema (readSchema())。
+// 这个 Schema 可能与底层存储的物理 Schema 不同，因为它已经经过了 Spark 优化器的列裁剪（Column Pruning）等优化
+// 物理执行入口： 它充当批处理、微批流和连续流三种不同读取模式的物理执行工厂。
+// 数据源必须根据其 Table 声明的能力 (TableCapability) 来实现对应的 toBatch()、toMicroBatchStream() 或 toContinuousStream() 方法
 @Evolving
 public interface Scan {
 
@@ -48,7 +53,8 @@ public interface Scan {
    * Returns the actual schema of this data source scan, which may be different from the physical
    * schema of the underlying storage, as column pruning or other optimizations may happen.
    */
-  //返回此数据源扫描的实际 Schema（数据结构）
+  //实际读取模式
+  // 返回该扫描操作的最终模式（Schema）
   StructType readSchema();
 
   /**
@@ -77,7 +83,9 @@ public interface Scan {
    *
    * @throws UnsupportedOperationException
    */
-  //返回批处理（Batch）扫描的物理表示（Batch 对象）
+  // 批处理读取工厂
+  // 如果数据源支持批处理读取 (TableCapability.BATCH_READ)，则必须重写此方法
+  // 返回一个 Batch 实例，该实例定义了如何切分数据和创建 PartitionReaderFactory
   default Batch toBatch() {
     throw new UnsupportedOperationException(description() + ": Batch scan are not supported");
   }
@@ -94,8 +102,9 @@ public interface Scan {
    *
    * @throws UnsupportedOperationException
    */
-  //返回微批（Micro-Batch）流式查询的物理表示
-  //checkpointLocation：用于故障恢复的 Hadoop 文件系统（HDFS）路径
+  //微批流读取工厂
+  // 如果支持微批流读取 (TableCapability.MICRO_BATCH_READ)，则必须实现。
+  // 它返回一个 MicroBatchStream 实例，用于处理基于偏移量的流式数据
   default MicroBatchStream toMicroBatchStream(String checkpointLocation) {
     throw new UnsupportedOperationException(description() + ": Micro-batch scan are not supported");
   }
@@ -112,7 +121,7 @@ public interface Scan {
    *
    * @throws UnsupportedOperationException
    */
-  //返回连续流（Continuous Streaming）查询的物理表示
+  //连续流读取工厂。 默认抛出异常。如果支持连续流读取 (TableCapability.CONTINUOUS_READ)，则必须实现
   default ContinuousStream toContinuousStream(String checkpointLocation) {
     throw new UnsupportedOperationException(description() + ": Continuous scan are not supported");
   }
@@ -145,9 +154,9 @@ public interface Scan {
    * @since 3.5.0
    */
   enum ColumnarSupportMode {
-    PARTITION_DEFINED,   //每个分区自己决定是否支持列存
-    SUPPORTED,   //整个扫描都支持列存
-    UNSUPPORTED  //不支持列存（即数据是行存）
+    PARTITION_DEFINED,   //分区决定（默认）。 表示是否使用列式读取的决定权交给每个单独的输入分区（即 InputPartition），允许混合模式
+    SUPPORTED,   //全部支持。 表示整个扫描操作（所有分区）都支持并应使用列式读取
+    UNSUPPORTED  //全部不支持。 表示整个扫描操作（所有分区）都不支持列式读取（即必须使用行式读取）
   }
 
   /**

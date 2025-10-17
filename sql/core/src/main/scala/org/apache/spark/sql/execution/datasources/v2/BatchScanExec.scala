@@ -33,13 +33,19 @@ import org.apache.spark.sql.internal.SQLConf
 /**
  * Physical plan node for scanning a batch of data from a data source v2.
  */
+// Apache Spark SQL V2 数据源 API 中的一个物理执行计划节点 (Physical Plan Node)
+// 负责从一个支持批处理读取的 V2 数据源（如 Parquet, Orc, JDBC 等）中读取数据，并将其转化为 Spark 内部的 RDD 形式，作为查询的起始点
+// 核心功能：
+// 封装数据源逻辑： 封装了 V2 Scan 对象的逻辑，包括数据分区（InputPartition）的规划和读取器的创建。
+// 物理优化： 在执行计划阶段，处理并应用运行时过滤器（Runtime Filters，主要用于动态分区裁剪），从而减少需要读取的数据量。
+// 兼容性与执行： 将逻辑数据源信息转换为 Spark 实际执行所需的 RDD 结构，并利用 PartitionReaderFactory 在执行器 (Executor) 上并行读取数据。
 case class BatchScanExec(
-    output: Seq[AttributeReference],
-    @transient scan: Scan,
-    runtimeFilters: Seq[Expression],
+    output: Seq[AttributeReference], // 输出模式/列。 该物理操作执行后输出的列的列表
+    @transient scan: Scan, // 数据源扫描对象。 V2 API 提供的扫描定义对象，它描述了要读取的数据和应用在数据上的过滤条件
+    runtimeFilters: Seq[Expression], // 运行时过滤器。 在运行时动态应用的过滤条件列表。主要用于动态分区裁剪 (Dynamic Partition Pruning)
     ordering: Option[Seq[SortOrder]] = None,
-    @transient table: Table,
-    spjParams: StoragePartitionJoinParams = StoragePartitionJoinParams()
+    @transient table: Table, // 数据源表对象。 V2 API 提供的表元数据对象
+    spjParams: StoragePartitionJoinParams = StoragePartitionJoinParams() // 存储分区连接参数。 用于协调两个连接端点的分区和拆分策略的参数，以支持 Spark 的存储分区连接（SPJ）优化
   ) extends DataSourceV2ScanExecBase {
 
   @transient lazy val batch: Batch = if (scan == null) null else scan.toBatch

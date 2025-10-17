@@ -49,6 +49,7 @@ import org.apache.spark.sql.internal.StaticSQLConf.WAREHOUSE_PATH
 import org.apache.spark.sql.sources.{BaseRelation, TableScan}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.storage.StorageLevel
+// 专门用于处理基于 DataSource V2 API 的数据源
 
 class DataSourceV2Strategy(session: SparkSession) extends Strategy with PredicateHelper {
 

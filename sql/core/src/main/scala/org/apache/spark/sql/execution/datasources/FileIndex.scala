@@ -53,7 +53,7 @@ object PartitionDirectory {
  * An interface for objects capable of enumerating the root paths of a relation as well as the
  * partitions of a relation subject to some pruning expressions.
  */
-//主要用于枚举存储数据的路径，并支持基于分区的裁剪（pruning）
+// 主要用于枚举存储数据的路径，并支持基于分区的裁剪（pruning）
 trait FileIndex {
 
   /**
@@ -61,7 +61,7 @@ trait FileIndex {
    * single root path from which partitions are discovered, or individual partitions may be
    * specified by each path.
    */
-  //返回根输入路径列表，Spark 从这些路径中加载数据文件
+  // 返回根输入路径列表，Spark 从这些路径中加载数据文件
   def rootPaths: Seq[Path]
 
   /**
@@ -79,7 +79,7 @@ trait FileIndex {
    */
   def listFiles(
       partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Seq[PartitionDirectory]
-  //partitionFilters: Seq[Expression]  分区列的过滤条件 假设数据表按 date 分区，而查询包含 WHERE date = '2024-02-01'，那么 partitionFilters 可能只包含 date = '2024-02-01'，这样就能只扫描对应的分区，而不读取整个数据集
+  // partitionFilters: Seq[Expression]  分区列的过滤条件 假设数据表按 date 分区，而查询包含 WHERE date = '2024-02-01'，那么 partitionFilters 可能只包含 date = '2024-02-01'，这样就能只扫描对应的分区，而不读取整个数据集
   //dataFilters: Seq[Expression] 非分区列的过滤条件 执行引擎会在数据加载后应用这些过滤条件
   //Seq[PartitionDirectory]：返回按照分区组织的文件列表
 
@@ -88,10 +88,10 @@ trait FileIndex {
    * very expensive for large tables.
    * The strings returned are expected to be url-encoded paths.
    */
-  def inputFiles: Array[String]  //返回所有需要读取的文件路径的数组
+  def inputFiles: Array[String]  // 返回所有需要读取的文件路径的数组
 
   /** Refresh any cached file listings */
-  def refresh(): Unit   //刷新缓存的文件列表，确保 Spark 获取最新的文件信息
+  def refresh(): Unit   // 刷新缓存的文件列表，确保 Spark 获取最新的文件信息
 
   /** Sum of table file sizes, in bytes */
   def sizeInBytes: Long  //返回表文件的总大小（单位：字节）

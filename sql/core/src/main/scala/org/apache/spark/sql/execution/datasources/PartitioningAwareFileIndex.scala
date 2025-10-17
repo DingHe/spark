@@ -39,6 +39,9 @@ import org.apache.spark.sql.types.StructType
  * @param userSpecifiedSchema an optional user specified schema that will be use to provide
  *                            types for the discovered partitions
  */
+// 统一分区表管理： 为所有支持分区的文件数据源提供一套标准的分区发现、分区裁剪（Partition Pruning）和文件列表获取的机制
+// 数据本地性支持： 通过维护文件和目录的映射，帮助 Spark 在生成物理计划时更好地利用数据本地性。
+// 元数据过滤支持： 允许在读取数据之前，利用文件的常量元数据（如文件路径、长度、修改时间）进行过滤。
 abstract class PartitioningAwareFileIndex(
     sparkSession: SparkSession,
     parameters: Map[String, String], //参数列表
@@ -46,19 +49,24 @@ abstract class PartitioningAwareFileIndex(
     fileStatusCache: FileStatusCache = NoopCache) extends FileIndex with Logging {
 
   /** Returns the specification of the partitions inferred from the data. */
-  def partitionSpec(): PartitionSpec  //返回从数据推断出的分区规范，包括分区列信息和具体的分区路径。
-  //返回分区列的模式（Schema）
+  // 返回从数据推断出的分区规范，包括分区列的 Schema (partitionColumns) 和具体的分区路径列表 (partitions)
+  def partitionSpec(): PartitionSpec
+  //返回分区列的模式（Schema）。
+  // 实际上是调用 partitionSpec().partitionColumns
   override def partitionSchema: StructType = partitionSpec().partitionColumns
   //Hadoop 文件系统配置，用于与 HDFS 或本地文件系统交互
   protected val hadoopConf: Configuration =
     sparkSession.sessionState.newHadoopConfWithOptions(parameters)
-  //存储所有叶子文件（即可直接读取的数据文件）
+  // 存储所有叶子文件（即可直接读取的数据文件）的映射，
+  // 键是文件路径，值是文件状态
   protected def leafFiles: mutable.LinkedHashMap[Path, FileStatus]
-  //存储目录路径到其子文件的映射,用于文件列出时快速查找某个目录下的所有文件
+  // 存储目录路径到其子文件列表的映射。
+  // 用于文件列出时，能快速查找某个目录下的所有文件，避免二次文件系统调用
   protected def leafDirToChildrenFiles: Map[Path, Array[FileStatus]]
   //提供大小写不敏感的访问方式
   private val caseInsensitiveMap = CaseInsensitiveMap(parameters)
-  //存储所有 PathFilter，用于筛选符合规则的文件路径
+  // 存储所有 PathFilter 实例，这些过滤器根据用户配置（如文件 glob 模式）创建，
+  // 用于在文件发现时筛选符合规则的文件路径
   private val pathFilters = PathFilterFactory.create(caseInsensitiveMap)
   //检查某个文件是否符合路径过滤条件
   protected def matchPathPattern(file: FileStatus): Boolean =

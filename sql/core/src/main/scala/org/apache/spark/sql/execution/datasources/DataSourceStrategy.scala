@@ -319,10 +319,20 @@ class FindDataSourceTable(sparkSession: SparkSession) extends Rule[LogicalPlan] 
 /**
  * A Strategy for planning scans over data sources defined using the sources API.
  */
+// Spark 物理规划阶段中最重要的策略之一，专门用于处理基于传统 DataSource V1 API 或 基于文件的表（如 Parquet, ORC, JSON 等）。
+// 核心作用是将已解析的逻辑查询计划（特别是涉及从数据源读取数据的 LogicalRelation 节点）转化为具体的物理执行计划（SparkPlan）
+// 主要承担了以下三项关键的优化职责，这些优化都是在将查询下推到数据源层面时实现的：
+// 物理计划生成： 将逻辑计划中的 LogicalRelation 节点转换为物理扫描算子 RowDataSourceScanExec（这是 V1 API 的主要扫描算子
+// 列剪裁（Pruning）： 识别查询中实际需要的列（projects），并指示数据源只读取这些列，从而减少 I/O 量。
+// 谓词下推（Predicate Pushdown）： 识别查询中的过滤条件（filters），将这些条件转换成数据源能理解的格式（sources.Filter），并下推给数据源。数据源在读取数据时就执行过滤，从而进一步减少 I/O 和计算量。
+// 充当了 Spark 优化器与传统数据源 API 之间的桥梁，实现了查询优化。
 object DataSourceStrategy
   extends Strategy with Logging with CastSupport with PredicateHelper with SQLConfHelper {
-
+  // 物理规划入口
+  //尝试将传入的逻辑计划 (LogicalPlan) 转换为一个或多个物理执行计划 (SparkPlan)。如果匹配成功，返回 Seq[SparkPlan]；否则返回 Nil（空序列）
   def apply(plan: LogicalPlan): Seq[execution.SparkPlan] = plan match {
+    //匹配实现了 CatalystScan 接口的关系（Relataion）
+    //该接口允许数据源直接接收并处理 Catalyst 表达式形式的过滤条件，是最灵活的 V1 扫描方式
     case PhysicalOperation(projects, filters, l @ LogicalRelation(t: CatalystScan, _, _, _)) =>
       pruneFilterProjectRaw(
         l,
@@ -330,7 +340,8 @@ object DataSourceStrategy
         filters,
         (requestedColumns, allPredicates, _) =>
           toCatalystRDD(l, requestedColumns, t.buildScan(requestedColumns, allPredicates))) :: Nil
-
+    //匹配实现了 PrunedFilteredScan 接口的关系
+    //该接口允许数据源执行列剪裁和接收 sources.Filter 形式的过滤条件
     case PhysicalOperation(projects, filters,
                            l @ LogicalRelation(t: PrunedFilteredScan, _, _, _)) =>
       pruneFilterProject(
@@ -338,14 +349,14 @@ object DataSourceStrategy
         projects,
         filters,
         (a, f) => toCatalystRDD(l, a, t.buildScan(a.map(_.name).toArray, f))) :: Nil
-
+    //匹配只实现了 PrunedScan 接口的关系。它仅支持列剪裁，不支持谓词下推
     case PhysicalOperation(projects, filters, l @ LogicalRelation(t: PrunedScan, _, _, _)) =>
       pruneFilterProject(
         l,
         projects,
         filters,
         (a, _) => toCatalystRDD(l, a, t.buildScan(a.map(_.name).toArray))) :: Nil
-
+    // 匹配只实现了 TableScan 接口的基本关系。它既不支持列剪裁，也不支持谓词下推。它直接生成 RowDataSourceScanExec 物理算子，让 Spark 在扫描后完成所有的投影和过滤
     case l @ LogicalRelation(baseRelation: TableScan, _, _, _) =>
       RowDataSourceScanExec(
         l.output,

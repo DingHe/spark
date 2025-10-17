@@ -43,10 +43,14 @@ import org.apache.spark.internal.config._
 import org.apache.spark.rdd.NewHadoopRDD.NewHadoopMapPartitionsWithSplitRDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.{SerializableConfiguration, ShutdownHookManager, Utils}
-
+// NewHadoopPartition 类是 Spark 中用于处理基于新版 Hadoop I/O API (org.apache.hadoop.mapreduce) 的数据源的具体分区实现。
+// 核心作用是作为 Spark 分区 (Partition trait) 和底层 Hadoop 输入切片 (InputSplit) 之间的桥梁和容器。每个 NewHadoopPartition 实例都封装了一个 Hadoop InputSplit，代表了 RDD 中一个独立的、可并行处理的数据块。
+// 封装 Hadoop Split： 持有底层的 Hadoop InputSplit 对象，该对象定义了数据的位置、长度和读取范围。
+// 实现可序列化： 由于 InputSplit 本身可能不完全兼容 Spark 的序列化机制，NewHadoopPartition 使用 SerializableWritable 来封装 InputSplit，确保它可以在 Spark Driver 和 Executor 之间安全传输。
+// 提供唯一标识： 结合其父 RDD 的 ID (rddId) 和自己的索引 (index)，提供了一个更强的唯一标识（通过重写的 hashCode），用于区分不同 RDD 中的同名分区。
 private[spark] class NewHadoopPartition(
-    rddId: Int,
-    val index: Int,
+    rddId: Int, // 父 RDD ID，该分区所属的 NewHadoopRDD 的唯一标识符。用于在 hashCode 计算中提供更强的唯一性。
+    val index: Int, // 分区索引，该分区在其父 RDD 中的顺序索引（从 0 开始）。这是继承自 Partition trait 的核心标识。
     rawSplit: InputSplit with Writable)
   extends Partition {
 
@@ -70,34 +74,44 @@ private[spark] class NewHadoopPartition(
  * @note Instantiating this class directly is not recommended, please use
  * `org.apache.spark.SparkContext.newAPIHadoopRDD()`
  */
+// NewHadoopRDD 是 Spark 核心库中的一个 RDD 实现，它提供了一种核心功能，用于使用 新版 Hadoop MapReduce API (org.apache.hadoop.mapreduce) 来读取存储在 Hadoop 兼容系统（如 HDFS、S3、HBase）中的数据。
+// 核心职责：
+// 数据抽象与解耦： 将底层 Hadoop InputFormat（负责文件切分和记录读取）的复杂 I/O 逻辑抽象为标准的 Spark RDD 和 Partition 概念。
+// 分区划分： 负责调用 Hadoop 的 InputFormat.getSplits() 方法，将数据源切分成逻辑上的 InputSplit，并将其转化为 Spark 的 Partition，每个分区对应一个读取任务。
+// 任务执行： 在执行器（Executor）端，为每个分区创建 Hadoop 的 RecordReader，负责实际读取数据，并将键值对 (K, V) 流式地返回给 Spark。
 @DeveloperApi
 class NewHadoopRDD[K, V](
     sc : SparkContext,
-    inputFormatClass: Class[_ <: InputFormat[K, V]],
-    keyClass: Class[K],
-    valueClass: Class[V],
-    @transient private val _conf: Configuration)
+    inputFormatClass: Class[_ <: InputFormat[K, V]], // 输入格式类 ，底层 Hadoop InputFormat 的类对象，它定义了如何读取和切分数据。
+    keyClass: Class[K], // Key 的类，Hadoop InputFormat 读取的 Key 的数据类型。
+    valueClass: Class[V], // Value 的类 ，Hadoop InputFormat 读取的 Value 的数据类型（通常是实际的数据记录）。
+    @transient private val _conf: Configuration) // Hadoop 配置，原始的 Hadoop 配置对象（JobConf），包含了文件路径、SerDe 信息和所有作业所需的配置参数
   extends RDD[(K, V)](sc, Nil) with Logging {
 
   // A Hadoop Configuration can be about 10 KB, which is pretty big, so broadcast it
+  // 广播配置
+  // 将原始的 _conf 包装成可序列化对象后，通过 Spark 的广播机制 (sc.broadcast) 发送到集群所有节点。这是为了高效地在执行器上访问配置。
   private val confBroadcast = sc.broadcast(new SerializableConfiguration(_conf))
   // private val serializableConf = new SerializableWritable(_conf)
-
+  // 生成一个基于时间的唯一 ID，模拟 Hadoop JobTracker ID，用于创建任务的唯一标识符（JobID, TaskAttemptID）
   private val jobTrackerId: String = {
     val formatter = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
     formatter.format(new Date())
   }
 
   @transient protected val jobId = new JobID(jobTrackerId, id)
-
+  // 从 Spark 配置 (spark.hadoop.cloneConf) 读取布尔值。如果为 true，则在每个任务中克隆 Configuration 对象，以解决 Hadoop 配置的线程不安全问题（避免并发读写冲突
   private val shouldCloneJobConf = sparkContext.conf.getBoolean("spark.hadoop.cloneConf", false)
-
+  // 忽略损坏文件
+  // 从 Spark 配置中读取标志，指示是否应忽略读取过程中遇到的损坏文件导致的 I/O 异常。
   private val ignoreCorruptFiles = sparkContext.conf.get(IGNORE_CORRUPT_FILES)
-
+  // 忽略丢失文件
+  // 从 Spark 配置中读取标志，指示如果文件路径不存在，是否应忽略并返回空分区。
   private val ignoreMissingFiles = sparkContext.conf.get(IGNORE_MISSING_FILES)
-
+  // 忽略空切片
+  // 从 Spark 配置中读取标志，指示是否应过滤掉长度为 0 的 InputSplit
   private val ignoreEmptySplits = sparkContext.conf.get(HADOOP_RDD_IGNORE_EMPTY_SPLITS)
-
+  // 获取任务配置
   def getConf: Configuration = {
     val conf: Configuration = confBroadcast.value.value
     if (shouldCloneJobConf) {
@@ -122,31 +136,42 @@ class NewHadoopRDD[K, V](
       conf
     }
   }
-
+  // 获取 RDD 分区
+  // 负责调用底层 Hadoop API，将数据源切分为 Spark RDD 的分区
   override def getPartitions: Array[Partition] = {
+    // 通过反射机制，实例化配置的 Hadoop InputFormat 类。这是负责文件切分和记录读取的关键对象。
     val inputFormat = inputFormatClass.getConstructor().newInstance()
     // setMinPartitions below will call FileInputFormat.listStatus(), which can be quite slow when
     // traversing a large number of directories and files. Parallelize it.
+    // 并行化文件状态获取
+    // 如果配置中未设置 FileInputFormat.LIST_STATUS_NUM_THREADS，则将其设置为当前 JVM 可用的处理器核心数。这能并行执行文件列表操作，提高大型数据集的启动速度。
+    // 解释设置并行度的原因：FileInputFormat.listStatus() 可能会很慢，通过设置并行线程数来加速文件状态列表的获取。
     _conf.setIfUnset(FileInputFormat.LIST_STATUS_NUM_THREADS,
       Runtime.getRuntime.availableProcessors().toString)
     inputFormat match {
       case configurable: Configurable =>
+        // 如果 inputFormat 实现了 Configurable 接口
+        // 调用 setConf 方法，将 RDD 持有的配置（_conf）传递给 InputFormat 实例，使其完成初始化或配置更新。
         configurable.setConf(_conf)
+        //如果没有实现 Configurable，则不执行任何操作
       case _ =>
     }
     try {
+      // 获取原始 Split
+      //要求 InputFormat 根据上下文和配置将输入数据源切分成 Hadoop InputSplit 列表
       val allRowSplits = inputFormat.getSplits(new JobContextImpl(_conf, jobId)).asScala
       val rawSplits = if (ignoreEmptySplits) {
         allRowSplits.filter(_.getLength > 0)
       } else {
         allRowSplits
       }
-
+      //大型文件警告检查开始
       if (rawSplits.length == 1 && rawSplits(0).isInstanceOf[FileSplit]) {
         val fileSplit = rawSplits(0).asInstanceOf[FileSplit]
         val path = fileSplit.getPath
         if (fileSplit.getLength > conf.get(IO_WARNING_LARGEFILETHRESHOLD)) {
           val codecFactory = new CompressionCodecFactory(_conf)
+          // 判断文件是否可切分
           if (Utils.isFileSplittable(path, codecFactory)) {
             logWarning(s"Loading one large file ${path.toString} with only one partition, " +
               s"we can increase partition numbers for improving performance.")
@@ -156,7 +181,7 @@ class NewHadoopRDD[K, V](
           }
         }
       }
-
+      // 根据 rawSplits 的数量，创建一个新的 Spark Partition 数组来存储最终结果
       val result = new Array[Partition](rawSplits.size)
       for (i <- rawSplits.indices) {
         result(i) =
@@ -170,8 +195,9 @@ class NewHadoopRDD[K, V](
         Array.empty[Partition]
     }
   }
-
+  // NewHadoopRDD 的核心方法 compute 的代码详细解读。该方法在 Executor 端 执行，负责为指定的 RDD 分区创建 Hadoop RecordReader 并返回一个可迭代的数据流。
   override def compute(theSplit: Partition, context: TaskContext): InterruptibleIterator[(K, V)] = {
+    // 实例化一个匿名的 Scala Iterator，所有的读取逻辑都封装在这个迭代器内部。
     val iter = new Iterator[(K, V)] {
       private val split = theSplit.asInstanceOf[NewHadoopPartition]
       logInfo("Input split: " + split.serializableHadoopSplit)
@@ -181,6 +207,9 @@ class NewHadoopRDD[K, V](
       private val existingBytesRead = inputMetrics.bytesRead
 
       // Sets InputFileBlockHolder for the file block's information
+      // 如果它是 FileSplit，则设置 InputFileBlockHolder（一个线程局部变量），记录当前正在读取的文件路径、起始偏移量和长度。
+      // 这主要用于 Spark SQL 等高级优化。
+      // 非 FileSplit 类型则清除该持有者。
       split.serializableHadoopSplit.value match {
         case fs: FileSplit =>
           InputFileBlockHolder.set(fs.getPath.toString, fs.getStart, fs.getLength)
@@ -190,6 +219,8 @@ class NewHadoopRDD[K, V](
 
       // Find a function that will return the FileSystem bytes read by this thread. Do this before
       // creating RecordReader, because RecordReader's constructor might read some bytes
+      // 尝试获取一个回调函数，该函数能返回当前线程在底层文件系统（如 HDFS）中已读取的字节数。
+      // 这需要在创建 RecordReader 之前完成，因为 RecordReader 的构造函数可能已经开始读取字节
       private val getBytesReadCallback: Option[() => Long] =
         split.serializableHadoopSplit.value match {
           case _: FileSplit | _: CombineFileSplit =>
@@ -201,6 +232,7 @@ class NewHadoopRDD[K, V](
       // If we do a coalesce, however, we are likely to compute multiple partitions in the same
       // task and in the same thread, in which case we need to avoid override values written by
       // previous partitions (SPARK-13071).
+      // 用于将当前线程读取的字节数累加到 inputMetrics 中。它使用 existingBytesRead 来确保在处理多个分区时，度量值是正确累加的。
       private def updateBytesRead(): Unit = {
         getBytesReadCallback.foreach { getBytesRead =>
           inputMetrics.setBytesRead(existingBytesRead + getBytesRead())
@@ -216,6 +248,7 @@ class NewHadoopRDD[K, V](
       private val attemptId = new TaskAttemptID(jobTrackerId, id, TaskType.MAP, split.index, 0)
       private val hadoopAttemptContext = new TaskAttemptContextImpl(conf, attemptId)
       private var finished = false
+      //创建 RecordReader
       private var reader =
         try {
           val _reader = format.createRecordReader(

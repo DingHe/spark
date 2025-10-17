@@ -28,7 +28,9 @@ import org.apache.spark.annotation.Evolving;
  *
  * @since 3.0.0
  */
+// Spark DataSource V2 读取流程中**构建扫描计划（Scan）**的“构建器”对象
 @Evolving
 public interface ScanBuilder {
+  // 应该执行任何实际的 I/O 操作，它只是返回一个描述扫描计划的对象。实际的读取（如构造 PartitionReader）会在 Scan 阶段完成
   Scan build();
 }

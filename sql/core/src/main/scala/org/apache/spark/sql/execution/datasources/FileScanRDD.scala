@@ -54,19 +54,26 @@ import org.apache.spark.util.NextIterator
  * @param fileSize The length of the input file (not the block), in bytes.
  * @param otherConstantMetadataColumnValues The values of any additional constant metadata columns.
  */
-//表示一个 文件块（或称为分区块），并包含了读取该文件块所需的各种信息。它可以视为一个逻辑单元，代表 Spark 任务处理中的一个文件分片
+// Spark SQL 读取外部数据源（如 Parquet、ORC、CSV 等）时使用的核心数据结构，它代表了 Spark 实际要读取的最小数据单元
+//核心职责：
+//义输入分片（Input Split）： 它封装了读取单个任务所需的所有信息。在 Spark 中，一个 PartitionedFile 通常对应于一个 Task 的输入，它界定了文件中要读取的数据范围（filePath, start, length）
+//融合分区信息： 它携带了 Hive 风格的分区列的值 (partitionValues)。这意味着，读取该文件块时，这些分区值会被自动附加到从文件内容中读取出的每一行数据之前。
+//支持本地性： 它记录了文件块的物理位置 (locations)，使得 Spark 调度器可以利用数据本地性（Data Locality） 原则，将读取任务调度到数据所在的节点上执行，从而提高效率
+// 简而言之，PartitionedFile 就是 Spark "告诉我从哪个文件的哪个字节开始，读多少字节，以及读完后要给这些数据打上什么分区标签" 的指令卡
 case class PartitionedFile(
-    partitionValues: InternalRow, //分区列的值，这些值将被附加到每一行数据的开头
+    partitionValues: InternalRow, //分区列的值，存储了该文件块所属的 Hive 分区的键值。例如，如果分区是 dt=2023-01-01/region=US，该对象就包含 '2023-01-01' 和 'US' 的值。这些值将在读取时作为常量添加到每一行数据中
     filePath: SparkPath, //文件的路径
     start: Long, //文件块的起始位置
     length: Long, //文件块的长度
     @transient locations: Array[String] = Array.empty, //文件块所在的主机位置
     modificationTime: Long = 0L, //文件的最后修改时间
     fileSize: Long = 0L,  //文件的总大小（以字节为单位）
-    otherConstantMetadataColumnValues: Map[String, Any] = Map.empty) { //任何附加的常量元数据列的值
-
+    otherConstantMetadataColumnValues: Map[String, Any] = Map.empty) { //存储了除分区列之外，需要作为常量添加到每行数据中的其他元数据。例如，可能是某些数据源在读取时附加的额外常量信息
+  //返回文件路径的 java.net.URI 表示形式
   def pathUri: URI = filePath.toUri
+  //返回文件路径的 java.nio.file.Path 表示形式
   def toPath: Path = filePath.toPath
+  //返回文件路径的 URL 编码字符串形式。这在路径中包含特殊字符时很有用。
   def urlEncodedPath: String = filePath.urlEncoded
 
   override def toString: String = {

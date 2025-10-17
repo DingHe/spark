@@ -30,6 +30,14 @@ import org.apache.spark.unsafe.types.UTF8String;
 /**
  * A column vector backed by Apache Arrow.
  */
+// 作为 Apache Spark SQL 列式数据模型 (ColumnVector) 和 Apache Arrow 内存格式之间的适配器 (Adapter)
+// ArrowColumnVector 是 Spark 实现 Apache Arrow 零拷贝（zero-copy）数据交换的关键组件。
+// 它允许 Spark 在不进行昂贵的数据序列化或拷贝的情况下，直接访问存储在 Apache Arrow 内存结构中的列式数据
+// 核心职责：
+// 数据桥接： 将底层的 Apache Arrow ValueVector 封装起来，使其符合 Spark 的 ColumnVector 接口规范
+// 类型转换和访问： 通过内部的 ArrowVectorAccessor 抽象和一系列子类，为 Spark 的每种数据类型（如 Int, Decimal, UTF8String）提供高效、类型安全的访问方法，这些方法直接调用 Arrow 向量的 API。
+// 支持复杂类型： 对于 Arrow 的嵌套类型（如 StructVector, ListVector, MapVector），它递归地创建和管理子 ArrowColumnVector，从而保持列式数据的层次结构。
+// ArrowColumnVector 是 Spark 用来“读取”Arrow 格式内存数据的视图，极大地提升了 Spark 与 Arrow 兼容系统（如 Python/Pandas）之间数据传输的效率。
 @DeveloperApi
 public class ArrowColumnVector extends ColumnVector {
 

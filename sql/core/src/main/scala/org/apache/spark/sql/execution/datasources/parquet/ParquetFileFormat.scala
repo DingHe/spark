@@ -47,13 +47,19 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.types._
 import org.apache.spark.util.{SerializableConfiguration, ThreadUtils}
-
+//ParquetFileFormat 是 Spark SQL 读取和写入 Parquet 文件的核心实现。
+// 它负责将 Spark SQL 的操作（如读取、过滤、投影）翻译成 Parquet 格式支持的底层优化，特别是利用 Parquet 的列式存储、元数据和谓词下推等特性，以实现高性能的数据 I/O。
+//文件格式适配： 实现了 FileFormat 特质，为 Spark 提供了处理 Parquet 文件的标准接口。
+//高性能读取： 重点实现了向量化读取（Vectorized Read） 模式，这是 Spark 读取 Parquet 的主要性能优化来源。
+//谓词下推（Filter Pushdown）： 负责将 Spark 的 Catalyst 过滤器转换为 Parquet 格式可理解的底层过滤器，并在读取数据块（Row Group）时应用，显著减少 I/O。
+//Schema 兼容与演化： 负责处理 Parquet 文件中的 Schema 信息，包括推断、合并多个文件 Schema 以及处理 Spark 和 Parquet 之间的时间戳和二进制类型转换（Rebase/Conversion）
 class ParquetFileFormat
   extends FileFormat
   with DataSourceRegister
   with Logging
   with Serializable {
-
+  //数据源短名
+  //返回字符串 "parquet"。用于通过 spark.read.format("parquet") 注册和引用该文件格式。
   override def shortName(): String = "parquet"
 
   override def toString: String = "Parquet"
@@ -61,7 +67,8 @@ class ParquetFileFormat
   override def hashCode(): Int = getClass.hashCode()
 
   override def equals(other: Any): Boolean = other.isInstanceOf[ParquetFileFormat]
-
+  //设置写入 Parquet 文件所需的 Hadoop 和 Spark 配置。
+  // 它会处理用户提供的写入选项 (options)，并调用辅助类 ParquetUtils.prepareWrite 来配置 Job 对象，最终返回一个 OutputWriterFactory
   override def prepareWrite(
       sparkSession: SparkSession,
       job: Job,
@@ -71,7 +78,7 @@ class ParquetFileFormat
     val parquetOptions = new ParquetOptions(options, sqlConf)
     ParquetUtils.prepareWrite(sqlConf, job, dataSchema, parquetOptions)
   }
-
+  //调用 ParquetUtils.inferSchema。通过读取一个或多个 Parquet 文件的 File Footer，从中提取 Schema 信息并合并，返回一个 StructType
   override def inferSchema(
       sparkSession: SparkSession,
       parameters: Map[String, String],
@@ -82,6 +89,8 @@ class ParquetFileFormat
   /**
    * Returns whether the reader can return the rows as batch or not.
    */
+  //支持列式批量读取 | 判断是否能以列式批量（Vectorized Batch）模式读取数据。
+  // 这取决于 Spark 配置（spark.sql.parquet.enableVectorizedReader）和数据的 Schema（某些复杂类型不支持向量化）
   override def supportBatch(sparkSession: SparkSession, schema: StructType): Boolean = {
     val conf = sparkSession.sessionState.conf
     ParquetUtils.isBatchReadSupportedForSchema(conf, schema)

@@ -38,7 +38,10 @@ import org.apache.spark.util.Utils
 /**
  * A base interface for data source v2 implementations of the built-in file-based data sources.
  */
-//属于数据源 v2（DataSource V2）接口的实现，针对文件类型的数据源
+// 所有内置文件类型数据源 V2 实现（如 Parquet V2、ORC V2、JSON V2 等）的基类
+// 作用是为 Spark 中所有基于文件的（File-based）数据源 V2 实现提供一套通用的、文件相关的基础设施和逻辑
+// 处理回退机制： 提供了 fallbackFileFormat 属性，支持在 V2 实现出现问题时，能够回退到 V1 的 FileFormat 实现
+// 支持外部元数据： 默认声明支持外部元数据（supportsExternalMetadata = true），允许 Spark 优先使用用户或 Catalog 提供的 Schema，避免重复推断
 trait FileDataSourceV2 extends TableProvider with DataSourceRegister {
   /**
    * Returns a V1 [[FileFormat]] class of the same file data source.
@@ -47,13 +50,13 @@ trait FileDataSourceV2 extends TableProvider with DataSourceRegister {
    *    source via SQL configuration and fall back to FileFormat.
    * 2. Catalog support is required, which is still under development for data source V2.
    */
-  //返回一个与当前文件数据源相同的 v1 FileFormat 类。这个属性用于处理一些特殊情况
-  //1、当前的 v2 文件数据源导致了回归（例如性能下降），用户可以通过 SQL 配置禁用该数据源，并回退到 v1 的 FileFormat 实现
-  //2、如果需要支持目录（Catalog），但 v2 还不完全支持该功能
+  // V1 回退格式
+  // 强制子类实现，返回一个对应的 V1 FileFormat 类。用于支持 V2 禁用时回退到 V1 机制
   def fallbackFileFormat: Class[_ <: FileFormat]
 
   lazy val sparkSession = SparkSession.active
-  //从 options 中获取文件路径。这个方法处理输入的配置 map，从中提取出 "paths" 或 "path" 字段并返回路径的序列
+
+  //提取文件路径。 从配置选项 map 中提取文件路径
   protected def getPaths(map: CaseInsensitiveStringMap): Seq[String] = {
     val paths = Option(map.get("paths")).map { pathStr =>
       FileDataSourceV2.readPathsToSeq(pathStr)
@@ -67,7 +70,9 @@ trait FileDataSourceV2 extends TableProvider with DataSourceRegister {
     }
     new CaseInsensitiveStringMap(withoutPath.toMap.asJava)
   }
-  //返回一个字符串，表示构建的表名称
+  // 生成表名称
+  // 根据数据源的简称 (shortName()) 和规范化后的文件路径列表，构建一个人类可读的表名。
+  // 同时，使用 Utils.redact 机制对路径中的敏感信息进行脱敏处理
   protected def getTableName(map: CaseInsensitiveStringMap, paths: Seq[String]): String = {
     val hadoopConf = sparkSession.sessionState.newHadoopConfWithOptions(
       map.asCaseSensitiveMap().asScala.toMap)
@@ -84,14 +89,21 @@ trait FileDataSourceV2 extends TableProvider with DataSourceRegister {
   // TODO: To reduce code diff of SPARK-29665, we create stub implementations for file source v2, so
   //       that we don't need to touch all the file source v2 classes. We should remove the stub
   //       implementation and directly implement the TableProvider APIs.
-  //返回一个 Table 实例，表示一个表的数据。这个方法根据给定的选项获取表的元数据并返回表实例
+  // 获取 Table 实例 (推断模式)
+  // 抽象方法，强制子类实现。用于在 Spark 未提供 Schema 时，根据配置选项推断 Schema 并返回 Table 实例
   protected def getTable(options: CaseInsensitiveStringMap): Table
+
+  //获取 Table 实例 (指定模式)。
+  // 默认抛出“不支持”的错误。
+  // 这个版本用于 Spark 已提供 Schema 的情况（例如用户使用 .schema(...) 指定）。
+  // 子类如果支持用户提供的 Schema，应重写此方法
   protected def getTable(options: CaseInsensitiveStringMap, schema: StructType): Table = {
     throw QueryExecutionErrors.unsupportedUserSpecifiedSchemaError()
   }
 
   override def supportsExternalMetadata(): Boolean = true
-
+  // 缓存 Table 实例。
+  // 用于在 inferSchema 期间临时存储推断出的 Table 实例，以便在紧随其后的 getTable 调用中重复使用，避免重复创建或推断
   private var t: Table = null
 
   override def inferSchema(options: CaseInsensitiveStringMap): StructType = {
@@ -122,6 +134,7 @@ trait FileDataSourceV2 extends TableProvider with DataSourceRegister {
 
 private object FileDataSourceV2 {
   private lazy val objectMapper = new ObjectMapper().registerModule(DefaultScalaModule)
+  // 用于将以 JSON 字符串形式传入的多个文件路径解析成一个 Scala Seq[String] 序列
   private def readPathsToSeq(paths: String): Seq[String] =
     objectMapper.readValue(paths, classOf[Seq[String]])
 }
