@@ -95,22 +95,26 @@ case class InsertAdaptiveSparkPlan(
   //   - The query contains `InMemoryTableScanExec`.
   //   - The query contains sub-query.
 
-  //用于判断是否应该为当前查询计划（plan）启用自适应查询执行（AQE）
-  //isSubquery: Boolean：指示当前计划是否为子查询，如果当前查询是子查询（由外部查询调用的查询），则 AQE 将自动应用于外部查询。也就是说，如果是子查询，AQE 会继续应用在外部查询中
+  // 用于判断是否应该为当前查询计划（plan）启用自适应查询执行（AQE）
+  // isSubquery: Boolean：指示当前计划是否为子查询，如果当前查询是子查询（由外部查询调用的查询），则 AQE 将自动应用于外部查询。
+  // 也就是说，如果是子查询，AQE 会继续应用在外部查询中
   private def shouldApplyAQE(plan: SparkPlan, isSubquery: Boolean): Boolean = {
-    //检查是否强制启用 AQE
+    // 检查是否强制启用 AQE
     conf.getConf(SQLConf.ADAPTIVE_EXECUTION_FORCE_APPLY) || isSubquery || {
       plan.exists {
-        case _: Exchange => true  //如果查询计划中包含 Exchange 操作（例如 Shuffle 操作）
-        case p if !p.requiredChildDistribution.forall(_ == UnspecifiedDistribution) => true  //如果查询的子节点（子查询）需要特定的分布方式（不是 UnspecifiedDistribution），则 AQE 可能需要插入额外的交换操作，以便根据实际数据情况优化查询
+        // 如果查询计划中包含 Exchange 操作（例如 Shuffle 操作）
+        case _: Exchange => true
+        //  如果查询的子节点（子查询）需要特定的分布方式（不是 UnspecifiedDistribution），则 AQE 可能需要插入额外的交换操作，以便根据实际数据情况优化查询
+        case p if !p.requiredChildDistribution.forall(_ == UnspecifiedDistribution) => true
         // AQE framework has a different way to update the query plan in the UI: it updates the plan
         // at the end of execution, while non-AQE updates the plan before execution. If the cached
         // plan is already AQEed, the current plan must be AQEed as well so that the UI can get plan
         // update correctly.
+        // 已经应用了 AQE 的缓存表（cachedPlan 是 AdaptiveSparkPlanExec 类型），则说明该查询计划可以启用 AQE
         case i: InMemoryTableScanExec
-            if i.relation.cachedPlan.isInstanceOf[AdaptiveSparkPlanExec] => true  //已经应用了 AQE 的缓存表（cachedPlan 是 AdaptiveSparkPlanExec 类型），则说明该查询计划可以启用 AQE
+            if i.relation.cachedPlan.isInstanceOf[AdaptiveSparkPlanExec] => true
         case _: InMemoryTableScanExec
-            if conf.getConf(SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING) => true  //如果查询计划中包含 InMemoryTableScanExec，并且配置允许更改缓存表的输出分区（SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING 配置为 true），则 AQE 可以应用于这个查询
+            if conf.getConf(SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING) => true  // 如果查询计划中包含 InMemoryTableScanExec，并且配置允许更改缓存表的输出分区（SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING 配置为 true），则 AQE 可以应用于这个查询
         case p => p.expressions.exists(_.exists {
           case _: SubqueryExpression => true  //如果查询计划中包含子查询表达式（如 ScalarSubquery 或 DynamicPruningSubquery），则 AQE 应该启用
           case _ => false

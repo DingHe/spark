@@ -54,6 +54,9 @@ import org.apache.spark.util.Utils
  * (L3, R3-1), (L3, R3-2),
  * (L4-1, R4-1), (L4-2, R4-1), (L4-1, R4-2), (L4-2, R4-2)
  */
+// 检测并优化“数据倾斜”的 join（主要针对 SortMergeJoin / ShuffledHashJoin），通过将倾斜的 shuffle partition 切分并对端复制这些切分，扩展并行度，从而避免单个 task 成为 straggler（过慢）
+// 找到“倾斜的 partition”；
+// 把倾斜 partition 切成若干子范围（split）；
 case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
   extends Rule[SparkPlan] {
 
@@ -62,6 +65,9 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
    * partition size * SKEW_JOIN_SKEWED_PARTITION_FACTOR and also larger than
    * SKEW_JOIN_SKEWED_PARTITION_THRESHOLD. Thus we pick the larger one as the skew threshold.
    */
+  // 计算把 partition 判定为“倾斜（skewed）”的阈值（bytes）
+  // medianSize：给定分区大小数组的中位数（来自 MapOutputStatistics）
+  // SQLConf.SKEW_JOIN_SKEWED_PARTITION_FACTOR：乘数因子（例如 3 表示比中位数大 3 倍就可能倾斜）
   def getSkewThreshold(medianSize: Long): Long = {
     conf.getConf(SQLConf.SKEW_JOIN_SKEWED_PARTITION_THRESHOLD).max(
       (medianSize * conf.getConf(SQLConf.SKEW_JOIN_SKEWED_PARTITION_FACTOR)).toLong)
@@ -72,6 +78,8 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
    * to split skewed partitions is the average size of non-skewed partition, or the
    * advisory partition size if avg size is smaller than it.
    */
+  // 确定用于切分倾斜 partition 的“目标子分区大小” —— 即把倾斜 partition 切到每个子分区大约这个大小。
+  // 如果没有非倾斜分区，退回到 advisorySize；否则取 advisorySize 与非倾斜分区平均值的最大值。
   private def targetSize(sizes: Array[Long], skewThreshold: Long): Long = {
     val advisorySize = conf.getConf(SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES)
     val nonSkewSizes = sizes.filter(_ <= skewThreshold)
@@ -81,7 +89,7 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
       math.max(advisorySize, nonSkewSizes.sum / nonSkewSizes.length)
     }
   }
-
+  // 判断根据 join 类型，是否允许对左侧/右侧分区做 split 优化
   private def canSplitLeftSide(joinType: JoinType) = {
     joinType == Inner || joinType == Cross || joinType == LeftSemi ||
       joinType == LeftAnti || joinType == LeftOuter
@@ -90,7 +98,7 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
   private def canSplitRightSide(joinType: JoinType) = {
     joinType == Inner || joinType == Cross || joinType == RightOuter
   }
-
+  // 格式化输出当前分区大小的统计信息（中位数 / 最大 / 最小 / 平均），用于 logDebug 打印，帮助调试与监控。
   private def getSizeInfo(medianSize: Long, sizes: Array[Long]): String = {
     s"median size: $medianSize, max size: ${sizes.max}, min size: ${sizes.min}, avg size: " +
       sizes.sum / sizes.length
@@ -108,16 +116,21 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
    * 4. Wrap the join right child with a special shuffle read that loads partition0 3 times by
    *    3 tasks separately.
    */
+  // 目标是检测并优化发生数据倾斜的 Shuffle Join（例如 SortMergeJoin 或 ShuffledHashJoin）
+  // 通过分析左右两侧 Shuffle 阶段的统计信息，确定哪些分区是倾斜的，然后为这些倾斜分区生成新的、更细粒度的 Shuffle 读取规范（ShufflePartitionSpec），从而将一个大的倾斜任务拆分成多个小任务并行执行
+  // 接受左右两侧的 Shuffle 阶段（ShuffleQueryStageExec）和 JoinType 作为输入
   private def tryOptimizeJoinChildren(
       left: ShuffleQueryStageExec,
       right: ShuffleQueryStageExec,
       joinType: JoinType): Option[(SparkPlan, SparkPlan)] = {
+    // 如果根据 Join 类型，左右两侧都不允许进行倾斜优化拆分（例如，某些外部 Join 类型），则直接返回 None，不进行后续处理
     val canSplitLeft = canSplitLeftSide(joinType)
     val canSplitRight = canSplitRightSide(joinType)
     if (!canSplitLeft && !canSplitRight) return None
 
     val leftSizes = left.mapStats.get.bytesByPartitionId
     val rightSizes = right.mapStats.get.bytesByPartitionId
+    // 检查并确保左右两侧 Shuffle 阶段的分区数量必须相等，这是基于 Join 的前提。
     assert(leftSizes.length == rightSizes.length)
     val numPartitions = leftSizes.length
     // We use the median size of the original shuffle partitions to detect skewed partitions.
@@ -132,25 +145,31 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
          |${getSizeInfo(rightMedSize, rightSizes)}
       """.stripMargin)
 
+    // 根据左侧分区大小的中位数计算出倾斜分区大小的阈值。大于此阈值的分区被视为倾斜。
     val leftSkewThreshold = getSkewThreshold(leftMedSize)
     val rightSkewThreshold = getSkewThreshold(rightMedSize)
+    // 计算理想的分区目标大小。这个目标大小通常是非倾斜分区的平均大小，或者是一个合理的上限
     val leftTargetSize = targetSize(leftSizes, leftSkewThreshold)
     val rightTargetSize = targetSize(rightSizes, rightSkewThreshold)
 
+    // 可变的数组缓冲区，用于存储优化后左侧 RDD 的所有 ShufflePartitionSpec
     val leftSidePartitions = mutable.ArrayBuffer.empty[ShufflePartitionSpec]
     val rightSidePartitions = mutable.ArrayBuffer.empty[ShufflePartitionSpec]
     var numSkewedLeft = 0
     var numSkewedRight = 0
     for (partitionIndex <- 0 until numPartitions) {
+
       val leftSize = leftSizes(partitionIndex)
+      // 判断左侧是否可拆分 且 当前分区大小大于左侧的倾斜阈值
       val isLeftSkew = canSplitLeft && leftSize > leftSkewThreshold
       val rightSize = rightSizes(partitionIndex)
       val isRightSkew = canSplitRight && rightSize > rightSkewThreshold
+      // 如果左侧不倾斜，则创建一个标准的 CoalescedPartitionSpec，表示该分区作为一个整体（从 partitionIndex 到 partitionIndex + 1）被读取
       val leftNoSkewPartitionSpec =
         Seq(CoalescedPartitionSpec(partitionIndex, partitionIndex + 1, leftSize))
       val rightNoSkewPartitionSpec =
         Seq(CoalescedPartitionSpec(partitionIndex, partitionIndex + 1, rightSize))
-
+      // 处理左侧分区（倾斜/非倾斜）
       val leftParts = if (isLeftSkew) {
         val skewSpecs = ShufflePartitionsUtil.createSkewPartitionSpecs(
           left.mapStats.get.shuffleId, partitionIndex, leftTargetSize)
@@ -164,7 +183,7 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
       } else {
         leftNoSkewPartitionSpec
       }
-
+      // 处理右侧分区（倾斜/非倾斜）
       val rightParts = if (isRightSkew) {
         val skewSpecs = ShufflePartitionsUtil.createSkewPartitionSpecs(
           right.mapStats.get.shuffleId, partitionIndex, rightTargetSize)
@@ -178,7 +197,7 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
       } else {
         rightNoSkewPartitionSpec
       }
-
+      // 生成新的分区对（笛卡尔积）
       for {
         leftSidePartition <- leftParts
         rightSidePartition <- rightParts
@@ -188,6 +207,7 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
       }
     }
     logDebug(s"number of skewed partitions: left $numSkewedLeft, right $numSkewedRight")
+    // 构建并返回优化后的 Join 子节点。
     if (numSkewedLeft > 0 || numSkewedRight > 0) {
       Some((
         SkewJoinChildWrapper(AQEShuffleReadExec(left, leftSidePartitions.toSeq)),
@@ -197,7 +217,8 @@ case class OptimizeSkewedJoin(ensureRequirements: EnsureRequirements)
       None
     }
   }
-
+  // 作用是在物理执行计划中找到符合条件的 Join 节点（SortMergeJoinExec 或 ShuffledHashJoinExec），然后尝试对其子节点进行数据倾斜优化
+  // 对计划树进行自底向上（bottom-up）的遍历和模式匹配转换
   def optimizeSkewJoin(plan: SparkPlan): SparkPlan = plan.transformUp {
     case smj @ SortMergeJoinExec(_, _, joinType, _,
         s1 @ SortExec(_, _, ShuffleStage(left: ShuffleQueryStageExec), _),

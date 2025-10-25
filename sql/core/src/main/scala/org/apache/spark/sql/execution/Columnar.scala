@@ -484,20 +484,29 @@ case class RowToColumnarExec(child: SparkPlan) extends RowToColumnarTransition {
  * @param columnarRules custom columnar rules
  * @param outputsColumnar whether or not the produced plan should output columnar format.
  */
+// Spark 物理优化器中的一个 Rule
+// 核心作用是管理和实现 Spark 的矢量化（Columnar）执行
+// 应用用户定义的列式规则： 在插入转换节点的前后，应用用户或扩展库提供的 ColumnarRule，将标准的行式操作符替换为高效的列式（矢量化）操作符（例如，将 SortExec 替换为 ColumnarSortExec）
+// 智能插入转换节点： 根据计划中节点对列式或行式数据的支持情况，智能地插入必要的 RowToColumnarExec（行转列）和 ColumnarToRowExec（列转行）节点。
 case class ApplyColumnarRulesAndInsertTransitions(
-    columnarRules: Seq[ColumnarRule],
-    outputsColumnar: Boolean)
+    columnarRules: Seq[ColumnarRule], // 自定义列式优化规则序列。 这是一个由用户或 Spark 扩展提供的 ColumnarRule 列表，用于定义如何将标准的行式物理操作符转换为其对应的列式（矢量化）实现
+    outputsColumnar: Boolean) // 最终输出格式要求。 一个布尔值，指示经过本规则处理后生成的整个计划树的根节点是否应该输出列式数据格式
   extends Rule[SparkPlan] {
 
   /**
    * Inserts an transition to columnar formatted data.
    */
+    // 插入行转列（RowToColumnar）
   private def insertRowToColumnar(plan: SparkPlan): SparkPlan = {
     if (!plan.supportsColumnar) {
       // The tree feels kind of backwards
       // Columnar Processing will start here, so transition from row to columnar
+      // 如果当前节点 plan 不支持列式 (!plan.supportsColumnar)：表明列式处理必须从这里开始。
+      // 它会在 plan 外部封装一个 RowToColumnarExec 节点，并对 plan 的子节点递归调用 insertTransitions
       RowToColumnarExec(insertTransitions(plan, outputsColumnar = false))
     } else if (!plan.isInstanceOf[RowToColumnarTransition]) {
+      // 如果当前节点支持列式且不是 RowToColumnar 转换本身
+      // 递归调用自身处理其子节点，继续向下传播列式处理的需求
       plan.withNewChildren(plan.children.map(insertRowToColumnar))
     } else {
       plan
@@ -507,16 +516,23 @@ case class ApplyColumnarRulesAndInsertTransitions(
   /**
    * Inserts RowToColumnarExecs and ColumnarToRowExecs where needed.
    */
+  // 插入所有转换（RowToColumnar 和 ColumnarToRow）
+  // 负责递归遍历并插入所有必要转换节点的核心逻辑方法
   private def insertTransitions(plan: SparkPlan, outputsColumnar: Boolean): SparkPlan = {
+    // 向下传播列式需求
+    // 如果父节点要求列式输出，则调用 insertRowToColumnar 递归方法，确保启动列式处理
     if (outputsColumnar) {
       insertRowToColumnar(plan)
     } else if (plan.supportsColumnar && !plan.supportsRowBased) {
+      // 插入列转行（ColumnarToRow）： 如果父节点不要求列式输出 (outputsColumnar 为 false)，
+      // 但当前节点 plan 只支持列式输出（这意味着它不能产生行式数据），则必须在其外部插入 ColumnarToRowExec 节点
       // `outputsColumnar` is false but the plan only outputs columnar format, so add a
       // to-row transition here.
       ColumnarToRowExec(insertRowToColumnar(plan))
     } else if (plan.isInstanceOf[ColumnarToRowTransition]) {
       plan
     } else {
+      // 递归处理子节点： 对于普通节点，它递归调用自身处理所有子节点
       val outputsColumnar = plan match {
         // With planned write, the write command invokes child plan's `executeWrite` which is
         // neither columnar nor row-based.

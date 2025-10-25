@@ -25,12 +25,16 @@ import org.apache.spark.sql.execution.exchange.{ShuffleExchangeLike, ShuffleOrig
  * A rule that may create [[AQEShuffleReadExec]] on top of [[ShuffleQueryStageExec]] and change the
  * plan output partitioning. The AQE framework will skip the rule if it leads to extra shuffles.
  */
+// 抽象出所有运行时作用于已完成 Shuffle 阶段（ShuffleQueryStageExec）之上，并可能插入 AQEShuffleReadExec 节点的优化规则
+// 这类规则负责在 Shuffle 阶段完成后，根据收集到的运行时统计信息（如分区大小），动态地改变下游数据的读取方式
 trait AQEShuffleReadRule extends Rule[SparkPlan] {
   /**
    * Returns the list of [[ShuffleOrigin]]s supported by this rule.
    */
+  // 受支持的 Shuffle 来源（抽象）
+  // 要求所有继承此特质的具体优化规则必须实现它，以返回一个 ShuffleOrigin 列表。ShuffleOrigin 标记了 Shuffle 操作在逻辑计划中的来源（例如 JOIN, REPARTITION, AGGREGATE 等）
   protected def supportedShuffleOrigins: Seq[ShuffleOrigin]
-
+  // 检查 Shuffle 是否受支持
   protected def isSupported(shuffle: ShuffleExchangeLike): Boolean = {
     supportedShuffleOrigins.contains(shuffle.shuffleOrigin)
   }

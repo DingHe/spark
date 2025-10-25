@@ -42,25 +42,29 @@ import org.apache.spark.util.{SparkFatalException, ThreadUtils}
 /**
  * Common trait for all broadcast exchange implementations to facilitate pattern matching.
  */
-//用于广播交换（Broadcast Exchange）实现的公共特质（trait），目的是为各种广播实现提供统一的结构，方便进行模式匹配（pattern matching）。
-// 广播交换通常用于小表的广播式分发，以加速 Broadcast Join 操作。
+// BroadcastExchangeLike 是 Spark SQL 物理计划中 广播数据交换（Broadcast Exchange） 的通用抽象。
+// 它继承自 Exchange（即数据交换算子基类），用于定义 广播表的准备、提交、和运行时统计 等行为。
+// Spark 在执行广播 Join（如 BroadcastHashJoinExec、BroadcastNestedLoopJoinExec）时，
+// 会先把一端的数据（通常是小表）广播到所有 Executor，
 trait BroadcastExchangeLike extends Exchange {
 
   /**
    * The broadcast run ID in job tag
    */
+  // 为每一次广播任务生成一个唯一的运行 ID。
   val runId: UUID = UUID.randomUUID
 
   /**
    * The broadcast job tag
    */
-    //用于标识广播作业的标签
+  // 生成广播任务的标签字符串，用于日志记录和任务标识。
   def jobTag: String = s"broadcast exchange (runId ${runId.toString})"
 
   /**
    * The asynchronous job that prepares the broadcast relation.
    */
-  //该方法返回一个异步任务（Future），用于准备广播数据（Broadcast[Any]）
+  // 定义一个返回广播数据的异步任务（Future）
+  // Broadcast[Any] 是 Spark 的广播变量封装（分发到各个 Executor 上的只读数据）
   def relationFuture: Future[broadcast.Broadcast[Any]]
 
   /**
@@ -72,12 +76,13 @@ trait BroadcastExchangeLike extends Exchange {
   final def submitBroadcastJob: scala.concurrent.Future[broadcast.Broadcast[Any]] = executeQuery {
     completionFuture
   }
-  //具体的广播执行逻辑由子类提供，BroadcastExchangeLike 只定义了通用接口
+  // 具体的广播执行逻辑由子类提供，BroadcastExchangeLike 只定义了通用接口
   protected def completionFuture: scala.concurrent.Future[broadcast.Broadcast[Any]]
 
   /**
    * Returns the runtime statistics after broadcast materialization.
    */
+  // 获取广播任务完成后的运行时统计信息。
   def runtimeStatistics: Statistics
 }
 

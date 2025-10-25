@@ -43,7 +43,7 @@ import org.apache.spark.util.ThreadUtils
  * @param child the BroadcastExchange or the AdaptiveSparkPlan with BroadcastQueryStageExec
  *              from the build side of the join
  */
-//用于执行广播子查询的物理计划操作节点。这个类涉及到子查询的广播执行，主要用于查询优化阶段通过广播小表以提高查询效率，尤其是在执行涉及子查询的连接操作时
+// 用于执行广播子查询的物理计划操作节点。这个类涉及到子查询的广播执行，主要用于查询优化阶段通过广播小表以提高查询效率，尤其是在执行涉及子查询的连接操作时
 case class SubqueryBroadcastExec(
     name: String, //自定义的名称属性，用于为 SubqueryBroadcastExec 实例提供标识。此名称在日志记录和错误跟踪时很有用
     index: Int,  //buildKeys 列表中子查询对应的键的索引位置

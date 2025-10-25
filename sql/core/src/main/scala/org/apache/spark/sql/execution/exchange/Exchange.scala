@@ -40,8 +40,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 // Stage 边界： 在 Spark 的 DAGScheduler 中，Exchange 是划分 Stage 的主要边界。每当数据需要跨网络、跨执行器进行大规模重组时，就会插入一个 Exchange 节点，将查询计划划分为两个或更多个 Stage
 // 基类抽象： 它是所有具体数据交换策略（如 ShuffleExchangeExec、BroadcastExchangeExec 等）的抽象父类，提供了它们共有的基本结构和属性
 abstract class Exchange extends UnaryExecNode {
-  //重要。 它定义了 Exchange 节点完成数据交换后，其输出数据集的列结构（Schema）。
-  // 对于 Exchange 而言，它只是重组数据，而不改变列的结构。因此，它的输出属性直接继承自其子节点（child.output）
+  //  重要。 它定义了 Exchange 节点完成数据交换后，其输出数据集的列结构（Schema）。
+  //  对于 Exchange 而言，它只是重组数据，而不改变列的结构。因此，它的输出属性直接继承自其子节点（child.output）
   override def output: Seq[Attribute] = child.output  //表示子节点（child）的输出属性
   // 用于标识该节点的类型。它返回一个包含 EXCHANGE 枚举值的序列，允许 Spark 的规则和优化器快速识别和匹配所有 Exchange 类型的节点
   final override val nodePatterns: Seq[TreePattern] = Seq(EXCHANGE)

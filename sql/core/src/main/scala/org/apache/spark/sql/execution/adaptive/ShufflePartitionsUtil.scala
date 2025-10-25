@@ -378,16 +378,21 @@ object ShufflePartitionsUtil extends Logging {
    * Splits the skewed partition based on the map size and the target partition size
    * after split, and create a list of `PartialReducerPartitionSpec`. Returns None if can't split.
    */
+  // 针对一个数据倾斜（Skewed）的 $\text{Reducer}$ 分区，根据其 $\text{Map}$ 阶段生成的文件大小，将其拆分成多个小的、目标大小相近的子分区，
+  // 并返回这些子分区的规范列表（$\text{PartialReducerPartitionSpec}$）
   def createSkewPartitionSpecs(
-      shuffleId: Int,
-      reducerId: Int,
-      targetSize: Long,
+      shuffleId: Int, // $\text{Shuffle}$ 阶段的唯一标识符。
+      reducerId: Int, // 当前需要被拆分的 $\text{Reducer}$ 分区 $\text{ID}$。
+      targetSize: Long, // 拆分后每个新子分区（$\text{Partial Reducer}$）的目标数据大小。
       smallPartitionFactor: Double = SMALL_PARTITION_FACTOR)
   : Option[Seq[PartialReducerPartitionSpec]] = {
+    // 获取 $\text{Map}$ 阶段输出文件大小列表。
     val mapPartitionSizes = getMapSizesForReduceId(shuffleId, reducerId)
     if (mapPartitionSizes.exists(_ < 0)) return None
+    // 计算合并后的新子分区的起始 $\text{Map}$ 索引。
     val mapStartIndices = splitSizeListByTargetSize(
       mapPartitionSizes, targetSize, smallPartitionFactor)
+
     if (mapStartIndices.length > 1) {
       Some(mapStartIndices.indices.map { i =>
         val startMapIndex = mapStartIndices(i)

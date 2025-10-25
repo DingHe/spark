@@ -38,39 +38,50 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  * A query stage is an independent subgraph of the query plan. AQE framework will materialize its
  * output before proceeding with further operators of the query plan. The data statistics of the
  * materialized output can be used to optimize the rest of the query plan.
- *///查询阶段是查询计划的独立子图，主要涉及到查询计划的执行与物化操作
+ */
+//查询阶段是查询计划的独立子图，主要涉及到查询计划的执行与物化操作
+// QueryStageExec 是 Spark 中用于表示 一个可独立执行的查询阶段（Query Stage） 的抽象执行节点
+// 在 Spark 的 自适应执行框架（Adaptive Query Execution, AQE） 中，查询会被划分为多个“阶段”（Stage），每个阶段可以单独执行、缓存结果，然后被后续阶段复用。
+// Shuffle 相关阶段（ShuffleQueryStageExec）：表示一个需要进行 shuffle 的阶段；
+// Broadcast 相关阶段（BroadcastQueryStageExec）：表示一个需要广播的阶段。
 abstract class QueryStageExec extends LeafExecNode {
 
   /**
    * An id of this query stage which is unique in the entire query plan.
    */
-  val id: Int  //表示当前查询阶段的唯一标识符
+  // 表示当前查询阶段在整个查询计划中的唯一标识符。
+  val id: Int
 
   /**
    * The sub-tree of the query plan that belongs to this query stage.
    */
-  val plan: SparkPlan  //当前查询阶段关联的查询计划子树
+  // 该阶段对应的 子查询计划（子树）。
+  // 这个子计划是实际执行逻辑所在（比如 ShuffleExchangeExec、BroadcastExchangeExec 的输入计划）
+  val plan: SparkPlan
 
   /**
    * Materialize this query stage, to prepare for the execution, like submitting map stages,
    * broadcasting data, etc. The caller side can use the returned [[Future]] to wait until this
    * stage is ready.
-   *///物化当前查询阶段，它会触发对查询阶段的实际执行（如提交 Map 阶段、广播数据等）
+   */
+  // 触发阶段的“物化”操作（即实际执行），并返回一个 Future，用于异步等待结果准备完成。
   final def materialize(): Future[Any] = {
     logDebug(s"Materialize query stage ${this.getClass.getSimpleName}: $id")
     doMaterialize()
   }
-  //子类重写，负责实际的物化逻辑
+  // 子类重写，负责实际的物化逻辑
   protected def doMaterialize(): Future[Any]
 
   /**
    * Returns the runtime statistics after stage materialization.
-   */ //获取当前查询阶段物化后的运行时统计信息
+   */
+  //获取当前查询阶段物化后的运行时统计信息
   def getRuntimeStatistics: Statistics
 
   /**
    * Compute the statistics of the query stage if executed, otherwise None.
-   *///查询阶段已经物化，则计算并返回该阶段的统计信息。如果尚未物化，返回 None
+   */
+  //如果阶段已经物化（isMaterialized == true），则计算并返回运行时统计信息；
   def computeStats(): Option[Statistics] = if (isMaterialized) {
     val runtimeStats = getRuntimeStatistics
     val dataSize = runtimeStats.sizeInBytes.max(0)
@@ -80,21 +91,26 @@ abstract class QueryStageExec extends LeafExecNode {
   } else {
     None
   }
-
+  // 存储当前阶段的执行结果（例如 RDD、Broadcast 对象等）
+  // 当阶段“物化”后，结果会被放入这个引用中。
   @transient
-  @volatile  //存储查询阶段的结果
+  @volatile
   protected var _resultOption = new AtomicReference[Option[Any]](None)
 
   private[adaptive] def resultOption: AtomicReference[Option[Any]] = _resultOption
-  final def isMaterialized: Boolean = resultOption.get().isDefined //判断当前查询阶段是否已经物化，如果 _resultOption 中有值，说明已经物化
+  //判断当前查询阶段是否已经物化，如果 _resultOption 中有值，说明已经物化
+  final def isMaterialized: Boolean = resultOption.get().isDefined
 
+  // 记录该阶段执行过程中是否出现异常。
+  // 如果有错误，会保存异常对象；否则为 None。
   @transient
   @volatile
   protected var _error = new AtomicReference[Option[Throwable]](None)
 
   def error: AtomicReference[Option[Throwable]] = _error
+  //判断该阶段是否有执行错误
   final def hasFailed: Boolean = _error.get().isDefined
-
+  // 继承 SparkPlan 的输出属性定义，直接委托给内部的 plan
   override def output: Seq[Attribute] = plan.output
   override def outputPartitioning: Partitioning = plan.outputPartitioning
   override def outputOrdering: Seq[SortOrder] = plan.outputOrdering
@@ -152,7 +168,8 @@ abstract class QueryStageExec extends LeafExecNode {
  *      another job to execute the further operators.
  *   2. Broadcast query stage. This stage materializes its output to an array in driver JVM. Spark
  *      broadcasts the array before executing the further operators.
- */ //有两种交换查询阶段，shuffle查询阶段和广播查询阶段
+ */
+//有两种交换查询阶段，shuffle查询阶段和广播查询阶段
 abstract class ExchangeQueryStageExec extends QueryStageExec {
 
   /**
@@ -176,25 +193,31 @@ abstract class ExchangeQueryStageExec extends QueryStageExec {
  * @param id the query stage id.
  * @param plan the underlying plan.
  * @param _canonicalized the canonicalized plan before applying query stage optimizer rules.
- */ //处理 shuffle 查询阶段的一个执行计划，通常用于处理涉及到 ShuffleExchangeLike 或 ReusedExchangeExec 类型的子查询
+ */
+// 代表 一个执行 Shuffle 操作的查询阶段，表示 一个独立的 shuffle 查询阶段
+// 在 Spark SQL 的自适应执行（AQE）中，Spark 会把一个逻辑查询计划划分成多个可以独立执行的阶段（QueryStage），每个阶段都可以单独运行、缓存、并被后续阶段复用。
+// 当一个阶段的输出需要通过 shuffle 重新分区传递给下游阶段时，就会生成一个 ShuffleQueryStageExec
 case class ShuffleQueryStageExec(
-    override val id: Int,
-    override val plan: SparkPlan,
-    override val _canonicalized: SparkPlan) extends ExchangeQueryStageExec {
+    override val id: Int, // // 阶段唯一ID
+    override val plan: SparkPlan, // 子节点（plan）必须是 ShuffleExchangeLike 或 ReusedExchangeExec
+    override val _canonicalized: SparkPlan) // AQE优化前的标准化计划
+  extends ExchangeQueryStageExec {
 
-  @transient val shuffle = plan match {  //表示当前查询阶段的 shuffle 操作
+  // 确定当前阶段中实际的 shuffle 操作对象（即 ShuffleExchangeLike 实例）
+  @transient val shuffle = plan match {
     case s: ShuffleExchangeLike => s
     case ReusedExchangeExec(_, s: ShuffleExchangeLike) => s
     case _ =>
       throw new IllegalStateException(s"wrong plan for shuffle stage:\n ${plan.treeString}")
   }
-
+  // 获取 shuffle 建议的分区大小
   def advisoryPartitionSize: Option[Long] = shuffle.advisoryPartitionSize
-
+  // 表示提交 shuffle 作业（map 阶段）的异步任务
+  // 会触发 Spark 提交一个 map 阶段（即执行 shuffle 的上游计算）
   @transient private lazy val shuffleFuture = shuffle.submitShuffleJob
 
   override protected def doMaterialize(): Future[Any] = shuffleFuture
-
+  // 为当前阶段创建一个“可重用”的新实例。
   override def newReuseInstance(
       newStageId: Int, newOutput: Seq[Attribute]): ExchangeQueryStageExec = {
     val reuse = ShuffleQueryStageExec(
@@ -216,6 +239,7 @@ case class ShuffleQueryStageExec(
    * Returns the Option[MapOutputStatistics]. If the shuffle map stage has no partition,
    * this method returns None, as there is no map statistics.
    */
+    // 获取当前阶段的 shuffle map 任务统计信息。
   def mapStats: Option[MapOutputStatistics] = {
     assert(resultOption.get().isDefined, s"${getClass.getSimpleName} should already be ready")
     val stats = resultOption.get().get.asInstanceOf[MapOutputStatistics]
@@ -231,7 +255,8 @@ case class ShuffleQueryStageExec(
  * @param id the query stage id.
  * @param plan the underlying plan.
  * @param _canonicalized the canonicalized plan before applying query stage optimizer rules.
- */ //用于处理广播查询。它的子查询是一个 BroadcastExchangeLike 或 ReusedExchangeExec
+ */
+//用于处理广播查询。它的子查询是一个 BroadcastExchangeLike 或 ReusedExchangeExec
 case class BroadcastQueryStageExec(
     override val id: Int,
     override val plan: SparkPlan,

@@ -693,7 +693,7 @@ object SQLConf {
       .version("3.0.0")
       .booleanConf
       .createWithDefault(true)  //是否启用自适应执行中的分区合并功能
-
+  // 检查是否启用了“并行度优先”策略
   val COALESCE_PARTITIONS_PARALLELISM_FIRST =
     buildConf("spark.sql.adaptive.coalescePartitions.parallelismFirst")
       .doc("When true, Spark does not respect the target size specified by " +
