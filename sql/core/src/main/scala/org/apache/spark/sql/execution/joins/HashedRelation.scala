@@ -38,12 +38,17 @@ import org.apache.spark.util.{KnownSizeEstimation, Utils}
  * Interface for a hashed relation by some key. Use [[HashedRelation.apply]] to create a concrete
  * object.
  */
+// 代表一个已经构建完成、基于哈希键组织的关系表（通常是 Join 操作中较小的那个表，即 Build Side）。它是一个高度优化的查找结构，用于在 Join 期间提供快速的键查找能力
+// 核心职能： 封装了不同类型的哈希结构（如基于内存数组、基于 BytesToBytesMap 或其他自定义结构），提供统一的 API，允许查询另一侧（Probe Side）的数据记录，快速查找匹配的行。
+// 应用场景： 主要用于 Spark SQL 的物理操作符，如 BroadcastHashJoinExec，在查询执行器上查找被广播或 Shuffle 后的数据。
 private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
   /**
    * Returns matched rows.
    *
    * Returns null if there is no matched rows.
    */
+  // 获取匹配行（多行）。
+  // 根据给定的 Join Key (InternalRow 类型) 进行查找。返回一个匹配行（即被 Join 的另一侧数据）的迭代器。如果没有匹配行，则返回 null
   def get(key: InternalRow): Iterator[InternalRow]
 
   /**
@@ -51,6 +56,8 @@ private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
    *
    * Returns null if there is no matched rows.
    */
+  // 获取匹配行（LongKey 优化）
+  // 针对单列且列类型为 LongType 的特殊 Join Key 优化。提供更快的基于原始 Long 值的查找
   def get(key: Long): Iterator[InternalRow] = {
     throw new UnsupportedOperationException
   }
@@ -58,11 +65,15 @@ private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
   /**
    * Returns the matched single row.
    */
+  // 获取匹配的单行
+  // 用于键唯一（keyIsUnique = true）或只需要返回第一个匹配行的场景。返回匹配的单行数据。
   def getValue(key: InternalRow): InternalRow
 
   /**
    * Returns the matched single row with key that have only one column of LongType.
    */
+  // 获取匹配的单行（LongKey 优化）。
+  // 针对单列 LongType 键的单行查找优化
   def getValue(key: Long): InternalRow = {
     throw new UnsupportedOperationException
   }
@@ -72,6 +83,8 @@ private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
    *
    * Returns null if there is no matched rows.
    */
+  // 获取键索引和匹配行。
+  // 根据键查找匹配行，返回一个包含键索引和匹配行的迭代器
   def getWithKeyIndex(key: InternalRow): Iterator[ValueRowWithKeyIndex] = {
     throw new UnsupportedOperationException
   }
@@ -82,6 +95,8 @@ private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
    *
    * Returns null if there is no matched rows.
    */
+  // 获取键索引和匹配单行。
+  // 针对唯一键的场景，返回包含键索引和匹配单行的封装对象。
   def getValueWithKeyIndex(key: InternalRow): ValueRowWithKeyIndex = {
     throw new UnsupportedOperationException
   }
@@ -89,6 +104,8 @@ private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
   /**
    * Returns an iterator for keys index and rows of InternalRow type.
    */
+  // 迭代所有行和键索引。
+  // 返回一个迭代器，遍历哈希关系中所有存储的行及其对应的键索引。
   def valuesWithKeyIndex(): Iterator[ValueRowWithKeyIndex] = {
     throw new UnsupportedOperationException
   }
@@ -96,6 +113,8 @@ private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
   /**
    * Returns the maximum number of allowed keys index.
    */
+  // 返回最大键索引数
+  // 返回哈希关系中允许的最大键索引数量。用于预分配数组或管理索引空间。
   def maxNumKeysIndex: Int = {
     throw new UnsupportedOperationException
   }
@@ -103,21 +122,27 @@ private[execution] sealed trait HashedRelation extends KnownSizeEstimation {
   /**
    * Returns true iff all the keys are unique.
    */
+  // 键是否唯一
+  // 返回 true 当且仅当该哈希关系中的所有键都是唯一的。如果为 true，查找操作可以优化为只返回单个匹配行（通过 getValue）
   def keyIsUnique: Boolean
 
   /**
    * Returns an iterator for keys of InternalRow type.
    */
+  // 返回所有键的迭代器。
+  // 返回一个迭代器，遍历哈希关系中存储的所有 Join Key（InternalRow 类型）
   def keys(): Iterator[InternalRow]
 
   /**
    * Returns a read-only copy of this, to be safely used in current thread.
    */
+  // 创建只读副本
   def asReadOnlyCopy(): HashedRelation
 
   /**
    * Release any used resources.
    */
+  // 释放资源
   def close(): Unit
 }
 
@@ -204,9 +229,12 @@ private[execution] class ValueRowWithKeyIndex {
  *  [number of keys] [number of fields]
  *  [size of key] [size of value] [key bytes] [bytes for value]
  */
+// 存储和查找数据： 它以键值对的形式高效存储一个关系表（通常是广播连接中的小表），键和值都是 UnsafeRow 格式
+// 利用堆外内存： 它使用 Spark 的堆外内存管理工具 BytesToBytesMap 作为底层存储。这使得数据的存储和查找操作完全在序列化字节数组上进行，避免了 JVM 对象的开销和垃圾回收（GC）的压力，极大地提高了 Join 查找的性能和内存效率。
+// 支持序列化： 它实现了 Externalizable 和 KryoSerializable 接口，意味着它可以被高效地序列化和反序列化，这对于通过网络进行广播（Broadcast）传输至其他 Executor 节点至关重要。
 private[joins] class UnsafeHashedRelation(
-    private var numKeys: Int,
-    private var numFields: Int,
+    private var numKeys: Int, // 键的字段数量，Join Key 中包含的字段个数。用于后续创建正确的 UnsafeRow 实例来表示键。
+    private var numFields: Int, // 值的字段数量。被哈希存储的行（值）中包含的字段个数。用于后续创建正确的 UnsafeRow 实例来表示值。
     private var binaryMap: BytesToBytesMap)
   extends HashedRelation with Externalizable with KryoSerializable {
 
@@ -221,11 +249,13 @@ private[joins] class UnsafeHashedRelation(
   override def estimatedSize: Long = binaryMap.getTotalMemoryConsumption
 
   // re-used in get()/getValue()/getWithKeyIndex()/getValueWithKeyIndex()/valuesWithKeyIndex()
+  // 结果行复用对象
   var resultRow = new UnsafeRow(numFields)
 
   // re-used in getWithKeyIndex()/getValueWithKeyIndex()/valuesWithKeyIndex()
+  // 键索引结果复用对象
   val valueRowWithKeyIndex = new ValueRowWithKeyIndex
-
+  // 获取匹配行迭代器。
   override def get(key: InternalRow): Iterator[InternalRow] = {
     val unsafeKey = key.asInstanceOf[UnsafeRow]
     val map = binaryMap  // avoid the compiler error
@@ -449,15 +479,15 @@ private[joins] class UnsafeHashedRelation(
 }
 
 private[joins] object UnsafeHashedRelation {
-
+  // 作为一个工厂，专门负责**构建（Build）**高效的、基于 UnsafeRow 和 BytesToBytesMap 的哈希关系结构
   def apply(
-      input: Iterator[InternalRow],
-      key: Seq[Expression],
+      input: Iterator[InternalRow], // 输入数据，待构建哈希关系的输入数据行迭代器，通常是 Join 中 Build Side 的结果。期望这些行已经是 UnsafeRow 格式
+      key: Seq[Expression], // Join Key 表达式。定义了用于构建哈希键的表达式序列（例如，t1.colA, t1.colB）。这些表达式将用于生成 UnsafeProjection
       sizeEstimate: Int,
-      taskMemoryManager: TaskMemoryManager,
-      isNullAware: Boolean = false,
-      allowsNullKey: Boolean = false,
-      ignoresDuplicatedKey: Boolean = false): HashedRelation = {
+      taskMemoryManager: TaskMemoryManager, // 负责管理当前任务所使用的内存，包括用于 BytesToBytesMap 的堆外内存或堆上内存
+      isNullAware: Boolean = false, // 空值敏感标志。默认为 false。如果为 true，表示这是一个空值敏感半连接（Null-Aware Anti Join, NAAJ）。如果输入数据中出现任何含 NULL 的键，则整个 HashedRelation 结构会被废弃，直接返回特殊的 HashedRelationWithAllNullKeys，触发特定的执行逻辑
+      allowsNullKey: Boolean = false, // 允许空键标志。默认为 false。如果为 true，则允许包含 NULL 值的键参与哈希映射的构建。这用于空值安全等值连接（EqualNullSafe）
+      ignoresDuplicatedKey: Boolean = false): HashedRelation = { // 忽略重复键标志。默认为 false。如果为 true，在向映射中插入键值对时，如果键已经存在，则忽略当前行（即不存储重复的值）
     require(!(isNullAware && allowsNullKey),
       "isNullAware and allowsNullKey cannot be enabled at same time")
 
@@ -470,6 +500,7 @@ private[joins] object UnsafeHashedRelation {
       pageSizeBytes)
 
     // Create a mapping of buildKeys -> rows
+    // 创建键投影器。
     val keyGenerator = UnsafeProjection.create(key)
     var numFields = 0
     while (input.hasNext) {

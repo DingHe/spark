@@ -49,9 +49,9 @@ import org.apache.spark.sql.streaming.OutputMode
  * writing libraries should instead consider using the stable APIs provided in
  * [[org.apache.spark.sql.sources]]
  */
-//用于将逻辑计划转换为具体的 SparkPlan。SparkPlan 是 Spark SQL 中的物理执行计划，表示查询的实际执行步骤
+// 用于将逻辑计划转换为具体的 SparkPlan。SparkPlan 是 Spark SQL 中的物理执行计划，表示查询的实际执行步骤
 abstract class SparkStrategy extends GenericStrategy[SparkPlan] {
-  //PlanLater 是一个特殊的物理计划节点，表示该计划将在后续阶段填充或展开
+  // PlanLater 是一个特殊的物理计划节点，表示该计划将在后续阶段填充或展开
   override protected def planLater(plan: LogicalPlan): SparkPlan = PlanLater(plan)
 }
 //物理节点的占位符
@@ -170,36 +170,41 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
    *     Supports both equi-joins and non-equi-joins.
    *     Supports only inner like joins.
    */
-  //根据连接策略提示、连接键的可用性以及连接关系的大小选择合适的物理执行计划。
+  // 根据连接策略提示、连接键的可用性以及连接关系的大小选择合适的物理执行计划。
   // 该策略支持多种连接方法，包括广播哈希连接（Broadcast Hash Join，BHJ）、洗牌哈希连接（Shuffle Hash Join，SHJ）、
   // 洗牌排序合并连接（Shuffle Sort Merge Join，SMJ）、广播嵌套循环连接（Broadcast Nested Loop Join，BNLJ）等
   object JoinSelection extends Strategy with JoinSelectionHelper {
     private val hintErrorHandler = conf.hintErrorHandler //存储了用于处理连接提示错误的处理器
-    //检查连接提示中的构建侧是否合法
+
+    // 主要作用是检查并报告由用户显式提供的连接提示（BROADCAST 或 SHUFFLE_HASH）是否因为连接类型（JoinType）的限制而无法实现
     private def checkHintBuildSide(
-        onlyLookingAtHint: Boolean,  //是否仅查看提示
-        buildSide: Option[BuildSide], //构建侧（左侧或右侧）的选择
+        onlyLookingAtHint: Boolean,  // 是否仅查看提示
+        buildSide: Option[BuildSide], // 构建侧（左侧或右侧）的选择
         joinType: JoinType,
-        hint: JoinHint, //连接提示
-        isBroadcast: Boolean): Unit = { //是否是广播连接
+        hint: JoinHint, // 连接提示
+        isBroadcast: Boolean): Unit = { // 是否是广播连接
+      // 主要用于副作用（记录警告或错误）
       def invalidBuildSideInHint(hintInfo: HintInfo, buildSide: String): Unit = {
         hintErrorHandler.joinHintNotSupported(hintInfo,
           s"build $buildSide for ${joinType.sql.toLowerCase(Locale.ROOT)} join")
       }
 
       if (onlyLookingAtHint && buildSide.isEmpty) {
-        if (isBroadcast) { //如果连接是广播连接，检查是否有广播提示指向左侧或右侧
+        if (isBroadcast) { // 如果连接是广播连接，检查是否有广播提示指向左侧或右侧
           // check broadcast hash join
           if (hintToBroadcastLeft(hint)) invalidBuildSideInHint(hint.leftHint.get, "left")
           if (hintToBroadcastRight(hint)) invalidBuildSideInHint(hint.rightHint.get, "right")
-        } else { //如果是洗牌哈希连接，也进行类似检查
+        } else {
+          // 如果是洗牌哈希连接，也进行类似检查
           // check shuffle hash join
           if (hintToShuffleHashJoinLeft(hint)) invalidBuildSideInHint(hint.leftHint.get, "left")
           if (hintToShuffleHashJoinRight(hint)) invalidBuildSideInHint(hint.rightHint.get, "right")
         }
       }
     }
-    //检查连接提示是否适用于非等值连接
+
+    // 检查连接提示是否适用于非等值连接
+    // shuffle hash join 和 sort merge join不支持非等值连接
     private def checkHintNonEquiJoin(hint: JoinHint): Unit = {
       if (hintToShuffleHashJoin(hint) || hintToPreferShuffleHashJoin(hint) ||
           hintToSortMergeJoin(hint)) {
@@ -208,31 +213,44 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
           "no equi-join keys")
       }
     }
-    //基于逻辑计划选择合适的物理连接计划
+    // 将逻辑查询计划中的 Join 节点转换为一个或多个具体的物理执行计划（SparkPlan），并按照预设的优先级和提示来选择最佳的连接策略。
+    // 整个方法通过模式匹配（plan match）分为两大块：等值连接（Equi-Join） 和 非等值连接（Non-Equi Join）
     def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
-
+      // 如果用户在 SQL 查询中使用了 Join Hints（例如 /*+ BROADCAST(table) */），优化器会严格按照以下优先级应用提示，并在满足 Join 类型要求时立即选中对应的策略：
+      // 优先级如下：
       // If it is an equi-join, we first look at the join hints w.r.t. the following order:
       //   1. broadcast hint: pick broadcast hash join if the join type is supported. If both sides
       //      have the broadcast hints, choose the smaller side (based on stats) to broadcast.
+      // 1、如果 Join 类型支持 BHJ，并且任一侧有广播提示，则选中。如果两侧都有广播提示，优化器会根据统计信息选择较小的一侧进行广播，以最大化效率。
       //   2. sort merge hint: pick sort merge join if join keys are sortable.
+      // 2、 选中 SMJ，前提是 Join 键必须可排序（这是 SMJ 的基本要求）
       //   3. shuffle hash hint: We pick shuffle hash join if the join type is supported. If both
       //      sides have the shuffle hash hints, choose the smaller side (based on stats) as the
       //      build side.
+      // 3 、如果 Join 类型支持 SHJ，则选中。如果两侧都有 SHJ 提示，优化器会选择根据统计信息选择较小的一侧作为 Build Side（构建哈希表的一侧）
       //   4. shuffle replicate NL hint: pick cartesian product if join type is inner like.
-      //
+      // 4、 选中这个最昂贵的策略，前提是 Join 类型必须是内连接 (Inner like)。
       // If there is no hint or the hints are not applicable, we follow these rules one by one:
+      // 如果没有任何有效的 Join 提示，或者提示指定的策略不适用（例如，Join 键不可排序），优化器将依次尝试以下策略，直到找到第一个适用的方案：
       //   1. Pick broadcast hash join if one side is small enough to broadcast, and the join type
       //      is supported. If both sides are small, choose the smaller side (based on stats)
       //      to broadcast.
+      // 1、 如果其中一侧的估计大小小于 spark.sql.autoBroadcastJoinThreshold 配置阈值，并且 Join 类型支持 BHJ，则选中。如果两侧都足够小，则选择较小的一侧进行广播。
       //   2. Pick shuffle hash join if one side is small enough to build local hash map, and is
       //      much smaller than the other side, and `spark.sql.join.preferSortMergeJoin` is false.
+      // 2、 如果以下三个条件同时满足： 1. 其中一侧足够小，可以在单个任务内存中构建本地哈希表（canBuildLocalHashMapBySize）。 2. 满足条件的这一侧比另一侧小得多（通过 SHUFFLE_HASH_JOIN_FACTOR 判断）。 3. SQL 配置 spark.sql.join.preferSortMergeJoin 设置为 false（即不偏好 SMJ）
       //   3. Pick sort merge join if the join keys are sortable.
+      // 3、 如果 Join 键可排序（SMJ 的基本要求），则选中 SMJ。SMJ 是等值连接的默认通用回退策略，因为它通常是最稳定的。
       //   4. Pick cartesian product if join type is inner like.
+      // 4、 选中此策略，前提是 Join 类型为内连接 (Inner like)。
       //   5. Pick broadcast nested loop join as the final solution. It may OOM but we don't have
       //      other choice.
-      //抽取出 Join的各个条件
+      // 5、 作为最后的无奈选择，如果以上所有策略都不可用，则选中 BNLJ。注释指出，这可能会导致 OOM（内存溢出），但如果没有其他 Join 条件可用，优化器别无选择。
+      // 模式匹配： 使用 ExtractEquiJoinKeys 提取器，匹配所有包含等值连接条件（leftKeys 和 rightKeys）的 Join 逻辑计划。
+      // 参数提取： 提取连接类型 (joinType)、左右连接键 (leftKeys, rightKeys)、非等值条件 (nonEquiCond)、左右子计划 (left, right) 和连接提示 (hint)
       case j @ ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, nonEquiCond,
           _, left, right, hint) =>
+        // 负责构建广播 hash join
         def createBroadcastHashJoin(onlyLookingAtHint: Boolean) = {
           val buildSide = getBroadcastBuildSide(
             left, right, joinType, hint, onlyLookingAtHint, conf) //根据hint或者参数判断哪一侧适合广播
@@ -249,10 +267,10 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
                 planLater(right)))
           }
         }
-
+        // 负责构建shuffle hash join
         def createShuffleHashJoin(onlyLookingAtHint: Boolean) = {
           val buildSide = getShuffleHashJoinBuildSide(
-            left, right, joinType, hint, onlyLookingAtHint, conf)  //判断shuffle hash join哪一边适合构建hash
+            left, right, joinType, hint, onlyLookingAtHint, conf)  // 判断shuffle hash join哪一边适合构建hash
           checkHintBuildSide(onlyLookingAtHint, buildSide, joinType, hint, false)
           buildSide.map {
             buildSide =>
@@ -266,7 +284,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
                 planLater(right)))
           }
         }
-        //只有当连接键可以排序时，才会选择排序合并连接。排序合并连接通常在连接键已排序时效果最好
+        // 只有当连接键可以排序时，才会选择排序合并连接。排序合并连接通常在连接键已排序时效果最好
         def createSortMergeJoin() = {
           if (RowOrdering.isOrderable(leftKeys)) {
             Some(Seq(joins.SortMergeJoinExec(
@@ -275,7 +293,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
             None
           }
         }
-        //只有在连接类型是 InnerLike（例如内连接或类似的连接）且没有提示为“禁止广播和复制”（hintToNotBroadcastAndReplicate(hint)）时，才会选择笛卡尔积连接
+        // 只有在连接类型是 InnerLike（例如内连接或类似的连接）且没有提示为“禁止广播和复制”（hintToNotBroadcastAndReplicate(hint)）时，才会选择笛卡尔积连接
         def createCartesianProduct() = {
           if (joinType.isInstanceOf[InnerLike] && !hintToNotBroadcastAndReplicate(hint)) {
             // `CartesianProductExec` can't implicitly evaluate equal join condition, here we should
@@ -285,7 +303,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
             None
           }
         }
-        //如果没有连接提示，则根据表的大小、连接类型等自动选择连接策略
+        // 如果没有连接提示，则根据表的大小、连接类型等自动选择连接策略
         def createJoinWithoutHint() = {
           createBroadcastHashJoin(false)
             .orElse(createShuffleHashJoin(false))
@@ -301,7 +319,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
                 planLater(left), planLater(right), buildSide, joinType, j.condition))
             }
         }
-
+        // 如果没有提示，按照这个顺序执行
         if (hint.isEmpty) {
           createJoinWithoutHint()
         } else {
@@ -311,7 +329,8 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
             .orElse { if (hintToShuffleReplicateNL(hint)) createCartesianProduct() else None }
             .getOrElse(createJoinWithoutHint())
         }
-
+      // 非等值连接 (Non-Equi Join) 策略选择
+      // 匹配特殊的 单列空值感知反连接
       case j @ ExtractSingleColumnNullAwareAntiJoin(leftKeys, rightKeys) =>
         Seq(joins.BroadcastHashJoinExec(leftKeys, rightKeys, LeftAnti, BuildRight,
           None, planLater(j.left), planLater(j.right), isNullAwareAntiJoin = true))
@@ -332,8 +351,10 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
       //   3. Pick broadcast nested loop join as the final solution. It may OOM but we don't have
       //      other choice. It broadcasts the smaller side for inner and full joins, broadcasts the
       //      left side for right join, and broadcasts right side for left join.
+      // 非等值连接匹配： 匹配所有剩下的 Join 逻辑计划，这些计划没有等值连接条件
       case logical.Join(left, right, joinType, condition, hint) =>
         checkHintNonEquiJoin(hint)
+        // 计算 BNLJ 或笛卡尔积的期望构建侧。对于 InnerLike 和 FullOuter，选择较小的一侧；对于 LeftOuter/RightOuter，选择符合连接语义的那一侧（例如 LeftOuter 倾向于广播右侧）
         val desiredBuildSide = if (joinType.isInstanceOf[InnerLike] || joinType == FullOuter) {
           getSmallerSide(left, right)
         } else {
@@ -382,12 +403,13 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
         }
 
         def createJoinWithoutHint() = {
-          createBroadcastNLJoin(false)
-            .orElse(createCartesianProduct())
+          createBroadcastNLJoin(false) // 1. 尝试 BNLJ (基于大小)
+            .orElse(createCartesianProduct()) // 2. 尝试笛卡尔积
             .getOrElse {
               // This join could be very slow or OOM
               // Build the desired side unless the join requires a particular build side
               // (e.g. NO_BROADCAST_AND_REPLICATION hint)
+              // 3. 最终回退：强制 BNLJ
               val requiredBuildSide = getBroadcastNestedLoopJoinBuildSide(hint)
               val buildSide = requiredBuildSide.getOrElse(desiredBuildSide)
               Seq(joins.BroadcastNestedLoopJoinExec(

@@ -37,16 +37,20 @@ import org.apache.spark.sql.execution.metric.SQLMetrics
  * broadcast relation.  This data is then placed in a Spark broadcast variable.  The streamed
  * relation is not shuffled.
  */
-//通过广播一个较小的数据集，并在分布式计算中使用该数据集与较大的数据集进行连接操作，从而避免了对较大数据集的全局 shuffle
+// 负责执行广播哈希连接操作
+// 将连接操作中较小的一张表（Build Side）的数据完整地广播（Broadcast）到集群中所有 Executor 节点的内存中。
+// 然后，每个 Executor 上的任务直接将**较大的表（Streamed Side）**分区数据与这个广播后的哈希表进行本地 Join 查找。
+// 避免 Shuffle： BHJ 完全避免了对大表进行昂贵的数据重新分区（Shuffle）操作。
+// 高效率： Join 查找是本地的、内存中的哈希查找，速度极快。
 case class BroadcastHashJoinExec(
     leftKeys: Seq[Expression], //左侧数据集（streamed side）进行连接时使用的键
     rightKeys: Seq[Expression],
     joinType: JoinType,
-    buildSide: BuildSide, //表示哪个数据集作为构建（build）侧,就是哪一侧用于构建hash表
-    condition: Option[Expression],
+    buildSide: BuildSide, // 表示哪个数据集作为构建（build）侧,就是哪一侧用于构建hash表
+    condition: Option[Expression], // 非等值条件。
     left: SparkPlan,
     right: SparkPlan,
-    isNullAwareAntiJoin: Boolean = false)
+    isNullAwareAntiJoin: Boolean = false) // 标志此 Join 是否用于执行空值敏感反连接（Null-Aware Anti Join, NAAJ）。此种 Join 有特定的优化和执行逻辑。
   extends HashJoin {
 
   if (isNullAwareAntiJoin) {
@@ -59,17 +63,20 @@ case class BroadcastHashJoinExec(
 
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
-  //返回一个分布式计划的需求，指明左侧和右侧的分布类型。
+  // 所需的子计划数据分布。
+  // 这是物理计划的关键属性。
+  // 它要求 buildSide 必须是 BroadcastDistribution（广播分布），而 streamedSide 是 UnspecifiedDistribution（未指定分布，因为它不需要 Shuffle）
   override def requiredChildDistribution: Seq[Distribution] = {
     val mode = HashedRelationBroadcastMode(buildBoundKeys, isNullAwareAntiJoin)
     buildSide match {
-      case BuildLeft => //如果连接的构建侧是左侧，则需要 BroadcastDistribution（即广播分布），右侧是未指定分布；
+      case BuildLeft => // 如果连接的构建侧是左侧，则需要 BroadcastDistribution（即广播分布），右侧是未指定分布；
         BroadcastDistribution(mode) :: UnspecifiedDistribution :: Nil
-      case BuildRight => //如果构建侧是右侧，则需要右侧是广播分布，左侧未指定分布
+      case BuildRight => // 如果构建侧是右侧，则需要右侧是广播分布，左侧未指定分布
         UnspecifiedDistribution :: BroadcastDistribution(mode) :: Nil
     }
   }
-
+  // 确定 Join 结果的分区方式。默认继承 Streamed Side 的分区，但对于 InnerLike 连接，
+  // 可以根据配置 (broadcastHashJoinOutputPartitioningExpandLimit) 通过 expandOutputPartitioning 方法进行分区扩展
   override lazy val outputPartitioning: Partitioning = {
     joinType match {
       case _: InnerLike if conf.broadcastHashJoinOutputPartitioningExpandLimit > 0 =>
@@ -97,6 +104,7 @@ case class BroadcastHashJoinExec(
   }
 
   // Expands the given partitioning collection recursively.
+  // 扩展输出分区。
   private def expandOutputPartitioning(
       partitioning: PartitioningCollection): PartitioningCollection = {
     PartitioningCollection(partitioning.partitionings.flatMap {
@@ -120,13 +128,14 @@ case class BroadcastHashJoinExec(
     }.asInstanceOf[Stream[HashPartitioningLike]]
       .take(conf.broadcastHashJoinOutputPartitioningExpandLimit))
   }
-
+  // 实际执行逻辑。
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
-
+    // 异步执行 Build Side 并获取广播变量
     val broadcastRelation = buildPlan.executeBroadcast[HashedRelation]()
     if (isNullAwareAntiJoin) {
       streamedPlan.execute().mapPartitionsInternal { streamedIter =>
+        // 在每个 Task 中，从广播变量中获取哈希关系
         val hashed = broadcastRelation.value.asReadOnlyCopy()
         TaskContext.get().taskMetrics().incPeakExecutionMemory(hashed.estimatedSize)
         if (hashed == EmptyHashedRelation) {
@@ -151,6 +160,7 @@ case class BroadcastHashJoinExec(
       }
     } else {
       streamedPlan.execute().mapPartitions { streamedIter =>
+        // 在每个 Task 中，从广播变量中获取哈希关系
         val hashed = broadcastRelation.value.asReadOnlyCopy()
         TaskContext.get().taskMetrics().incPeakExecutionMemory(hashed.estimatedSize)
         join(streamedIter, hashed, numOutputRows)
@@ -182,11 +192,12 @@ case class BroadcastHashJoinExec(
   /**
    * Returns a tuple of Broadcast of HashedRelation and the variable name for it.
    */
+  // 代码生成：准备广播变量。
   private def prepareBroadcast(ctx: CodegenContext): (Broadcast[HashedRelation], String) = {
     // create a name for HashedRelation
     val broadcastRelation = buildPlan.executeBroadcast[HashedRelation]()
     val broadcast = ctx.addReferenceObj("broadcast", broadcastRelation)
-    val clsName = broadcastRelation.value.getClass.getName
+    val clsName = broadcastRela tion.value.getClass.getName
 
     // Inline mutable state since not many join operations in a task
     val relationTerm = ctx.addMutableState(clsName, "relation",
@@ -196,7 +207,7 @@ case class BroadcastHashJoinExec(
        """.stripMargin, forceInline = true)
     (broadcastRelation, relationTerm)
   }
-
+  // 代码生成：准备哈希关系信息。
   protected override def prepareRelation(ctx: CodegenContext): HashedRelationInfo = {
     val (broadcastRelation, relationTerm) = prepareBroadcast(ctx)
     HashedRelationInfo(relationTerm,
@@ -208,6 +219,7 @@ case class BroadcastHashJoinExec(
    * Generates the code for anti join.
    * Handles NULL-aware anti join (NAAJ) separately here.
    */
+  // 代码生成：反连接逻辑。
   protected override def codegenAnti(ctx: CodegenContext, input: Seq[ExprCode]): String = {
     if (isNullAwareAntiJoin) {
       val (broadcastRelation, relationTerm) = prepareBroadcast(ctx)
@@ -238,7 +250,7 @@ case class BroadcastHashJoinExec(
       super.codegenAnti(ctx, input)
     }
   }
-
+  // 创建新子节点副本。
   override protected def withNewChildrenInternal(
       newLeft: SparkPlan, newRight: SparkPlan): BroadcastHashJoinExec =
     copy(left = newLeft, right = newRight)

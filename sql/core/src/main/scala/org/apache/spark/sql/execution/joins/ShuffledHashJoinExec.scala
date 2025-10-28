@@ -35,18 +35,20 @@ import org.apache.spark.util.collection.{BitSet, OpenHashSet}
 /**
  * Performs a hash join of two child relations by first shuffling the data using the join keys.
  */
-//执行 hash join 操作的一个类，尤其用于通过 shuffle 交换数据来连接两个子查询的记录
+// 数据重分区 (Shuffle)： 在执行 Join 之前，它首先要求左侧和右侧的子计划都根据 Join Key 进行哈希重分区（Shuffle）。这确保了具有相同 Join Key 的行最终位于同一个物理分区（Executor 上的同一个 Task）中。
+// 局部哈希连接： 在每个 Task 内部，它将其中一侧（Build Side，通常是较小的一侧）的数据构建成一个内存中的 HashedRelation（哈希表）。然后，另一侧（Streamed Side）的数据流经此哈希表进行本地查找，完成连接。
+// 适用场景： 主要用于两张表都比较大，无法通过 BroadcastHashJoinExec 广播任一表的情况。它避免了昂贵的 Sort Merge Join (SMJ) 所需的排序步骤，只依赖于哈希和局部查找，通常比 SMJ 快，但比 BHJ 慢（因为它仍然需要 Shuffle）。
 case class ShuffledHashJoinExec(
-    leftKeys: Seq[Expression],
+    leftKeys: Seq[Expression], // 左侧连接键。用于从左侧行中提取 Join Key 的表达式序列。这些键也用于 Shuffle 分区。
     rightKeys: Seq[Expression],
     joinType: JoinType,
-    buildSide: BuildSide,  //表示连接中用于构建哈希表的一方
-    condition: Option[Expression],  //可选的连接条件，如果存在的话，它将限制匹配的行
+    buildSide: BuildSide,  // 表示连接中用于构建哈希表的一方
+    condition: Option[Expression],  // 非等值条件。
     left: SparkPlan,
     right: SparkPlan,
-    isSkewJoin: Boolean = false)  //是否为倾斜连接，默认为 false
+    isSkewJoin: Boolean = false)  // 是否为倾斜连接，默认为 false
   extends HashJoin with ShuffledJoin {
-  //numOutputRows: 输出的行数   buildDataSize: 构建哈希表的大小   buildTime: 构建哈希表所花费的时间
+  // numOutputRows: 输出的行数   buildDataSize: 构建哈希表的大小   buildTime: 构建哈希表所花费的时间
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "buildDataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size of build side"),
@@ -55,7 +57,7 @@ case class ShuffledHashJoinExec(
   override def output: Seq[Attribute] = super[ShuffledJoin].output
 
   override def outputPartitioning: Partitioning = super[ShuffledJoin].outputPartitioning
-  //对于外连接（如 FullOuter、LeftOuter、RightOuter），由于哈希关系的特殊处理，无法保证排序
+  // 对于外连接（如 FullOuter、LeftOuter、RightOuter），由于哈希关系的特殊处理，无法保证排序
   override def outputOrdering: Seq[SortOrder] = joinType match {
     // For outer joins where the outer side is build-side, order cannot be guaranteed.
     // The algorithm performs an additional un-ordered iteration on build-side (HashedRelation)
@@ -68,7 +70,7 @@ case class ShuffledHashJoinExec(
 
   // Exposed for testing
   @transient lazy val ignoreDuplicatedKey = joinType match {
-    //如果连接类型为 LeftExistence，且连接条件只涉及流式输出和构建连接键，则会忽略重复的连接键
+    // 如果连接类型为 LeftExistence，且连接条件只涉及流式输出和构建连接键，则会忽略重复的连接键
     case LeftExistence(_) =>
       // For building hash relation, ignore duplicated rows with same join keys if:
       // 1. Join condition is empty, or
@@ -78,14 +80,17 @@ case class ShuffledHashJoinExec(
     case _ => false
   }
 
-  /**  该方法用于构建哈希关系（HashedRelation），它会将输入数据迭代器转化为哈希表
+  /**
    * This is called by generated Java class, should be public.
    */
+  // 构建哈希表（工厂方法）
+  // 它将输入的行迭代器 (buildIter) 转化为一个 HashedRelation 实例
   def buildHashedRelation(iter: Iterator[InternalRow]): HashedRelation = {
     val buildDataSize = longMetric("buildDataSize")
     val buildTime = longMetric("buildTime")
     val start = System.nanoTime()
     val context = TaskContext.get()
+    // 构建hash表
     val relation = HashedRelation(
       iter,
       buildBoundKeys,
@@ -101,7 +106,7 @@ case class ShuffledHashJoinExec(
     context.addTaskCompletionListener[Unit](_ => relation.close())
     relation
   }
-  //通过 zipPartitions 操作并行地处理左右子查询的数据，构建哈希表后根据连接类型执行不同的连接策略
+  // 实际执行逻辑。
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     streamedPlan.execute().zipPartitions(buildPlan.execute()) { (streamIter, buildIter) =>
@@ -117,11 +122,11 @@ case class ShuffledHashJoinExec(
       }
     }
   }
-  //用于执行根据哈希关系进行连接的操作，特别是处理外连接（如 FullOuter、LeftOuter、RightOuter）和构建侧的连接
+  // 用于执行根据哈希关系进行连接的操作，特别是处理外连接（如 FullOuter、LeftOuter、RightOuter）和构建侧的连接
   private def buildSideOrFullOuterJoin(
-      streamIter: Iterator[InternalRow],  //流侧的数据输入
-      hashedRelation: HashedRelation,  //哈希表中的每个项都是一个连接键和对应的记录集合，用于快速查找匹配项
-      numOutputRows: SQLMetric,  //计数器，用来统计输出的行数
+      streamIter: Iterator[InternalRow],  // 流侧的数据输入
+      hashedRelation: HashedRelation,  // 哈希表中的每个项都是一个连接键和对应的记录集合，用于快速查找匹配项
+      numOutputRows: SQLMetric,  // 计数器，用来统计输出的行数
       isFullOuterJoin: Boolean): Iterator[InternalRow] = {  //指示当前是否为全外连接（FullOuter）
     val joinKeys = streamSideKeyGenerator()
     val joinRow = new JoinedRow
@@ -145,10 +150,10 @@ case class ShuffledHashJoinExec(
       }
     }
 
-    val iter = if (hashedRelation.keyIsUnique) { //唯一键的情况：连接操作通常较为简单，每个连接键对应一个唯一的值
+    val iter = if (hashedRelation.keyIsUnique) { // 唯一键的情况：连接操作通常较为简单，每个连接键对应一个唯一的值
       buildSideOrFullOuterJoinUniqueKey(streamIter, hashedRelation, joinKeys, joinRowWithStream,
         joinRowWithBuild, streamNullJoinRowWithBuild, buildNullRow, isFullOuterJoin)
-    } else { //非唯一键的情况：可能有多个值与同一个键匹配，因此需要特别处理。
+    } else { // 非唯一键的情况：可能有多个值与同一个键匹配，因此需要特别处理。
       buildSideOrFullOuterJoinNonUniqueKey(streamIter, hashedRelation, joinKeys, joinRowWithStream,
         joinRowWithBuild, streamNullJoinRowWithBuild, buildNullRow, isFullOuterJoin)
     }
@@ -169,18 +174,18 @@ case class ShuffledHashJoinExec(
    *    Filter out rows from build side being matched already,
    *    by checking key index from bit set.
    */
-  //用于处理 唯一连接键 的 ShuffledHashJoinExec 中的关键方法，特别是在构建侧（build side）是外连接的一方的场景下。
+  // 用于处理 唯一连接键 的 ShuffledHashJoinExec 中的关键方法，特别是在构建侧（build side）是外连接的一方的场景下。
   // 此方法通过 哈希表 来高效地进行连接，处理流式数据和构建数据之间的匹配，特别适用于有唯一连接键的情况
   private def buildSideOrFullOuterJoinUniqueKey(
-      streamIter: Iterator[InternalRow],  //流式数据（如左侧或右侧表）的行
-      hashedRelation: HashedRelation,    //哈希表
+      streamIter: Iterator[InternalRow],  // 流式数据（如左侧或右侧表）的行
+      hashedRelation: HashedRelation,    // 哈希表
       joinKeys: UnsafeProjection,
-      joinRowWithStream: InternalRow => JoinedRow, //用于将流式数据（stream）的行与构建数据行（build）合并成一个连接后的行
-      joinRowWithBuild: InternalRow => JoinedRow,  //用于将构建数据行与流式数据行合并成连接后的行
-      streamNullJoinRowWithBuild: => InternalRow => JoinedRow, //用于在全外连接中处理没有匹配行的情况。当流式数据没有找到匹配的构建数据时，会生成一个包含 NULL 值的连接行
-      buildNullRow: GenericInternalRow,  //用于生成空行（NULL）的构建侧数据行
-      isFullOuterJoin: Boolean): Iterator[InternalRow] = { //指示是否为全外连接（FullOuterJoin）
-    val matchedKeys = new BitSet(hashedRelation.maxNumKeysIndex)  //追踪哪些连接键已经匹配过
+      joinRowWithStream: InternalRow => JoinedRow, // 用于将流式数据（stream）的行与构建数据行（build）合并成一个连接后的行
+      joinRowWithBuild: InternalRow => JoinedRow,  // 用于将构建数据行与流式数据行合并成连接后的行
+      streamNullJoinRowWithBuild: => InternalRow => JoinedRow, // 用于在全外连接中处理没有匹配行的情况。当流式数据没有找到匹配的构建数据时，会生成一个包含 NULL 值的连接行
+      buildNullRow: GenericInternalRow,  // 用于生成空行（NULL）的构建侧数据行
+      isFullOuterJoin: Boolean): Iterator[InternalRow] = { // 指示是否为全外连接（FullOuterJoin）
+    val matchedKeys = new BitSet(hashedRelation.maxNumKeysIndex)  // 追踪哪些连接键已经匹配过
     longMetric("buildDataSize") += matchedKeys.capacity / 8
 
     def noMatch = if (isFullOuterJoin) {
@@ -190,19 +195,19 @@ case class ShuffledHashJoinExec(
     }
 
     // Process stream side with looking up hash relation
-    //处理流式数据并查找匹配的构建数据
+    // 处理流式数据并查找匹配的构建数据
     val streamResultIter = streamIter.flatMap { srow =>
       joinRowWithStream(srow)
-      val keys = joinKeys(srow) //提取当前流式行的连接键
-      if (keys.anyNull) {  //没找到Key
+      val keys = joinKeys(srow) // 提取当前流式行的连接键
+      if (keys.anyNull) {  // 没找到Key
         noMatch
       } else {
         val matched = hashedRelation.getValueWithKeyIndex(keys)
-        if (matched != null) {  //遭到匹配的行
+        if (matched != null) {  // 遭到匹配的行
           val keyIndex = matched.getKeyIndex
           val buildRow = matched.getValue
-          val joinRow = joinRowWithBuild(buildRow)  //关联在一起
-          if (boundCondition(joinRow)) { //根据条件过滤
+          val joinRow = joinRowWithBuild(buildRow)  // 关联在一起
+          if (boundCondition(joinRow)) { // 根据条件过滤
             matchedKeys.set(keyIndex)
             Some(joinRow)
           } else {
@@ -215,19 +220,19 @@ case class ShuffledHashJoinExec(
     }
 
     // Process build side with filtering out the matched rows
-    //处理构建侧数据并过滤已匹配的行
-    val buildResultIter = hashedRelation.valuesWithKeyIndex().flatMap { //遍历构建数据的所有值
+    // 处理构建侧数据并过滤已匹配的行
+    val buildResultIter = hashedRelation.valuesWithKeyIndex().flatMap { // 遍历构建数据的所有值
       valueRowWithKeyIndex =>
         val keyIndex = valueRowWithKeyIndex.getKeyIndex
         val isMatched = matchedKeys.get(keyIndex)
-        if (!isMatched) {  //未匹配过
+        if (!isMatched) {  // 未匹配过
           val buildRow = valueRowWithKeyIndex.getValue
           Some(streamNullJoinRowWithBuild(buildRow))
         } else {
           None
         }
     }
-    //返回最终的结果
+    // 返回最终的结果
     streamResultIter ++ buildResultIter
   }
 
@@ -246,14 +251,14 @@ case class ShuffledHashJoinExec(
    * the value indices of its tuples will be 0, 1 and 2.
    * Note that value indices of tuples with different keys are incomparable.
    */
-    //实现了带有非唯一连接键的哈希连接，其中外侧（build side）是构建边。该方法通过使用OpenHashSet（一个高效的哈希集合）来跟踪哪些行已经匹配，以处理连接键不是唯一的情况
+  // 实现了带有非唯一连接键的哈希连接，其中外侧（build side）是构建边。该方法通过使用OpenHashSet（一个高效的哈希集合）来跟踪哪些行已经匹配，以处理连接键不是唯一的情况
   private def buildSideOrFullOuterJoinNonUniqueKey(
-      streamIter: Iterator[InternalRow],  //流侧的迭代器
-      hashedRelation: HashedRelation, //构建侧的哈希表
+      streamIter: Iterator[InternalRow],  // 流侧的迭代器
+      hashedRelation: HashedRelation, // 构建侧的哈希表
       joinKeys: UnsafeProjection,
-      joinRowWithStream: InternalRow => JoinedRow,  //将流侧的行与构建侧的行进行连接
-      joinRowWithBuild: InternalRow => JoinedRow,   //将构建侧的行与流侧的行进行连接
-      streamNullJoinRowWithBuild: => InternalRow => JoinedRow, //当没有匹配时，生成一个带有 NULL 构建侧的连接行（用于全外连接）
+      joinRowWithStream: InternalRow => JoinedRow,  // 将流侧的行与构建侧的行进行连接
+      joinRowWithBuild: InternalRow => JoinedRow,   // 将构建侧的行与流侧的行进行连接
+      streamNullJoinRowWithBuild: => InternalRow => JoinedRow, // 当没有匹配时，生成一个带有 NULL 构建侧的连接行（用于全外连接）
       buildNullRow: GenericInternalRow,
       isFullOuterJoin: Boolean): Iterator[InternalRow] = {
     val matchedRows = new OpenHashSet[Long]
@@ -265,12 +270,12 @@ case class ShuffledHashJoinExec(
       val dataEstimatedSize = matchedRows.capacity * 8
       longMetric("buildDataSize") += bitSetEstimatedSize + dataEstimatedSize
     })
-    //将特定的行标记为已匹配，通过将keyIndex和valueIndex组合成一个唯一值，添加到OpenHashSet中
+    // 将特定的行标记为已匹配，通过将keyIndex和valueIndex组合成一个唯一值，添加到OpenHashSet中
     def markRowMatched(keyIndex: Int, valueIndex: Int): Unit = {
       val rowIndex: Long = (keyIndex.toLong << 32) | valueIndex
       matchedRows.add(rowIndex)
     }
-    //检查特定的行是否已匹配
+    // 检查特定的行是否已匹配
     def isRowMatched(keyIndex: Int, valueIndex: Int): Boolean = {
       val rowIndex: Long = (keyIndex.toLong << 32) | valueIndex
       matchedRows.contains(rowIndex)
@@ -280,7 +285,7 @@ case class ShuffledHashJoinExec(
     val streamResultIter = streamIter.flatMap { srow =>
       val joinRow = joinRowWithStream(srow)
       val keys = joinKeys(srow)
-      if (keys.anyNull) { //如果连接键包含NULL
+      if (keys.anyNull) { // 如果连接键包含NULL
         // return row with build side NULL row to satisfy full outer join semantics if enabled
         if (isFullOuterJoin) {
           Iterator.single(joinRowWithBuild(buildNullRow))
@@ -288,7 +293,7 @@ case class ShuffledHashJoinExec(
           Iterator.empty
         }
       } else {
-        val buildIter = hashedRelation.getWithKeyIndex(keys) //查找所有与连接键匹配的构建侧行
+        val buildIter = hashedRelation.getWithKeyIndex(keys) // 查找所有与连接键匹配的构建侧行
         new RowIterator {
           private var found = false
           private var valueIndex = -1

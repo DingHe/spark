@@ -210,8 +210,8 @@ object NodeWithOnlyDeterministicProjectAndFilter {
  * Null-safe equality will be transformed into equality as joining key (replace null with default
  * value).
  */
-//目标是从一个 Join 操作中提取出可以通过等值连接来优化的连接条件，
-//特别是那些可以在连接之前被计算的条件。它会尝试将空值安全的等式转换成普通的等式，以便更高效地进行连接
+// 目标是从一个 Join 操作中提取出可以通过等值连接来优化的连接条件，
+// 特别是那些可以在连接之前被计算的条件。它会尝试将空值安全的等式转换成普通的等式，以便更高效地进行连接
 object ExtractEquiJoinKeys extends Logging with PredicateHelper {
   /** (joinType, leftKeys, rightKeys, otherCondition, conditionOnJoinKeys, leftChild,
    * rightChild, joinHint).
@@ -232,20 +232,24 @@ object ExtractEquiJoinKeys extends Logging with PredicateHelper {
   //LogicalPlan: 右侧子查询的计划
   //JoinHint: 连接提示，可能用于指示优化器选择某种连接策略
 
+  // 核心作用是在优化器尝试将逻辑 Join 转换为物理 Join 策略时，从 Join 节点中提取出所有可用的等值连接键（Equi-Join Keys）
   def unapply(join: Join): Option[ReturnType] = join match {
     case Join(left, right, joinType, condition, hint) =>
       logDebug(s"Considering join on: $condition")
       // Find equi-join predicates that can be evaluated before the join, and thus can be used
       // as join keys.
-      val predicates = condition.map(splitConjunctivePredicates).getOrElse(Nil) //将连接条件分解成多个子条件
-      val joinKeys = predicates.flatMap { //提取连接键
+
+      val predicates = condition.map(splitConjunctivePredicates).getOrElse(Nil) // 将连接条件分解成多个子条件
+
+      // 这段代码主要是提取等值条件中左右两侧的表达式
+      val joinKeys = predicates.flatMap { // 提取连接键
         case EqualTo(l, r) if l.references.isEmpty || r.references.isEmpty => None
-        //如果左侧和右侧的表达式（l 和 r）可以在左子查询和右子查询中计算出来，则将它们作为连接键，返回来也可以
+        // 如果左侧和右侧的表达式（l 和 r）可以在左子查询和右子查询中计算出来，则将它们作为连接键，返回来也可以
         case EqualTo(l, r) if canEvaluate(l, left) && canEvaluate(r, right) => Some((l, r))
         case EqualTo(l, r) if canEvaluate(l, right) && canEvaluate(r, left) => Some((r, l))
         // Replace null with default value for joining key, then those rows with null in it could
         // be joined together
-        //这种条件用于处理空值安全的等值连接（即 NULL 值也参与连接）
+        // 这种条件用于处理空值安全的等值连接（即 NULL 值也参与连接）
         case EqualNullSafe(l, r) if canEvaluate(l, left) && canEvaluate(r, right) =>
           Seq((Coalesce(Seq(l, Literal.default(l.dataType))),
             Coalesce(Seq(r, Literal.default(r.dataType)))),
@@ -258,6 +262,7 @@ object ExtractEquiJoinKeys extends Logging with PredicateHelper {
           )  // Same as above with left/right reversed.
         case _ => None
       }
+      // 将原始谓词重新划分为两类：可以作为 Join Key 的谓词（predicatesOfJoinKeys）和不能作为 Join Key 的谓词（otherPredicates）
       val (predicatesOfJoinKeys, otherPredicates) = predicates.partition {  //将连接条件分为两类
         case EqualTo(l, r) if l.references.isEmpty || r.references.isEmpty => false
         case Equality(l, r) =>
@@ -452,7 +457,7 @@ object PhysicalWindow {
     case _ => None
   }
 }
-//用于提取单列 NULL-aware Anti Join 的对象。该类在 Apache Spark 中的优化过程中起到了关键作用，
+// 用于提取单列 NULL-aware Anti Join 的对象。该类在 Apache Spark 中的优化过程中起到了关键作用，
 // 特别是针对 LeftAnti 类型的连接，能够通过条件优化连接方式，避免了代价高昂的广播嵌套循环连接
 object ExtractSingleColumnNullAwareAntiJoin extends JoinSelectionHelper with PredicateHelper {
 
@@ -472,7 +477,7 @@ object ExtractSingleColumnNullAwareAntiJoin extends JoinSelectionHelper with Pre
    * using hash lookup instead of loop lookup.
    */
   def unapply(join: Join): Option[ReturnType] = join match {
-    //当连接条件是 EqualTo(a = b) 或 EqualTo(a = b) OR IsNull(EqualTo(a = b)) 时，
+    // 当连接条件是 EqualTo(a = b) 或 EqualTo(a = b) OR IsNull(EqualTo(a = b)) 时，
     // 能够通过优化把原本需要进行 O(M*N) 次的连接操作转化为 O(M) 的哈希查找，从而大大提高效率
     case Join(left, right, LeftAnti,
       Some(Or(e @ EqualTo(leftAttr: Expression, rightAttr: Expression),

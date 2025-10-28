@@ -45,16 +45,22 @@ class CartesianPartition(
   }
 }
 
+// 计算两个 RDD 之间的笛卡尔积
+// 笛卡尔积是一种 Join 操作，它将第一个 RDD (rdd1) 中的每一条记录与第二个 RDD (rdd2) 中的所有记录进行组合。
+// 输入： 两个 RDD，rdd1: RDD[T] 和 rdd2: RDD[U]。
+// 输出： 一个新的 RDD，其中包含所有可能的配对 (T, U) 记录，类型为 RDD[(T, U)]
+// 实现原理： 它通过组合 rdd1 的每个分区和 rdd2 的每个分区来创建一个新的分区。如果 rdd1 有 $N_1$ 个分区，rdd2 有 $N_2$ 个分区，则 CartesianRDD 将有 $N_1 \times N_2$ 个分区。
 private[spark]
 class CartesianRDD[T: ClassTag, U: ClassTag](
     sc: SparkContext,
-    var rdd1 : RDD[T],
-    var rdd2 : RDD[U])
+    var rdd1 : RDD[T], // 第一个源 RDD
+    var rdd2 : RDD[U]) // 第二个源 RDD。
   extends RDD[(T, U)](sc, Nil)
   with Serializable {
 
   val numPartitionsInRdd2 = rdd2.partitions.length
 
+  // 获取新 RDD 的分区列表。
   override def getPartitions: Array[Partition] = {
     // create the cross product split
     val array = new Array[Partition](rdd1.partitions.length * rdd2.partitions.length)
@@ -69,7 +75,7 @@ class CartesianRDD[T: ClassTag, U: ClassTag](
     val currSplit = split.asInstanceOf[CartesianPartition]
     (rdd1.preferredLocations(currSplit.s1) ++ rdd2.preferredLocations(currSplit.s2)).distinct
   }
-
+  // 计算给定分区的元素。
   override def compute(split: Partition, context: TaskContext): Iterator[(T, U)] = {
     val currSplit = split.asInstanceOf[CartesianPartition]
     for (x <- rdd1.iterator(currSplit.s1, context);

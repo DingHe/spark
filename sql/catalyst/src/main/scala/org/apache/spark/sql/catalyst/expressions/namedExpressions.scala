@@ -162,11 +162,11 @@ abstract class Attribute extends LeafExpression with NamedExpression with NullIn
  * @param nonInheritableMetadataKeys Keys of metadata entries that are supposed to be removed when
  *                                   inheriting the metadata from the child.
  */
-//child：表示正在进行的计算或表达式，即 Alias 所包装的表达式
-//name：表示给计算结果分配的名字，即 SQL 表达式中的别名。在 SQL 中就是 AS a 后面的 a
+// child：表示正在进行的计算或表达式，即 Alias 所包装的表达式
+// name：表示给计算结果分配的名字，即 SQL 表达式中的别名。在 SQL 中就是 AS a 后面的 a
 case class Alias(child: Expression, name: String)(
     val exprId: ExprId = NamedExpression.newExprId,
-    val qualifier: Seq[String] = Seq.empty,  //用于完全限定该属性的引用
+    val qualifier: Seq[String] = Seq.empty,  // 用于完全限定该属性的引用
     val explicitMetadata: Option[Metadata] = None,
     val nonInheritableMetadataKeys: Seq[String] = Seq.empty)
   extends UnaryExpression with NamedExpression {
@@ -174,10 +174,10 @@ case class Alias(child: Expression, name: String)(
   final override val nodePatterns: Seq[TreePattern] = Seq(ALIAS)
 
   // Alias(Generator, xx) need to be transformed into Generate(generator, ...)
-  //表示该别名是否已经解析。只有当所有输入表达式都已解析且数据类型检查通过时，resolved 才为 true
+  // 表示该别名是否已经解析。只有当所有输入表达式都已解析且数据类型检查通过时，resolved 才为 true
   override lazy val resolved =
     childrenResolved && checkInputDataTypes().isSuccess && !child.isInstanceOf[Generator]
-  //计算并返回 child 表达式的值
+  // 计算并返回 child 表达式的值
   override def eval(input: InternalRow): Any = child.eval(input)
 
   /** Just a simple passthrough for code generation. */
@@ -188,7 +188,7 @@ case class Alias(child: Expression, name: String)(
 
   override def dataType: DataType = child.dataType  //返回 child 表达式的类型
   override def nullable: Boolean = child.nullable
-  //返回该别名的元数据。如果显式的元数据为空，则根据 child 的元数据生成。还会根据 nonInheritableMetadataKeys 删除某些元数据
+  // 返回该别名的元数据。如果显式的元数据为空，则根据 child 的元数据生成。还会根据 nonInheritableMetadataKeys 删除某些元数据
   override def metadata: Metadata = {
     explicitMetadata.getOrElse {
       child match {
@@ -198,7 +198,7 @@ case class Alias(child: Expression, name: String)(
       }
     }
   }
-  //返回一个新的 Alias 实例，使用新的名称
+  // 返回一个新的 Alias 实例，使用新的名称
   def withName(newName: String): NamedExpression = {
     Alias(child, newName)(
       exprId = exprId,
@@ -206,13 +206,13 @@ case class Alias(child: Expression, name: String)(
       explicitMetadata = explicitMetadata,
       nonInheritableMetadataKeys = nonInheritableMetadataKeys)
   }
-  //返回一个新的 Alias 实例，名称保持不变，但可能会使用新的元数据等
+  // 返回一个新的 Alias 实例，名称保持不变，但可能会使用新的元数据等
   def newInstance(): NamedExpression =
     Alias(child, name)(
       qualifier = qualifier,
       explicitMetadata = explicitMetadata,
       nonInheritableMetadataKeys = nonInheritableMetadataKeys)
-  //将 Alias 转换为 Attribute。如果已解析，它会返回一个 AttributeReference，否则返回 UnresolvedAttribute，表示未解析的属性
+  // 将 Alias 转换为 Attribute。如果已解析，它会返回一个 AttributeReference，否则返回 UnresolvedAttribute，表示未解析的属性
   override def toAttribute: Attribute = {
     if (resolved) {
       AttributeReference(name, child.dataType, child.nullable, metadata)(exprId, qualifier)
@@ -220,14 +220,14 @@ case class Alias(child: Expression, name: String)(
       UnresolvedAttribute.quoted(name)
     }
   }
-  //用于添加与事件时间水印（EventTimeWatermark）相关的延迟信息（如果存在的话）
+  // 用于添加与事件时间水印（EventTimeWatermark）相关的延迟信息（如果存在的话）
   /** Used to signal the column used to calculate an eventTime watermark (e.g. a#1-T{delayMs}) */
   private def delaySuffix = if (metadata.contains(EventTimeWatermark.delayKey)) {
     s"-T${metadata.getLong(EventTimeWatermark.delayKey)}ms"
   } else {
     ""
   }
- //从元数据中删除不需要继承的项
+ // 从元数据中删除不需要继承的项
   private def removeNonInheritableMetadata(metadata: Metadata): Metadata = {
     val builder = new MetadataBuilder().withMetadata(metadata)
     nonInheritableMetadataKeys.foreach(builder.remove)
@@ -258,7 +258,7 @@ case class Alias(child: Expression, name: String)(
       if (qualifier.nonEmpty) qualifier.map(quoteIfNeeded).mkString(".") + "." else ""
     s"${child.sql} AS $qualifierPrefix${quoteIfNeeded(name)}"
   }
-  //创建一个新的 Alias 实例，使用新的子表达式
+  // 创建一个新的 Alias 实例，使用新的子表达式
   override protected def withNewChildInternal(newChild: Expression): Alias =
     copy(child = newChild)(exprId, qualifier, explicitMetadata, nonInheritableMetadataKeys)
 }
@@ -284,16 +284,16 @@ object AttributeReferenceTreeBits {
 // Spark SQL 中用于精确标识和引用数据集中某一列的不可变（Immutable）类。
 // 它是 Spark 逻辑查询计划（Logical Plan）中的基础构建块，继承自抽象类 Attribute
 // 唯一身份追踪： 它的核心在于 exprId 属性。在复杂的查询（如包含别名、子查询、连接等）中，列的名称可能会改变，但 exprId 保持不变。这使得 Spark 能够在整个查询优化的过程中，精确地追踪一个逻辑列的起源
-//列元数据载体： 它存储了一列的所有基本元信息，包括名称、数据类型、可空性以及限定符（用于完全限定名称）
+// 列元数据载体： 它存储了一列的所有基本元信息，包括名称、数据类型、可空性以及限定符（用于完全限定名称）
 // 引用机制： 顾名思义，它是一个 “引用”。它代表了上游操作符（父节点）输出的某个属性。例如，在一个 Filter 操作中，其条件表达式中引用的 AttributeReference 就指向了其子节点（数据源或另一个操作）输出的列
 // 不可计算性（Unevaluable）： AttributeReference 只是一个元数据标记，它本身没有计算逻辑（即它不是像 Add(a, b) 这样的表达式）。它在物理执行阶段，会被替换为实际的输入数据列索引
 case class AttributeReference(
-    name: String,  //列名。仅用于分析阶段和调试输出。在运行时，Spark 依靠 exprId 来识别列
+    name: String,  // 列名。仅用于分析阶段和调试输出。在运行时，Spark 依靠 exprId 来识别列
     dataType: DataType,  // 数据类型。表示列的数据类型（如 IntegerType、StringType 等）
     nullable: Boolean = true, //可空性。如果该列允许包含 NULL 值，则为 true（默认值）
-    override val metadata: Metadata = Metadata.empty)(  //元数据。包含列的附加信息，如注释、时间水印（Watermark）信息等。
-    val exprId: ExprId = NamedExpression.newExprId,  //表达式唯一 ID。核心属性。 这是一个全局唯一的 ID。具有相同 exprId 的 AttributeReference 被认为是同一个逻辑属性，即使它们的 name 或 qualifier 不同
-    val qualifier: Seq[String] = Seq.empty[String])  //限定符。用于限定该属性的来源，通常是表名、别名或子查询名。例如，tableA.columnX 中的 tableA 就是限定符
+    override val metadata: Metadata = Metadata.empty)(  // 元数据。包含列的附加信息，如注释、时间水印（Watermark）信息等。
+    val exprId: ExprId = NamedExpression.newExprId,  // 表达式唯一 ID。核心属性。 这是一个全局唯一的 ID。具有相同 exprId 的 AttributeReference 被认为是同一个逻辑属性，即使它们的 name 或 qualifier 不同
+    val qualifier: Seq[String] = Seq.empty[String])  // 限定符。用于限定该属性的来源，通常是表名、别名或子查询名。例如，tableA.columnX 中的 tableA 就是限定符
   extends Attribute with Unevaluable {
 
   override lazy val treePatternBits: BitSet = AttributeReferenceTreeBits.bits

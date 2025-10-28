@@ -753,7 +753,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]]  //BaseType表示子节�
   /**
    * Returns a copy of this node where `f` has been applied to all the nodes in `children`.
    */
-    //应用f函数到子节点，然后把更新后的子节点更新到此节点
+  // 应用f函数到子节点，然后把更新后的子节点更新到此节点
   def mapChildren(f: BaseType => BaseType): BaseType = {
     if (containsChild.nonEmpty) {
       withNewChildren(children.map(f))

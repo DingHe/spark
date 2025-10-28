@@ -93,10 +93,11 @@ object Predicate extends CodeGeneratorWithInterpretedFallback[Expression, BasePr
     createObject(e)
   }
 }
-//主要用途是为逻辑计划中涉及谓词（条件表达式）的处理提供一些常用的辅助方法。
+// 主要用途是为逻辑计划中涉及谓词（条件表达式）的处理提供一些常用的辅助方法。
 // 这些方法主要用于分解、构造、检测以及判断谓词表达式，以便在查询优化和谓词下推等场景中使用
 trait PredicateHelper extends AliasHelper with Logging {
-  //将一个由逻辑与（AND）连接的复合条件拆分成多个独立的子条件
+  // 把一个用逻辑 AND 连接的复合谓词表达式 递归地展开成一个谓词序列（Seq[Expression]），也就是把 a AND (b AND c)、(a AND b) AND c 等形式扁平化为 Seq(a, b, c)
+  // 用途：常用于谓词下推（pushdown）、谓词重写、索引匹配、分解谓词到不同执行单元（例如分派到不同的表扫描或 join 谓词），以及将复合谓词拆为多个单独条件便于独立处理或裁剪。
   protected def splitConjunctivePredicates(condition: Expression): Seq[Expression] = {
     condition match {
       case And(cond1, cond2) =>
@@ -111,28 +112,30 @@ trait PredicateHelper extends AliasHelper with Logging {
    * Returns optional tuple with Expression, undoing any projections and aliasing that has been done
    * along the way from plan to origin, and the origin LeafNode plan from which all the exp
    */
-    //在逻辑计划树中追踪给定表达式 exp 的来源（即最初扫描的叶子节点），同时“还原”沿途因投影和别名所做的修改
+  // 方法实现了表达式血缘追踪（Lineage Tracking），其目的是在逻辑查询计划树中，从上向下追溯给定表达式的输入引用（Attributes）最初来源于哪个叶子节点（LeafNode），
+  // 并还原在追踪过程中经过的 Project 或 Aggregate 节点对表达式所做的别名和投影修改
   def findExpressionAndTrackLineageDown(
-      exp: Expression,
-      plan: LogicalPlan): Option[(Expression, LogicalPlan)] = { //第一个元素是“还原后”的表达式,第二个元素是该表达式最初来自的叶子节点（LeafNode）
-    if (exp.references.isEmpty) return None //如果表达式 exp 的引用集合为空，则返回 None
+      exp: Expression, // 待追踪血缘的表达式（例如一个过滤条件 a > 10 或一个属性 b）
+      plan: LogicalPlan): // plan 是开始追踪的逻辑计划节点
+  Option[(Expression, LogicalPlan)] = { // 第一个元素是“还原后”的表达式,第二个元素是该表达式最初来自的叶子节点（LeafNode）
+    if (exp.references.isEmpty) return None // 如果表达式 exp 的引用集合为空，则返回 None
 
     plan match {
       case p: Project =>
-        //如果当前计划节点是 Project，则获取该节点中的别名映射（getAliasMap(p)），
+        // 如果当前计划节点是 Project，则获取该节点中的别名映射（getAliasMap(p)），
         // 利用 replaceAlias(exp, aliases) 替换表达式中的别名，然后递归对其子节点（p.child）调用该方法
         val aliases = getAliasMap(p)
         findExpressionAndTrackLineageDown(replaceAlias(exp, aliases), p.child)
       // we can unwrap only if there are row projections, and no aggregation operation
       case a: Aggregate =>
-        //对于 Aggregate 节点，同样获取别名映射后，递归追踪其子节点（a.child）
+        // 对于 Aggregate 节点，同样获取别名映射后，递归追踪其子节点（a.child）
         val aliasMap = getAliasMap(a)
         findExpressionAndTrackLineageDown(replaceAlias(exp, aliasMap), a.child)
       case l: LeafNode if exp.references.subsetOf(l.outputSet) =>
-        //如果当前节点是叶子节点，并且 exp 的引用集合是当前叶子节点输出属性的子集，则说明 exp 起源于此，返回该元组
+        // 如果当前节点是叶子节点，并且 exp 的引用集合是当前叶子节点输出属性的子集，则说明 exp 起源于此，返回该元组
         Some((exp, l))
       case u: Union =>
-        //如果当前节点为 Union，则尝试在其子节点中找到与 exp 语义相等的输出属性（通过 indexWhere 查找位置），
+        // 如果当前节点为 Union，则尝试在其子节点中找到与 exp 语义相等的输出属性（通过 indexWhere 查找位置），
         // 并对找到的子节点递归追踪，返回第一个非空结果
         val index = u.output.indexWhere(_.semanticEquals(exp))
         if (index > -1) {
@@ -152,7 +155,7 @@ trait PredicateHelper extends AliasHelper with Logging {
         }.headOption
     }
   }
-  //将一个由逻辑或（OR）连接的复合条件拆分成多个独立的子条件
+  // 目标是把一个复杂的 OR 条件拆成多个简单的条件表达式
   protected def splitDisjunctivePredicates(condition: Expression): Seq[Expression] = {
     condition match {
       case Or(cond1, cond2) =>
@@ -167,15 +170,20 @@ trait PredicateHelper extends AliasHelper with Logging {
    * Example:  exprs = [a, b, c, d], op = And, returns (a And b) And (c And d)
    * exprs = [a, b, c, d, e, f], op = And, returns ((a And b) And (c And d)) And (e And f)
    */
-    //将一组谓词表达式通过二元操作符（例如 AND 或 OR）构造为一棵平衡的二叉树结构
+  // 核心作用是将输入的谓词表达式列表，通过一个指定的二元操作符（如 And 或 Or），自底向上地构建成一个平衡的二叉树结构的复合表达式
+  // 构建平衡树的目的是避免表达式树深度过大（例如 a AND b AND c AND d 形成一条链），因为深度过大的树可能导致 JVM 栈溢出或查询优化器处理效率低下
+  // expressions: 需要组合的谓词表达式序列
+  // op: 用于组合表达式的二元操作符函数（例如传入 And 构造函数）
   protected def buildBalancedPredicate(
       expressions: Seq[Expression], op: (Expression, Expression) => Expression): Expression = {
     assert(expressions.nonEmpty)
     var currentResult = expressions
     while (currentResult.size != 1) {
       var i = 0
+      // 创建一个新数组 nextResult，用于存放本轮合并后的结果。数组大小为当前表达式数量的一半，加上可能存在的奇数项（currentResult.size % 2）
       val nextResult = new Array[Expression](currentResult.size / 2 + currentResult.size % 2)
       while (i < currentResult.size) {
+        //下面的i += 2 导致这里要除以2
         nextResult(i / 2) = if (i + 1 == currentResult.size) {
           currentResult(i)
         } else {
@@ -199,28 +207,37 @@ trait PredicateHelper extends AliasHelper with Logging {
    * - `canEvaluate(EqualTo(a,c), R)` returns `false`
    * - `canEvaluate(Literal(1), R)` returns `true` as literals CAN be evaluated on any plan
    */
-    //判断一个表达式 expr 是否可以仅利用给定逻辑计划 plan 的输出属性来求值
+  // 判断一个表达式 expr 是否可以仅利用给定逻辑计划 plan 的输出属性来求值
   protected def canEvaluate(expr: Expression, plan: LogicalPlan): Boolean =
     expr.references.subsetOf(plan.outputSet)
 
   /**
    * Returns true iff `expr` could be evaluated as a condition within join.
    */
-    //判断一个表达式是否可以作为连接（Join）条件中的一部分求值
+  // 用于递归地判断一个给定的表达式（expr）是否适合作为 Join（连接）操作符内部的条件进行求值
+  // 这个判断对于 Spark 优化器至关重要，因为它决定了哪些表达式可以作为 Join 的连接条件（Join.condition），哪些必须在 Join 之外处理（如转换为子查询连接、提前计算或被推到更下游
   protected def canEvaluateWithinJoin(expr: Expression): Boolean = expr match {
     // Non-deterministic expressions are not allowed as join conditions.
-    case e if !e.deterministic => false  //如果表达式 !e.deterministic（非确定性）则返回 false
-    case _: ListQuery | _: Exists =>  //如果表达式属于 ListQuery 或 Exists，则返回 false，因为这类表达式不能在 Join 中直接求值（需要转换为特定的连接操作）
+    // 如果表达式 !e.deterministic（非确定性）则返回 false
+    // 非确定性表达式不能作为 Join 条件，因为它们在重复计算时可能产生不同结果，破坏 Join 语义
+    case e if !e.deterministic => false
+    // 如果表达式属于 ListQuery 或 Exists，则返回 false，因为这类表达式不能在 Join 中直接求值（需要转换为特定的连接操作）
+    case _: ListQuery | _: Exists =>
       // A ListQuery defines the query which we want to search in an IN subquery expression.
       // Currently the only way to evaluate an IN subquery is to convert it to a
       // LeftSemi/LeftAnti/ExistenceJoin by `RewritePredicateSubquery` rule.
       // It cannot be evaluated as part of a Join operator.
       // An Exists shouldn't be push into a Join operator too.
       false
-    case e: SubqueryExpression =>  //如果是子查询表达式，则只有当子查询没有子节点（非关联子查询）时才允许
+    // 如果是子查询表达式，则只有当子查询没有子节点（非关联子查询）时才允许
+    // 检查子查询表达式的 children 集合是否为空。
+    // 在 Spark 逻辑计划中，children 为空通常表示这是一个非关联子查询（Non-correlated Subquery）。
+    // 非关联子查询可以提前计算并被视为常量，因此可以在 Join 中求值（返回 true）。关联子查询则不能
+    case e: SubqueryExpression =>
       // non-correlated subquery will be replaced as literal
       e.children.isEmpty
-    case a: AttributeReference => true  //直接允许属性引用返回 true
+    // 直接允许属性引用返回 true
+    case a: AttributeReference => true
     // PythonUDF will be executed by dedicated physical operator later.
     // For PythonUDFs that can't be evaluated in join condition, `ExtractPythonUDFFromJoinCondition`
     // will pull them out later.
@@ -234,16 +251,21 @@ trait PredicateHelper extends AliasHelper with Logging {
    * constraints from `condition`. This is used for predicate pushdown.
    * When there is no such filter, `None` is returned.
    */
-    //从给定条件 condition 中提取出那些其引用属性都属于 outputSet 的子谓词，并返回组合后的表达式
+  // 该方法在 Spark 优化器的**谓词下推（Predicate Pushdown）**过程中至关重要
+  // 核心作用是：从一个复杂的布尔表达式（condition）中，递归地提取出所有子谓词，这些子谓词引用的所有属性（references）都必须是目标属性集合（outputSet）的子集
   protected def extractPredicatesWithinOutputSet(
-      condition: Expression,
-      outputSet: AttributeSet): Option[Expression] = condition match {
+      condition: Expression, // 需要从中提取子谓词的完整布尔表达式（例如，一个 WHERE 子句）
+      outputSet: AttributeSet): // outputSet 是目标属性集合（例如，一个表或子计划的输出列）。该方法将通过模式匹配来处理不同类型的布尔连接符。
+  Option[Expression] = condition match {
     case And(left, right) =>
       val leftResultOptional = extractPredicatesWithinOutputSet(left, outputSet)
       val rightResultOptional = extractPredicatesWithinOutputSet(right, outputSet)
       (leftResultOptional, rightResultOptional) match {
+        // 如果左右两侧都成功提取到了可下推的谓词，则将它们用 AND 重新组合，作为新的可下推谓词返回。
         case (Some(leftResult), Some(rightResult)) => Some(And(leftResult, rightResult))
+        // 如果只有左侧成功提取，则只返回左侧的谓词。
         case (Some(leftResult), None) => Some(leftResult)
+        // 如果只有右侧成功提取，则只返回右侧的谓词。
         case (None, Some(rightResult)) => Some(rightResult)
         case _ => None
       }
@@ -260,6 +282,9 @@ trait PredicateHelper extends AliasHelper with Logging {
     // The predicate can be converted as
     // (a1 OR b1) AND (a1 OR b2) AND (a2 OR b1) AND (a2 OR b2)
     // As per the logical in And predicate, we can push down (a1 OR b1).
+    // OR 谓词的可转换性逻辑：如果 OR 的两个子表达式都可以被完全或部分下推，那么这个 OR 谓词就可以被下推。
+    // 在 AND 的情况下，只要子句能够被下推，就可以提取；
+    // 但在 OR 的情况下，需要两个子句都能够被提取，才能将 OR 整体下推。
     case Or(left, right) =>
       for {
         lhs <- extractPredicatesWithinOutputSet(left, outputSet)
@@ -269,7 +294,9 @@ trait PredicateHelper extends AliasHelper with Logging {
     // Here we assume all the `Not` operators is already below all the `And` and `Or` operators
     // after the optimization rule `BooleanSimplification`, so that we don't need to handle the
     // `Not` operators here.
+    // 假定在之前的 BooleanSimplification 优化规则运行后，所有的 Not 操作符已经被下推到 AND 和 OR 操作符之下。因此，在这个函数被调用时，Not 不会出现在 AND 或 OR 的位置
     case other =>
+      // 检查该表达式引用的所有属性（other.references）是否都是目标集合 outputSet 的子集
       if (other.references.subsetOf(outputSet)) {
         Some(other)
       } else {
@@ -278,12 +305,13 @@ trait PredicateHelper extends AliasHelper with Logging {
   }
 
   // If one expression and its children are null intolerant, it is null intolerant.
-  //判断一个表达式是否对 null 值不容忍，即该表达式的计算结果会因为输入中出现 null 而返回 null
+  // 判断一个表达式是否对 null 值不容忍，即该表达式的计算结果会因为输入中出现 null 而返回 null
   protected def isNullIntolerant(expr: Expression): Boolean = expr match {
-    case e: NullIntolerant => e.children.forall(isNullIntolerant)  //所有子表达式容忍空值，则该表达式也容热空值
+    case e: NullIntolerant => e.children.forall(isNullIntolerant)  // 所有子表达式容忍空值，则该表达式也容热空值
     case _ => false
   }
-  //调整一组输出属性的 nullability（是否可为空），如果属性当前标记为可空，但其表达式 ID 在 nonNullAttrExprIds 中，则将其标记为不可空
+
+  // 调整一组输出属性的 nullability（是否可为空），如果属性当前标记为可空，但其表达式 ID 在 nonNullAttrExprIds 中，则将其标记为不可空
   protected def outputWithNullability(
       output: Seq[Attribute],
       nonNullAttrExprIds: Seq[ExprId]): Seq[Attribute] = {
@@ -299,12 +327,13 @@ trait PredicateHelper extends AliasHelper with Logging {
   /**
    * Returns whether an expression is likely to be selective
    */
-    //判断一个表达式是否“可能具有较强选择性”，即该表达式在过滤数据时可能大幅减少返回结果的数量
+  // 是 Spark 优化器进行启发式判断的关键工具，用于评估一个谓词表达式是否具有较强的选择性（Selectivity）
+  // 选择性指的是一个过滤条件能够将数据集规模缩小多少的能力。选择性高的谓词（例如 id = 1）通常比选择性低的谓词（例如 status != 'active'）更有利于查询优化，应尽可能早地推下执行。
   def isLikelySelective(e: Expression): Boolean = e match {
-    case Not(expr) => isLikelySelective(expr)  //递归判断内部表达式
-    case And(l, r) => isLikelySelective(l) || isLikelySelective(r) //如果任一子表达式具有选择性，则认为整体具有选择性
-    case Or(l, r) => isLikelySelective(l) && isLikelySelective(r) //要求两个子表达式均具有选择性
-    case _: StringRegexExpression => true  //针对常见的字符串正则匹配、二元比较、In/InSet、字符串谓词、二元谓词、多 Like 操作等返回 true
+    case Not(expr) => isLikelySelective(expr)  // 如果表达式是 Not(expr)，则其选择性与其内部表达式 expr 的选择性相同
+    case And(l, r) => isLikelySelective(l) || isLikelySelective(r) // 如果任一子表达式具有选择性，则认为整体具有选择性
+    case Or(l, r) => isLikelySelective(l) && isLikelySelective(r) // 要求两个子表达式均具有选择性
+    case _: StringRegexExpression => true  // 针对常见的字符串正则匹配、二元比较、In/InSet、字符串谓词、二元谓词、多 Like 操作等返回 true
     case _: BinaryComparison => true
     case _: In | _: InSet => true
     case _: StringPredicate => true

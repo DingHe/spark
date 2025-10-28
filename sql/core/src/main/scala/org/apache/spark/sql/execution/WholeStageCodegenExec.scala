@@ -43,7 +43,7 @@ import org.apache.spark.util.Utils
 /**
  * An interface for those physical operators that support codegen.
  */
-//用于支持生成代码的物理执行计划节点
+// 用于支持生成代码的物理执行计划节点
 trait CodegenSupport extends SparkPlan {
 
   /** Prefix used in the current operator's variable names. */

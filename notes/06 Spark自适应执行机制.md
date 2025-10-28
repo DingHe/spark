@@ -104,6 +104,10 @@
 
   - spark.sql.adaptive.customCostEvaluatorClass 可以配置自定义成本模型
 
+  - spark.sql.adaptive.autoBroadcastJoinThreshold 如果表小于这个阀值，可以考虑广播连接
+
+  - spark.sql.autoBroadcastJoinThreshold sql中默认自动选择广播连接的参数
+
 # 6、测试类
 
   - AdaptiveQueryExecSuite

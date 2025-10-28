@@ -28,14 +28,19 @@ import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.execution.{CodegenSupport, ExplainUtils, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.util.collection.{BitSet, CompactBuffer}
-//执行广播嵌套循环连接（Broadcast Nested Loop Join, BNJ）的执行计划类。该类通过广播一个表，并使用嵌套循环的方式与另一个表进行连接。
-// 它是 Spark SQL 中一种连接实现方式，特别适用于右侧表非常小（适合广播）而左侧表较大的场景
+// Spark SQL 中用于执行广播嵌套循环连接的操作符
+// 数据广播： 它将连接中的较小一侧（由 buildSide 指定，称为 Build Side）的数据，完整地收集到一个 Array[InternalRow] 中，并通过 Spark 的广播机制 (Broadcast) 分发给集群中的所有 Executor。
+// 嵌套循环连接 (Nested Loop Join)： 在每个 Executor 上，它使用较大一侧（称为 Streamed Side）的分区数据流，与已广播的全部 Build Side 数据进行嵌套循环配对（即，Streamed Side 的每一行都与 Build Side 的每一行进行尝试连接）。
+// 支持非等值连接： 与要求连接键相等的 BroadcastHashJoinExec 不同，BNLJ 通常用于实现非等值连接（Non-Equi Join），因为它不依赖于哈希查找，而是依赖于条件 (condition) 对所有可能的行配对进行过滤。
+// 适用场景：
+// Build Side 的数据量很小，可以放入 Executor 内存并高效广播。
+// Join 条件是复杂的非等值条件（如 A.col > B.col），而无法使用 Hash Join 或 Sort Merge Join。
 case class BroadcastNestedLoopJoinExec(
-    left: SparkPlan, //表示连接操作的左侧子查询或数据源
-    right: SparkPlan, //表示连接操作的右侧子查询或数据源
-    buildSide: BuildSide, //指定哪个表用于广播（即广播表）
+    left: SparkPlan, // 表示连接操作的左侧子查询或数据源
+    right: SparkPlan, // 表示连接操作的右侧子查询或数据源
+    buildSide: BuildSide, // 指定哪个表用于广播（即广播表）
     joinType: JoinType,
-    condition: Option[Expression]) extends JoinCodegenSupport { //连接的条件表达式
+    condition: Option[Expression]) extends JoinCodegenSupport { // 必需的过滤条件表达式。在每一对行组合后，必须满足此条件才能作为连接结果输出。
 
   override def leftKeys: Seq[Expression] = Nil
   override def rightKeys: Seq[Expression] = Nil
@@ -114,6 +119,8 @@ case class BroadcastNestedLoopJoinExec(
   /**
    * The implementation for InnerJoin.
    */
+  // Inner Join 实现
+  // 在每个分区内，遍历 Streamed Side 的每一行，然后遍历广播的 Build Side 的所有行，组合后应用 boundCondition 过滤。
   private def innerJoin(relation: Broadcast[Array[InternalRow]]): RDD[InternalRow] = {
     streamed.execute().mapPartitionsInternal { streamedIter =>
       val buildRows = relation.value
@@ -136,6 +143,9 @@ case class BroadcastNestedLoopJoinExec(
    *   LeftOuter with BuildRight
    *   RightOuter with BuildLeft
    */
+  // Left/Right Outer Join 实现
+  // 使用 Iterator 抽象来处理 LeftOuter (BuildRight) 或 RightOuter (BuildLeft)。 - 遍历 Streamed Side 的行，并尝试找到 Build Side 的匹配行。
+  // 关键： 如果 Streamed Side 的行没有找到任何匹配，则与 Build Side 的 NULL 行组合后输出
   private def outerJoin(relation: Broadcast[Array[InternalRow]]): RDD[InternalRow] = {
     streamed.execute().mapPartitionsInternal { streamedIter =>
       val buildRows = relation.value

@@ -33,26 +33,26 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BooleanType
 import org.apache.spark.util.collection.BitSet
 
-/** 执行 Sort-Merge Join 操作的执行计划类，通常用于大数据量的连接操作
+/**  执行 Sort-Merge Join 操作的执行计划类，通常用于大数据量的连接操作
  * Performs a sort merge join of two child relations.
  */
 case class SortMergeJoinExec(
-    leftKeys: Seq[Expression],  //左侧表的连接键
-    rightKeys: Seq[Expression], //右侧表的连接键
+    leftKeys: Seq[Expression],  // 左侧表的连接键
+    rightKeys: Seq[Expression], // 右侧表的连接键
     joinType: JoinType,
-    condition: Option[Expression],  //表示是否有额外的过滤条件
-    left: SparkPlan, //左侧子查询的执行计划
+    condition: Option[Expression],  // 非等值连接条件
+    left: SparkPlan, // 左侧子查询的执行计划
     right: SparkPlan,
     isSkewJoin: Boolean = false) extends ShuffledJoin { //是否为倾斜连接，默认为 false
   //"numOutputRows"：记录输出行的数量
-  //"spillSize"：记录溢写的大小
+  //"spillSize"： 记录溢写的大小
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"))
-  //表示输出的排序规则
+  // 表示输出的排序规则
   override def outputOrdering: Seq[SortOrder] = joinType match {
     // For inner join, orders of both sides keys should be kept.
-    case _: InnerLike => //左侧和右侧的连接键的排序都应该保留
+    case _: InnerLike => // 左侧和右侧的连接键的排序都应该保留
       val leftKeyOrdering = getKeyOrdering(leftKeys, left.outputOrdering)
       val rightKeyOrdering = getKeyOrdering(rightKeys, right.outputOrdering)
       leftKeyOrdering.zip(rightKeyOrdering).map { case (lKey, rKey) =>
@@ -79,15 +79,15 @@ case class SortMergeJoinExec(
    * again, returns the required ordering for this child with extra "sameOrderExpressions" from
    * the child's outputOrdering.
    */
-  //用于生成所需的排序规则（SortOrder），以保证左侧和右侧连接子查询的排序满足连接操作的要求
-  //keys: Seq[Expression] 表示连接操作的连接键
-  //childOutputOrdering: Seq[SortOrder] 子查询输出的排序顺序
+  // 用于生成所需的排序规则（SortOrder），以保证左侧和右侧连接子查询的排序满足连接操作的要求
+  // keys: Seq[Expression] 表示连接操作的连接键
+  // childOutputOrdering: Seq[SortOrder] 子查询输出的排序顺序
   private def getKeyOrdering(keys: Seq[Expression], childOutputOrdering: Seq[SortOrder])
     : Seq[SortOrder] = {
-    val requiredOrdering = requiredOrders(keys)  //根据连接键（keys）所需要的排序规则
-    if (SortOrder.orderingSatisfies(childOutputOrdering, requiredOrdering)) { //检查 childOutputOrdering 是否已经满足 requiredOrdering，即子查询的排序是否已经满足连接所需的顺序
+    val requiredOrdering = requiredOrders(keys)  // 根据连接键（keys）所需要的排序规则
+    if (SortOrder.orderingSatisfies(childOutputOrdering, requiredOrdering)) { // 检查 childOutputOrdering 是否已经满足 requiredOrdering，即子查询的排序是否已经满足连接所需的顺序
       keys.zip(childOutputOrdering).map { case (key, childOrder) =>
-        val sameOrderExpressionsSet = ExpressionSet(childOrder.children) - key //将子查询排序中与连接键相同的表达式移除，目的是在连接键已经正确排序的情况下，保留子查询中其他相关的排序信息
+        val sameOrderExpressionsSet = ExpressionSet(childOrder.children) - key // 将子查询排序中与连接键相同的表达式移除，目的是在连接键已经正确排序的情况下，保留子查询中其他相关的排序信息
         SortOrder(key, Ascending, sameOrderExpressionsSet.toSeq)
       }
     } else {
@@ -108,12 +108,12 @@ case class SortMergeJoinExec(
   }
 
   // Flag to only buffer first matched row, to avoid buffering unnecessary rows.
-  //决定是否仅缓冲第一个匹配的行。对于左存在连接（LeftExistence）且没有连接条件时，只有第一个匹配的行会被缓冲
+  // 决定是否仅缓冲第一个匹配的行。对于左存在连接（LeftExistence）且没有连接条件时，只有第一个匹配的行会被缓冲
   private val onlyBufferFirstMatchedRow = (joinType, condition) match {
     case (LeftExistence(_), None) => true
     case _ => false
   }
-  //返回内存阈值。若只缓冲第一个匹配的行，则内存阈值为 1，否则返回配置中的内存阈值
+  // 返回内存阈值。若只缓冲第一个匹配的行，则内存阈值为 1，否则返回配置中的内存阈值
   private def getInMemoryThreshold: Int = {
     if (onlyBufferFirstMatchedRow) {
       1
@@ -121,7 +121,7 @@ case class SortMergeJoinExec(
       conf.sortMergeJoinExecBufferInMemoryThreshold
     }
   }
-  //执行连接操作
+  // 执行连接操作
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     val spillSize = longMetric("spillSize")

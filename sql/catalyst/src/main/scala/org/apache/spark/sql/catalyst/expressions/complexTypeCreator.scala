@@ -434,7 +434,7 @@ object CreateStruct {
   since = "1.5.0",
   group = "struct_funcs")
 // scalastyle:on line.size.limit
-//用来创建一个包含字段名和值的结构体（Struct）的表达式类，每两个参数分别是字段名和字段值
+// 用来创建一个包含字段名和值的结构体（Struct）的表达式类，每两个参数分别是字段名和字段值
 case class CreateNamedStruct(children: Seq[Expression]) extends Expression with NoThrow {
   lazy val (nameExprs, valExprs) = children.grouped(2).map {
     case Seq(name, value) => (name, value)

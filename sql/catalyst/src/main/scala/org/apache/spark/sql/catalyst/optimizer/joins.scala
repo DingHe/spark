@@ -282,20 +282,20 @@ sealed abstract class BuildSide
 case object BuildRight extends BuildSide
 
 case object BuildLeft extends BuildSide
-//用来辅助选择和优化连接策略（如广播连接、哈希连接、排序合并连接等）的特征类。
-// 它包含了多个方法和属性，帮助决定在特定的连接条件下，如何选择最合适的连接方式
+// Spark Catalyst 优化器中，选择最佳物理 Join 策略的关键辅助工具集
+
 trait JoinSelectionHelper {
-  // 决定哪个数据集（左侧或右侧）可以用于广播（Broadcast Join）。
-  // 如果提供了连接提示 hint，这个方法会根据提示选择是否进行广播。hintOnly 为 true 时，表示仅检查提示，而不考虑其他条件
+  // 作用是根据连接双方的统计信息、连接类型和用户/内部提示，
+  // 决定在执行广播哈希连接（Broadcast Hash Join）时，应该将连接的哪一侧（左侧或右侧）作为构建（Build）侧进行广播
   def getBroadcastBuildSide(
       left: LogicalPlan, //left, right: 左右两个逻辑计划，表示要连接的数据集
       right: LogicalPlan,
       joinType: JoinType,
-      hint: JoinHint,  //连接提示，用于指示优化器选择连接策略
-      hintOnly: Boolean,
+      hint: JoinHint,  // 用户或 AQE 提供的连接提示，例如 BROADCAST 或 NO_BROADCAST_HASH
+      hintOnly: Boolean, // 一个布尔标志。如果为 true，则表示只考虑用户/内部提示，而忽略数据大小的统计信息
       conf: SQLConf): Option[BuildSide] = {
     val buildLeft = if (hintOnly) {
-      hintToBroadcastLeft(hint)   //根据hint判断是否左侧使用广播
+      hintToBroadcastLeft(hint)   // 根据hint判断是否左侧使用广播
     } else {
       canBroadcastBySize(left, conf) && !hintToNotBroadcastLeft(hint) //判断给定的逻辑计划是否足够小，适合用于广播连接
     }
@@ -311,22 +311,25 @@ trait JoinSelectionHelper {
       right
     )
   }
-  //作用是根据不同的连接提示、连接类型和配置，判断在 Shuffle Hash Join 连接中，应该选择左侧还是右侧作为构建侧（build side）
+  // 作用是根据连接双方的条件、连接类型和提示，决定在执行 Shuffle Hash Join 时，
+  // 应该将连接的哪一侧（左侧或右侧）作为构建（Build）侧（即较小的那一侧，用于在 Shuffle 后构建哈希表）
   def getShuffleHashJoinBuildSide(
       left: LogicalPlan,
       right: LogicalPlan,
       joinType: JoinType,
       hint: JoinHint,
-      hintOnly: Boolean, //如果为 true，仅根据连接提示判断是否进行广播或其他策略，而不考虑数据大小等其他因素
+      hintOnly: Boolean, // 如果为 true，仅根据连接提示判断是否进行广播或其他策略，而不考虑数据大小等其他因素
       conf: SQLConf): Option[BuildSide] = {
+    // 左侧构建可行性
+    // 表示左侧是否适合作为构建侧
     val buildLeft = if (hintOnly) {
       hintToShuffleHashJoinLeft(hint)
     } else {
-      hintToPreferShuffleHashJoinLeft(hint) || // 如果连接提示要求优先使用 Shuffle Hash Join，则左侧可以作为构建侧
-      //如果配置中不偏好排序合并连接，并且左侧的数据集足够小，可以在本地构建哈希表，且左侧的数据集比右侧小得多（通过字节大小估算），则左侧适合作为构建侧
+      //  如果连接提示要求优先使用 Shuffle Hash Join，则左侧可以作为构建侧
+      //  如果配置中不偏好排序合并连接，并且左侧的数据集足够小，可以在本地构建哈希表，且左侧的数据集比右侧小得多（通过字节大小估算），则左侧适合作为构建侧
+      hintToPreferShuffleHashJoinLeft(hint) ||
         (!conf.preferSortMergeJoin && canBuildLocalHashMapBySize(left, conf) &&
           muchSmaller(left, right, conf)) ||
-      //如果配置强制应用 Shuffled Hash Join，则左侧也适合作为构建侧
         forceApplyShuffledHashJoin(conf)
     }
     val buildRight = if (hintOnly) {
@@ -344,7 +347,7 @@ trait JoinSelectionHelper {
       right
     )
   }
-  //作用是根据连接提示（hint），判断在 Broadcast Nested Loop Join（广播嵌套循环连接）中，应该选择左侧（BuildLeft）还是右侧（BuildRight）作为构建侧
+  // 作用是根据连接提示（hint），判断在 Broadcast Nested Loop Join（广播嵌套循环连接）中，应该选择左侧（BuildLeft）还是右侧（BuildRight）作为构建侧
   def getBroadcastNestedLoopJoinBuildSide(hint: JoinHint): Option[BuildSide] = {
     if (hintToNotBroadcastAndReplicateLeft(hint)) {
       Some(BuildRight)
@@ -354,7 +357,7 @@ trait JoinSelectionHelper {
       None
     }
   }
-  //比较左右两计划数据的大小
+  // 比较左右两计划数据的大小
   def getSmallerSide(left: LogicalPlan, right: LogicalPlan): BuildSide = {
     if (right.stats.sizeInBytes <= left.stats.sizeInBytes) BuildRight else BuildLeft
   }
@@ -371,28 +374,28 @@ trait JoinSelectionHelper {
     }
     plan.stats.sizeInBytes >= 0 && plan.stats.sizeInBytes <= autoBroadcastJoinThreshold
   }
-  //判断左侧是否能广播
+  // 判断左侧是否能广播
   def canBuildBroadcastLeft(joinType: JoinType): Boolean = {
     joinType match {
       case _: InnerLike | RightOuter => true
       case _ => false
     }
   }
-  //判断右侧是否能广播
+  // 判断右侧是否能广播
   def canBuildBroadcastRight(joinType: JoinType): Boolean = {
     joinType match {
       case _: InnerLike | LeftOuter | LeftSemi | LeftAnti | _: ExistenceJoin => true
       case _ => false
     }
   }
-
+  // 判断连接类型是否支持shuffle hash join
   def canBuildShuffledHashJoinLeft(joinType: JoinType): Boolean = {
     joinType match {
       case _: InnerLike | LeftOuter | FullOuter | RightOuter => true
       case _ => false
     }
   }
-
+  // 判断由表是否支持shuffle hash join
   def canBuildShuffledHashJoinRight(joinType: JoinType): Boolean = {
     joinType match {
       case _: InnerLike | LeftOuter | FullOuter | RightOuter |
@@ -400,7 +403,7 @@ trait JoinSelectionHelper {
       case _ => false
     }
   }
-
+  // 判断是否能采用 **广播哈希连接 (Broadcast Hash Join, BHJ)**
   def canPlanAsBroadcastHashJoin(join: Join, conf: SQLConf): Boolean = {
     getBroadcastBuildSide(join.left, join.right, join.joinType,
       join.hint, hintOnly = true, conf).isDefined ||
@@ -417,15 +420,15 @@ trait JoinSelectionHelper {
     case Inner | LeftSemi | LeftOuter => true
     case _ => false
   }
-  //hint提示左侧使用广播
+  // hint提示左侧使用广播
   def hintToBroadcastLeft(hint: JoinHint): Boolean = {
     hint.leftHint.exists(_.strategy.contains(BROADCAST))
   }
-  //hint提示右侧使用广播
+  // hint提示右侧使用广播
   def hintToBroadcastRight(hint: JoinHint): Boolean = {
     hint.rightHint.exists(_.strategy.contains(BROADCAST))
   }
-
+  // 提示左侧表不要采用广播
   def hintToNotBroadcastLeft(hint: JoinHint): Boolean = {
     hint.leftHint.flatMap(_.strategy).exists {
       case NO_BROADCAST_HASH => true
@@ -441,11 +444,11 @@ trait JoinSelectionHelper {
       case _ => false
     }
   }
-  //判断左侧是否是shuffle_hash join
+  // 表示连接左侧是否被提示使用 Shuffle Hash Join
   def hintToShuffleHashJoinLeft(hint: JoinHint): Boolean = {
     hint.leftHint.exists(_.strategy.contains(SHUFFLE_HASH))
   }
-  //判断右侧是否是shuffle_hash join
+  // 表示连接右侧是否被提示使用 Shuffle Hash Join
   def hintToShuffleHashJoinRight(hint: JoinHint): Boolean = {
     hint.rightHint.exists(_.strategy.contains(SHUFFLE_HASH))
   }
@@ -457,15 +460,15 @@ trait JoinSelectionHelper {
   def hintToPreferShuffleHashJoinRight(hint: JoinHint): Boolean = {
     hint.rightHint.exists(_.strategy.contains(PREFER_SHUFFLE_HASH))
   }
-
+  // 检查是否提示偏好shuffle hash join连接
   def hintToPreferShuffleHashJoin(hint: JoinHint): Boolean = {
     hintToPreferShuffleHashJoinLeft(hint) || hintToPreferShuffleHashJoinRight(hint)
   }
-
+  // 检查是否提示采用shuffle hash join连接
   def hintToShuffleHashJoin(hint: JoinHint): Boolean = {
     hintToShuffleHashJoinLeft(hint) || hintToShuffleHashJoinRight(hint)
   }
-
+  // 检查是否提示采用sort merge join连接
   def hintToSortMergeJoin(hint: JoinHint): Boolean = {
     hint.leftHint.exists(_.strategy.contains(SHUFFLE_MERGE)) ||
       hint.rightHint.exists(_.strategy.contains(SHUFFLE_MERGE))
@@ -475,19 +478,19 @@ trait JoinSelectionHelper {
     hint.leftHint.exists(_.strategy.contains(SHUFFLE_REPLICATE_NL)) ||
       hint.rightHint.exists(_.strategy.contains(SHUFFLE_REPLICATE_NL))
   }
-  //禁止广播和复制
+  // 禁止广播和复制
   def hintToNotBroadcastAndReplicate(hint: JoinHint): Boolean = {
     hintToNotBroadcastAndReplicateLeft(hint) || hintToNotBroadcastAndReplicateRight(hint)
   }
-  //禁止左侧广播和复制
+  // 禁止左侧广播和复制
   def hintToNotBroadcastAndReplicateLeft(hint: JoinHint): Boolean = {
     hint.leftHint.exists(_.strategy.contains(NO_BROADCAST_AND_REPLICATION))
   }
-  //禁止右侧广播和复制
+  // 禁止右侧广播和复制
   def hintToNotBroadcastAndReplicateRight(hint: JoinHint): Boolean = {
     hint.rightHint.exists(_.strategy.contains(NO_BROADCAST_AND_REPLICATION))
   }
-  //根据左右是否能广播，返回适当的广播侧
+  // 返回hash连接的构建侧（也就是表小的一侧）
   private def getBuildSide(
       canBuildLeft: Boolean,
       canBuildRight: Boolean,
@@ -512,6 +515,7 @@ trait JoinSelectionHelper {
    * Note: this assume that the number of partition is fixed, requires additional work if it's
    * dynamic.
    */
+    //
   private def canBuildLocalHashMapBySize(plan: LogicalPlan, conf: SQLConf): Boolean = {
     plan.stats.sizeInBytes < conf.autoBroadcastJoinThreshold * conf.numShufflePartitions
   }

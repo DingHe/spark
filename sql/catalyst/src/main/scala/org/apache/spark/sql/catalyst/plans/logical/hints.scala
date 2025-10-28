@@ -60,6 +60,8 @@ case class ResolvedHint(child: LogicalPlan, hints: HintInfo = HintInfo())
  * Hint that is associated with a [[Join]] node, with [[HintInfo]] on its left child and on its
  * right child respectively.
  */
+// 连接提示容器： 它将一个 Join 操作可能收到的所有优化提示（特别是连接策略提示）组织在一个单一对象中
+// 区分左右侧： 明确区分应用于连接左侧输入（例如左表）的提示和应用于右侧输入（例如右表）的提示。这是必要的，因为像 BROADCAST 这样的提示只适用于连接的一个特定输入
 case class JoinHint(leftHint: Option[HintInfo], rightHint: Option[HintInfo]) {
 
   def isEmpty: Boolean = leftHint.isEmpty && rightHint.isEmpty
@@ -81,6 +83,9 @@ object JoinHint {
  *
  * @param strategy The preferred join strategy.
  */
+// 用于封装一个查询计划节点（如表引用或连接操作）所携带的优化提示信息
+// 存储连接策略： 存储用户通过 SQL 提示（例如 /*+ BROADCAST(t) */）指定给该节点的首选连接策略
+// 合并逻辑： 提供一个 merge 方法，用于在 Spark 遍历和合并优化提示时，安全地合并来自不同源头（例如嵌套视图或子查询）的提示信息，并处理潜在的冲突。
 case class HintInfo(strategy: Option[JoinStrategyHint] = None) {
 
   /**
@@ -94,7 +99,11 @@ case class HintInfo(strategy: Option[JoinStrategyHint] = None) {
    * `hintOverriddenCallback` will be called if this [[HintInfo]] and the other [[HintInfo]]
    * both have a strategy defined but the join strategies are different.
    */
+  // 用于将当前的 HintInfo 对象与另一个 HintInfo 对象进行合并，以解决优化提示的优先级和冲突问题
   def merge(other: HintInfo, hintErrorHandler: HintErrorHandler): HintInfo = {
+    // 检查当前对象和另一个对象是否都定义了连接策略提示
+    // 如果都定义了，检查这两个提示是否不同（即发生了冲突）
+    // 如果存在不同且冲突，则调用错误处理器的 hintOverridden 方法，报告冲突情况
     if (this.strategy.isDefined &&
         other.strategy.isDefined &&
         this.strategy.get != other.strategy.get) {
@@ -105,10 +114,15 @@ case class HintInfo(strategy: Option[JoinStrategyHint] = None) {
 
   override def toString: String = strategy.map(s => s"(strategy=$s)").getOrElse("none")
 }
-
+// 用于定义连接策略提示
+// 提示允许用户在 SQL 查询中显式地告诉 Spark 优化器应该使用哪种连接算法（例如，广播哈希连接、排序合并连接等）
 sealed abstract class JoinStrategyHint {
-
+  // 用户友好的显示名称
+  // 例如，BroadcastHint 的 displayName 可能是 "BROADCAST" 或 "BROADCASTJOIN"。它通常是用户在 SQL 中使用的提示名称
   def displayName: String
+  // 提示的别名集合
+  // 定义了用户在 SQL 查询中可以用来指代这个提示的所有别名或缩写形式。
+  // 例如，SortMergeHint 可能有 {"SORTMERGE", "SMJ"} 这样的别名集合
   def hintAliases: Set[String]
 
   override def toString: String = displayName
@@ -134,6 +148,10 @@ object JoinStrategyHint {
  * The hint for broadcast hash join or broadcast nested loop join, depending on the availability of
  * equi-join keys.
  */
+// 指示 Spark 优化器对连接中的一个或多个指定表使用广播连接。这意味着被指定的表（或结果集）将被复制到集群中所有执行器的内存中。
+// 如果连接是等值连接（equi-join），Spark 将使用 Broadcast Hash Join (BHJ)。这是最常见的广播连接形式，效率很高。
+// 如果连接是非等值连接（non-equi-join），Spark 将使用效率较低的 Broadcast Nested Loop Join (BNLJ)
+// 适用场景： 当被广播的表足够小，能够舒适地放入所有执行器内存时，广播连接可以显著提高性能，因为它避免了昂贵的 Shuffle 操作。
 case object BROADCAST extends JoinStrategyHint {
   override def displayName: String = "broadcast"
   override def hintAliases: Set[String] = Set(
@@ -145,6 +163,10 @@ case object BROADCAST extends JoinStrategyHint {
 /**
  * The hint for shuffle sort merge join.
  */
+// 允许用户在 SQL 查询中明确指示 Spark 优化器对指定的连接操作使用 Sort Merge Join (SMJ) 策略。
+// 适用场景： 当连接的两个表都很大，无法放入内存进行广播连接时，或者用户希望避免广播（例如，避免网络传输大型表到所有执行器），SMJ 是最常用的默认连接策略。
+// "Shuffle"的含义： 在 Spark 中，Sort Merge Join 通常需要先通过 Shuffle 操作将连接键相同的行聚集到同一个执行器分区，然后再在本地对这些数据进行排序（Sort），最后进行合并（Merge）。
+// 因此，这个提示特指这个完整的、涉及 Shuffle 的排序合并过程。
 case object SHUFFLE_MERGE extends JoinStrategyHint {
   override def displayName: String = "merge"
   override def hintAliases: Set[String] = Set(
@@ -156,6 +178,9 @@ case object SHUFFLE_MERGE extends JoinStrategyHint {
 /**
  * The hint for shuffle hash join.
  */
+// 允许用户在 SQL 查询中明确指示 Spark 优化器对连接中的一个或多个指定表使用 Shuffle Hash Join (SHJ) 策略
+// 工作机制： 这种连接策略适用于两个表都较大，无法进行广播，但其中一个表（通常是右表）在 Shuffle 之后相对较小，能够在其对应的执行器内存中构建一个哈希表。
+// 性能考量： 当一个表在 Shuffle 后足够小，且哈希连接比排序合并连接更节省 CPU 资源时，SHJ 通常比 Sort Merge Join (SMJ) 更快。
 case object SHUFFLE_HASH extends JoinStrategyHint {
   override def displayName: String = "shuffle_hash"
   override def hintAliases: Set[String] = Set(
@@ -165,6 +190,10 @@ case object SHUFFLE_HASH extends JoinStrategyHint {
 /**
  * The hint for shuffle-and-replicate nested loop join, a.k.a. cartesian product join.
  */
+// 用于显式指定使用洗牌和复制嵌套循环连接（Shuffle-and-Replicate Nested Loop Join），它通常被称为笛卡尔积连接（Cartesian Product Join）
+// 笛卡尔积连接： 这种连接策略是处理 没有连接键（或连接条件非常复杂） 的连接操作的默认机制。它本质上是计算两个输入表的笛卡尔积。
+// 工作机制： 为了执行笛卡尔积，Spark 会将一个表（通常是较小的那个）的每个分区发送到所有包含另一个表（通常是较大的那个）分区的机器上，从而实现全量匹配。
+// 这种方法通常涉及大量的 Shuffle（洗牌） 和 数据复制（Replicate），因此得名。
 case object SHUFFLE_REPLICATE_NL extends JoinStrategyHint {
   override def displayName: String = "shuffle_replicate_nl"
   override def hintAliases: Set[String] = Set(
@@ -174,6 +203,11 @@ case object SHUFFLE_REPLICATE_NL extends JoinStrategyHint {
 /**
  * An internal hint to discourage broadcast hash join, used by adaptive query execution.
  */
+// 目的是明确地阻止 Spark 优化器使用广播哈希连接（Broadcast Hash Join, BHJ）
+// 使用场景： 该提示主要由 自适应查询执行（Adaptive Query Execution, AQE） 机制在内部使用。
+// 在 AQE 运行时，如果它检测到要进行广播的表的大小超过了动态设置的阈值，
+// 或者由于其他运行时条件（例如，上游的 Shuffle 数据过大），它可能会在计划中插入 NO_BROADCAST_HASH 提示，
+// 从而强制 Spark 改用其他连接策略，如排序合并连接（Sort Merge Join）
 case object NO_BROADCAST_HASH extends JoinStrategyHint {
   override def displayName: String = "no_broadcast_hash"
   override def hintAliases: Set[String] = Set.empty
@@ -182,6 +216,8 @@ case object NO_BROADCAST_HASH extends JoinStrategyHint {
 /**
  * An internal hint to encourage shuffle hash join, used by adaptive query execution.
  */
+// 目的是鼓励 Spark 优化器对指定的连接操作使用 Shuffle Hash Join (SHJ) 策略
+// 使用场景： 该提示主要由 自适应查询执行（Adaptive Query Execution, AQE） 机制在内部使用
 case object PREFER_SHUFFLE_HASH extends JoinStrategyHint {
   override def displayName: String = "prefer_shuffle_hash"
   override def hintAliases: Set[String] = Set.empty
@@ -192,6 +228,9 @@ case object PREFER_SHUFFLE_HASH extends JoinStrategyHint {
  * by some rules where broadcasting or replicating a particular side of the join is not permitted,
  * such as the cardinality check in MERGE operations.
  */
+// 目的是明确地阻止 Spark 优化器对连接的特定输入执行广播（Broadcast）或复制（Replication）
+// 使用场景： 该提示主要被 Spark 的某些优化规则在内部使用，这些规则有特定的限制，例如在处理 MERGE 操作时的基数（cardinality）检查。
+// 在这些场景下，出于正确性或资源保护的考虑，不允许将特定数据集进行复制或广播
 case object NO_BROADCAST_AND_REPLICATION extends JoinStrategyHint {
   override def displayName: String = "no_broadcast_and_replication"
   override def hintAliases: Set[String] = Set.empty

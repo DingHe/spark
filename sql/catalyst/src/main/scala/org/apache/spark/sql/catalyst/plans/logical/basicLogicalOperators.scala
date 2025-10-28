@@ -69,16 +69,17 @@ object Subquery {
   def fromExpression(s: SubqueryExpression): Subquery =
     Subquery(s.plan, SubqueryExpression.hasCorrelatedSubquery(s))
 }
-//逻辑计划 (LogicalPlan) 中的一个关键节点，它用于表示 SQL 语句中的 SELECT 操作。这个类负责对输入数据进行列投影（Projection），即选择和转换需要的字段
-case class Project(projectList: Seq[NamedExpression], child: LogicalPlan)  //projectList 是该投影节点的输出字段列表，包含 NamedExpression（即带有名称的表达式）
-    extends OrderPreservingUnaryNode {  //child 是 Project 节点的输入数据源，即 SELECT 操作的来源表或子查询
+// 逻辑计划 (LogicalPlan) 中的一个关键节点，它用于表示 SQL 语句中的 SELECT 操作。
+// 这个类负责对输入数据进行列投影（Projection），即选择和转换需要的字段
+case class Project(projectList: Seq[NamedExpression], child: LogicalPlan)  // projectList 是该投影节点的输出字段列表，包含 NamedExpression（即带有名称的表达式）
+    extends OrderPreservingUnaryNode {  // child 是 Project 节点的输入数据源，即 SELECT 操作的来源表或子查询
   override def output: Seq[Attribute] = projectList.map(_.toAttribute)
   override protected def outputExpressions: Seq[NamedExpression] = projectList
   override def maxRows: Option[Long] = child.maxRows
   override def maxRowsPerPartition: Option[Long] = child.maxRowsPerPartition
 
   final override val nodePatterns: Seq[TreePattern] = Seq(PROJECT)
-  //判断该 Project 计划是否已经解析完成（所有字段和表达式都已绑定到具体的表或子查询）
+  // 判断该 Project 计划是否已经解析完成（所有字段和表达式都已绑定到具体的表或子查询）
   override lazy val resolved: Boolean = {
     val hasSpecialExpressions = projectList.exists ( _.collect {
         case agg: AggregateExpression => agg     //聚合函数，如 SUM(a)
@@ -1154,13 +1155,13 @@ case class Range(
  * on aggregateExpressions, which could reference an expression in groupingExpressions.
  * For example, see the rule [[org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps]]
  */
-//Apache Spark SQL 逻辑计划中的 "Group By" 逻辑算子，它负责对数据进行分组（grouping）并执行聚合（aggregation）**操作
+// Apache Spark SQL 逻辑计划中的 "Group By" 逻辑算子，它负责对数据进行分组（grouping）并执行聚合（aggregation）**操作
 case class Aggregate(
-    groupingExpressions: Seq[Expression],  //表示用于分组的表达式，即 GROUP BY 语句中指定的列或表达式
-    aggregateExpressions: Seq[NamedExpression],  //代表投影列表，即查询 SELECT 子句中包含的表达式，不仅仅包含聚合函数，也可以包含 groupingExpressions 里面的字段
-    child: LogicalPlan)     //子节点，表示在 GROUP BY 之前的数据源（输入逻辑计划）
+    groupingExpressions: Seq[Expression],  // 表示用于分组的表达式，即 GROUP BY 语句中指定的列或表达式
+    aggregateExpressions: Seq[NamedExpression],  // 代表投影列表，即查询 SELECT 子句中包含的表达式，不仅仅包含聚合函数，也可以包含 groupingExpressions 里面的字段
+    child: LogicalPlan)     // 子节点，表示在 GROUP BY 之前的数据源（输入逻辑计划）
   extends UnaryNode {
-  //检查 Aggregate 是否已解析（即所有表达式的类型、分辨字段都已经确定）
+  // 检查 Aggregate 是否已解析（即所有表达式的类型、分辨字段都已经确定）
   override lazy val resolved: Boolean = {
     val hasWindowExpressions = aggregateExpressions.exists ( _.collect {
         case window: WindowExpression => window
