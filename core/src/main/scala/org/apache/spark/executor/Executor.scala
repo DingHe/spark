@@ -335,10 +335,12 @@ private[spark] class Executor(
   // Plugins need to load using a class loader that includes the executor's user classpath.
   // Plugins also needs to be initialized after the heartbeater started
   // to avoid blocking to send heartbeat (see SPARK-32175).
-  private val plugins: Option[PluginContainer] =
+  private val plugins: Option[PluginContainer] = {
+    // withContextClassLoader 设置当前线程的类加载器
     Utils.withContextClassLoader(defaultSessionState.replClassLoader) {
       PluginContainer(env, resources.asJava)
     }
+  }
 
   metricsPoller.start()
 

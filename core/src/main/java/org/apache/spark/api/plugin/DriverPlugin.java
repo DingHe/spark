@@ -29,6 +29,12 @@ import org.apache.spark.annotation.DeveloperApi;
  *
  * @since 3.0.0
  */
+// DriverPlugin 是 Spark 插件体系中专门运行在 Driver（驱动器）端 的组件接口。如果说 SparkPlugin 是插件的总入口，那么 DriverPlugin 就是该插件在“大脑”节点的具体实现。
+// DriverPlugin 的核心作用是管理和协调。由于它运行在 Driver 端，它拥有全局视角，负责插件的初始化、与 Executor 通信、监控指标注册以及最后的资源回收。
+// 全局初始化：在 Spark 任务开始前准备环境。
+// 配置下发：将 Driver 端的配置或元数据传递给集群中的所有 Executor。
+// RPC 消息处理：作为服务端，接收并响应来自各个 Executor 插件的消息。
+// 生命周期管理：随着 SparkContext 的启动而启动，随其关闭而清理。
 @DeveloperApi
 public interface DriverPlugin {
 
@@ -50,6 +56,10 @@ public interface DriverPlugin {
    * @return A map that will be provided to the {@link ExecutorPlugin#init(PluginContext,Map)}
    *         method.
    */
+  // 插件的起点。在 Spark Driver 初始化早期被调用。
+  // 调用时机：在 TaskScheduler（任务调度器）初始化之前。此时很多 Spark 子系统尚未就绪。
+  // 阻塞性：该方法会阻塞 Driver 的启动。如果在此处执行耗时操作（如网络扫描），会导致整个 Spark 应用启动变慢。
+  // 返回值：返回一个 Map<String, String>。这是该方法最精妙的地方：这个 Map 会被 Spark 自动发送到所有 Executor 节点，并作为参数传递给 ExecutorPlugin.init() 方法。
   default Map<String, String> init(SparkContext sc, PluginContext pluginContext) {
     return Collections.emptyMap();
   }
@@ -70,6 +80,9 @@ public interface DriverPlugin {
    * @param pluginContext Additional plugin-specific about the Spark application where the plugin
    *                      is running.
    */
+  // 作用：将插件自定义的监控指标（Metrics）注册到 Spark 官方的度量系统中。
+  // 调用时机：比 init 晚一些，此时大部分子系统已启动，且已获取到 appId。
+  // 机制：你可以通过 pluginContext.metricRegistry() 获取注册表并添加指标。Spark 会自动创建一个以插件名为命名的指标源（Source）。
   default void registerMetrics(String appId, PluginContext pluginContext) {}
 
   /**
@@ -96,6 +109,10 @@ public interface DriverPlugin {
    * @param message The incoming message.
    * @return Value to be returned to the caller. Ignored if the caller does not expect a reply.
    */
+  // RPC 消息处理器，负责接收来自 Executor 端插件的消息。
+  // 通信流向：目前 Spark 只支持 Executor -> Driver 的单向发起通信（Driver 端被动响应）。
+  // 线程安全：该方法会被多个 RPC 线程并发调用，因此实现必须是线程安全的。
+  // 异常处理：抛出的异常会传回给 Executor；如果 Executor 不需要回复，则异常会被记录到日志。
   default Object receive(Object message) throws Exception {
     throw new UnsupportedOperationException();
   }
@@ -106,6 +123,8 @@ public interface DriverPlugin {
    * This method is called during the driver shutdown phase. It is recommended that plugins
    * not use any Spark functions (e.g. send RPC messages) during this call.
    */
+  // 插件的终点。在 SparkContext 关闭（销毁）阶段调用。
+  // 限制：在此阶段，Spark 的核心功能可能已经部分失效，因此不建议在此时再调用 Spark 的函数（如发送 RPC 消息）。
   default void shutdown() {}
 
 }

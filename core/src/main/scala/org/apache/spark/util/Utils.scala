@@ -171,6 +171,7 @@ private[spark] object Utils
   /**
    * Run a segment of code using a different context class loader in the current thread
    */
+  // 设置当前线程的类加载器
   def withContextClassLoader[T](ctxClassLoader: ClassLoader)(fn: => T): T = {
     val oldClassLoader = Thread.currentThread().getContextClassLoader()
     try {
