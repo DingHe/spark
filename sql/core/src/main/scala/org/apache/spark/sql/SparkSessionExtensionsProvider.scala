@@ -75,6 +75,19 @@ import org.apache.spark.annotation.{DeveloperApi, Since, Unstable}
  *
  * @since 3.2.0
  */
+// 在 Apache Spark SQL 项目中，SparkSessionExtensionsProvider 是一个非常精简但功能强大的接口（Trait）。它是开发者接入 Spark SQL 内部机制的标准化入口。
+// 这个类的核心作用是定义一个规范化的扩展加载接口。
+// 解耦扩展与核心：它允许第三方插件（如 Gluten, Iceberg, Delta Lake）定义自己的扩展逻辑，而不需要修改 Spark 的源代码。
+// 支持多种加载方式：通过继承这个接口，你的扩展类可以被 Spark 通过反射或 Java 的 ServiceLoader 机制自动发现并加载。
+// 配置标准：它继承自 Function1[SparkSessionExtensions, Unit]。这意味着它的唯一任务就是：“接受一个扩展容器（SparkSessionExtensions），然后往里面塞入自定义规则”。
+// 三种加载机制（重点）
+// SparkSessionExtensionsProvider 的设计精髓在于它支持的加载方式，这决定了它如何被 Spark 识别：
+// 手动注入 (withExtensions)：
+// 开发者在创建 SparkSession 时，直接实例化 Provider 类并传入。
+// 配置注入 (spark.sql.extensions)：
+// 在 spark-defaults.conf 中设置。Spark 会读取类名，检查它是否是 SparkSessionExtensionsProvider 的子类，然后调用其 apply 方法。
+//自动发现 (ServiceLoader)：
+//这是最“插件化”的方式。你在 Jar 包的 META-INF/services/org.apache.spark.sql.SparkSessionExtensionsProvider 文件中写入你的类全名。Spark 启动时会自动扫描类路径下的所有该文件，并自动运行所有找到的扩展。
 @DeveloperApi
 @Unstable
 @Since("3.2.0")

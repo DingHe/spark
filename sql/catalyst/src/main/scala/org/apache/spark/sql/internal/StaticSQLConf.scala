@@ -28,30 +28,39 @@ import org.apache.spark.util.Utils
  * Static SQL configuration is a cross-session, immutable Spark configuration. External users can
  * see the static sql configs via `SparkSession.conf`, but can NOT set/unset them.
  */
+// StaticSQLConf 定义的是 静态 SQL 配置（Static SQL Configuration）。
+// 其核心特性如下：
+// 跨会话共享（Cross-session）：与普通的 SQLConf 不同，静态配置在整个 SparkContext 或 SparkSession 生命周期内是全局共享的。
+// 不可变性（Immutable）：一旦 Spark 应用启动并初始化了 SparkSession，这些配置就不能再通过 spark.conf.set 进行动态修改。
+// 配置方式：外部用户可以通过 SparkSession.conf 查看这些配置，但只能在启动应用时通过 spark-submit --conf 或 SparkConf 对象进行设置。
 object StaticSQLConf {
 
   import SQLConf.buildStaticConf
-
+  // 定义受管数据库（Managed Databases）和表（Tables）的默认存储位置
+  // 默认值：当前路径下的 spark-warehouse。
   val WAREHOUSE_PATH = buildStaticConf("spark.sql.warehouse.dir")
     .doc("The default location for managed databases and tables.")
     .version("2.0.0")
     .stringConf
     .createWithDefault(Utils.resolveURI("spark-warehouse").toString)
-
+  // 定义 Session Catalog 的默认数据库名称
+  // 默认值：default
   val CATALOG_DEFAULT_DATABASE =
     buildStaticConf(s"spark.sql.catalog.$SESSION_CATALOG_NAME.defaultDatabase")
     .doc("The default database for session catalog.")
     .version("3.4.0")
     .stringConf
     .createWithDefault("default")
-
+  // 决定 Spark 使用哪种 Catalog 实现。
+  // 可选值：hive（使用 Hive Metastore）或 in-memory（仅内存存储）。
   val CATALOG_IMPLEMENTATION = buildStaticConf("spark.sql.catalogImplementation")
     .internal()
     .version("2.0.0")
     .stringConf
     .checkValues(Set("hive", "in-memory"))
     .createWithDefault("in-memory")
-
+  // 作用：定义存放“全局临时视图”的系统保留数据库名。
+  // 说明：输入会自动转为小写。默认值为 global_temp。
   val GLOBAL_TEMP_DATABASE = buildStaticConf("spark.sql.globalTempDatabase")
     .internal()
     .version("2.1.0")
@@ -68,6 +77,7 @@ object StaticSQLConf {
   // value of this property). We will split the JSON string of a schema to its length exceeds the
   // threshold. Note that, this conf is only read in HiveExternalCatalog which is cross-session,
   // that's why this conf has to be a static SQL conf.
+  // 作用：Hive Metastore 对表属性有长度限制（通常 4000 字符）。当 Schema 的 JSON 字符串超过此值时，Spark 会将其拆分成多块存储。
   val SCHEMA_STRING_LENGTH_THRESHOLD =
     buildStaticConf("spark.sql.sources.schemaStringLengthThreshold")
       .internal()
@@ -76,7 +86,7 @@ object StaticSQLConf {
       .version("1.3.1")
       .intConf
       .createWithDefault(4000)
-
+  // 作用：文件数据源表名到执行计划关系的缓存大小。增加它可以加快重复查询相同表的解析速度。
   val FILESOURCE_TABLE_RELATION_CACHE_SIZE =
     buildStaticConf("spark.sql.filesourceTableRelationCacheSize")
       .internal()
@@ -85,7 +95,7 @@ object StaticSQLConf {
       .intConf
       .checkValue(cacheSize => cacheSize >= 0, "The maximum size of the cache must not be negative")
       .createWithDefault(1000)
-
+  // 作用：算子和表达式生成的 Java 代码缓存的最大条目数。缓存可以避免重复编译代码带来的 CPU 开销。
   val CODEGEN_CACHE_MAX_ENTRIES = buildStaticConf("spark.sql.codegen.cache.maxEntries")
       .internal()
       .doc("When nonzero, enable caching of generated classes for operators and expressions. " +
@@ -94,7 +104,8 @@ object StaticSQLConf {
       .intConf
       .checkValue(maxEntries => maxEntries >= 0, "The maximum must not be negative")
       .createWithDefault(100)
-
+  // 作用：是否在生成的 Java 代码中包含注释。
+  // 说明：默认关闭，因为生成大量注释会严重影响复杂查询的编译性能。
   val CODEGEN_COMMENTS = buildStaticConf("spark.sql.codegen.comments")
     .internal()
     .doc("When true, put comment in the generated code. Since computing huge comments " +
@@ -112,7 +123,7 @@ object StaticSQLConf {
     .version("2.1.0")
     .booleanConf
     .createWithDefault(false)
-
+  // 作用：Hive Thrift Server 是否运行在单会话模式。开启后，所有连接共享临时视图和配置。
   val HIVE_THRIFT_SERVER_SINGLESESSION =
     buildStaticConf("spark.sql.hive.thriftServer.singleSession")
       .doc("When set to true, Hive Thrift server is running in a single session mode. " +
@@ -121,7 +132,8 @@ object StaticSQLConf {
       .version("1.6.0")
       .booleanConf
       .createWithDefault(false)
-
+  // 作用：允许用户注入自定义扩展类（如自定义解析器、优化规则、物理策略）。
+  // 说明：这是 Gluten、Iceberg 等项目接入 Spark 的核心入口。
   val SPARK_SESSION_EXTENSIONS = buildStaticConf("spark.sql.extensions")
     .doc("A comma-separated list of classes that implement " +
       "Function1[SparkSessionExtensions, Unit] used to configure Spark Session extensions. The " +
@@ -134,7 +146,7 @@ object StaticSQLConf {
     .stringConf
     .toSequence
     .createOptional
-
+  // 作用：定义用于将数据转化为缓存格式的类名。允许替换默认的列式缓存实现。
   val SPARK_CACHE_SERIALIZER = buildStaticConf("spark.sql.cache.serializer")
     .doc("The name of a class that implements " +
       "org.apache.spark.sql.columnar.CachedBatchSerializer. It will be used to " +
@@ -144,7 +156,7 @@ object StaticSQLConf {
     .version("3.1.0")
     .stringConf
     .createWithDefault("org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer")
-
+  // 作用：查询执行监听器类名列表。用于监控查询的成功或失败。
   val QUERY_EXECUTION_LISTENERS = buildStaticConf("spark.sql.queryExecutionListeners")
     .doc("List of class names implementing QueryExecutionListener that will be automatically " +
       "added to newly created sessions. The classes should have either a no-arg constructor, " +
@@ -169,7 +181,8 @@ object StaticSQLConf {
       .version("1.5.0")
       .intConf
       .createWithDefault(1000)
-
+  // 作用：执行广播（Broadcast）操作时拉取数据的最大并行度。
+  // 说明：范围 (0, 128]。如果遇到 OOM，建议调低此值。
   val BROADCAST_EXCHANGE_MAX_THREAD_THRESHOLD =
     buildStaticConf("spark.sql.broadcastExchange.maxThreadThreshold")
       .internal()
@@ -183,7 +196,7 @@ object StaticSQLConf {
       .intConf
       .checkValue(thres => thres > 0 && thres <= 128, "The threshold must be in (0,128].")
       .createWithDefault(128)
-
+  // 作用：执行子查询的最大线程并行度。默认 16。
   val SUBQUERY_MAX_THREAD_THRESHOLD =
     buildStaticConf("spark.sql.subquery.maxThreadThreshold")
       .internal()
@@ -192,7 +205,7 @@ object StaticSQLConf {
       .intConf
       .checkValue(thres => thres > 0 && thres <= 128, "The threshold must be in (0,128].")
       .createWithDefault(16)
-
+  // 作用：SQL 事件日志中 SQL 文本的截断长度。防止超长 SQL 撑爆日志。
   val SQL_EVENT_TRUNCATE_LENGTH = buildStaticConf("spark.sql.event.truncate.length")
     .doc("Threshold of SQL length beyond which it will be truncated before adding to " +
       "event. Defaults to no truncation. If set to 0, callsite will be logged instead.")
@@ -209,7 +222,9 @@ object StaticSQLConf {
       .version("3.0.0")
       .booleanConf
       .createWithDefault(false)
-  //FsUrlStreamHandlerFactory 是 Hadoop 中的一个类，用于为文件系统（如 HDFS、S3、文件系统等）提供 URL 流处理的支持,使得 Hadoop 的文件系统（例如 HDFS）可以作为一种协议来处理，这样你就能够使用 hdfs://、file:// 等 URL 协议来引用和访问 Hadoop 文件系统中的文件。
+      // 作用：是否注册 Hadoop 的 FsUrlStreamHandlerFactory。这对于支持从 HDFS ADD JAR 非常重要。
+  //FsUrlStreamHandlerFactory 是 Hadoop 中的一个类，用于为文件系统（如 HDFS、S3、文件系统等）提供 URL 流处理的支持,
+  // 使得 Hadoop 的文件系统（例如 HDFS）可以作为一种协议来处理，这样你就能够使用 hdfs://、file:// 等 URL 协议来引用和访问 Hadoop 文件系统中的文件。
   val DEFAULT_URL_STREAM_HANDLER_FACTORY_ENABLED =
     buildStaticConf("spark.sql.defaultUrlStreamHandlerFactory.enabled")
       .internal()
@@ -246,7 +261,7 @@ object StaticSQLConf {
       .version("3.0.0")
       .intConf
       .createWithDefault(100)
-
+  // 作用：元数据缓存（如分区文件信息）的生存时间（TTL）。设置为正数时生效。
   val METADATA_CACHE_TTL_SECONDS = buildStaticConf("spark.sql.metadataCacheTTLSeconds")
     .doc("Time-to-live (TTL) value for the metadata caches: partition file metadata cache and " +
       "session catalog cache. This configuration only has an effect when this value having " +
@@ -270,7 +285,7 @@ object StaticSQLConf {
       .stringConf
       .toSequence
       .createWithDefault(Nil)
-
+  // 作用：禁用的 JDBC 连接提供程序列表。
   val DISABLED_JDBC_CONN_PROVIDER_LIST =
     buildStaticConf("spark.sql.sources.disabledJdbcConnProviderList")
       .doc("Configures a list of JDBC connection providers, which are disabled. " +
