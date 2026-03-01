@@ -27,17 +27,24 @@ import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.Utils
 
+// RuleExecutor 是 Apache Spark Catalyst 引擎的核心组件之一。它是所有查询计划转换（如逻辑优化、物理计划生成）的底层驱动框架。
+// 其核心职能是：有序、可控地将一组转换规则（Rules）应用到树状结构（通常是 SQL 的逻辑计划或物理计划）上。
+// 它就像一条自动化流水线：
+// 输入：一棵树（TreeNode）。
+// 处理：按照预设的顺序、批次（Batch）和迭代策略（Strategy）运行规则。
+// 输出：一棵经过优化或转换后的新树。
 object RuleExecutor {
-  //用于跟踪规则执行的计量器对象（QueryExecutionMetering），记录规则执行的时间和计数等信息
+  // 持有一个 QueryExecutionMetering 实例，全局统计所有规则的执行时长、执行次数。
   protected val queryExecutionMeter = QueryExecutionMetering()
 
   /** Dump statistics about time spent running specific rules. */
-    //返回一个字符串，表示每个规则执行的时间统计信息
+  // 打印所有规则执行耗时的统计信息。
   def dumpTimeSpent(): String = {
     queryExecutionMeter.dumpTimeSpent()
   }
 
   /** Resets statistics about time spent running specific rules */
+  // 重置所有计量数据。
   def resetMetrics(): Unit = {
     queryExecutionMeter.resetMetrics()
   }
@@ -46,15 +53,17 @@ object RuleExecutor {
     queryExecutionMeter.getMetrics()
   }
 }
-//用于记录执行规则时的计划变更（plan changes）
+// 计划变更记录器
+// 用于监控规则应用前后，计划树发生了哪些具体变化。
 class PlanChangeLogger[TreeType <: TreeNode[_]] extends Logging {
 
   private val logLevel = SQLConf.get.planChangeLogLevel
-  //获取一个列表，指定哪些规则的变更需要记录
+
+
   private val logRules = SQLConf.get.planChangeRules.map(Utils.stringToSeq)
-  //获取一个列表，指定哪些规则批次（batches）需要记录变更
+
   private val logBatches = SQLConf.get.planChangeBatches.map(Utils.stringToSeq)
-  //记录规则执行后的计划变更。如果变更前后计划不同，并且该规则需要记录，则输出规则应用的日志信息
+  //  如果某条规则改变了计划，它会以“左右对比（side-by-side）”的方式打印出变更前后的树结构。
   def logRule(ruleName: String, oldPlan: TreeType, newPlan: TreeType): Unit = {
     if (!newPlan.fastEquals(oldPlan)) {
       if (logRules.isEmpty || logRules.get.contains(ruleName)) {
@@ -69,7 +78,7 @@ class PlanChangeLogger[TreeType <: TreeNode[_]] extends Logging {
       }
     }
   }
- //记录规则批次执行后的计划变更。如果批次中的所有规则都没有改变计划，记录批次没有效果的信息
+  // 记录整个批次（Batch）执行后的结果。如果批次内没有任何规则生效，则记录“No effect”。
   def logBatch(batchName: String, oldPlan: TreeType, newPlan: TreeType): Unit = {
     if (logBatches.isEmpty || logBatches.get.contains(batchName)) {
       def message(): String = {
@@ -86,7 +95,8 @@ class PlanChangeLogger[TreeType <: TreeNode[_]] extends Logging {
       logBasedOnLevel(message)
     }
   }
-  //记录所有执行规则的统计信息（如总执行次数、总时间等）
+
+  // 输出执行统计信息（总运行次数、总时间等）
   def logMetrics(metrics: QueryExecutionMetrics): Unit = {
     val totalTime = metrics.time / NANOS_PER_SECOND.toDouble
     val totalTimeEffective = metrics.timeEffective / NANOS_PER_SECOND.toDouble
@@ -101,7 +111,7 @@ class PlanChangeLogger[TreeType <: TreeNode[_]] extends Logging {
 
     logBasedOnLevel(message)
   }
-  //根据 logLevel 来确定日志输出的级别（TRACE, DEBUG, INFO, WARN, ERROR）
+  // 核心辅助方法，根据 spark.sql.planChangeLog.level 配置动态决定日志输出级别。
   private def logBasedOnLevel(f: => String): Unit = {
     logLevel match {
       case "TRACE" => logTrace(f)
@@ -123,7 +133,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
    * An execution strategy for rules that indicates the maximum number of executions. If the
    * execution reaches fix point (i.e. converge) before maxIterations, it will stop.
    */
-  // 规则执行策略的抽象基类。 定义了规则批次应如何执行的通用接口（例如，最大迭代次数）
+  // 定义规则执行的限制，如 maxIterations（最大迭代次数）
   abstract class Strategy {
 
     /** The maximum number of executions. */
@@ -210,18 +220,21 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
    * Executes the batches of rules defined by the subclass. The batches are executed serially
    * using the defined execution strategy. Within each batch, rules are also executed serially.
    */
-  // 执行规则核心逻辑
+
+  // 实现了将复杂的优化逻辑分解为多个批次（Batch）、并在每个批次内重复应用**规则（Rule）**直到计划稳定的逻辑。
   def execute(plan: TreeType): TreeType = {
+    // // 将输入的计划赋值给可变变量，用于在规则应用过程中不断更新
     var curPlan = plan
     val queryExecutionMetrics = RuleExecutor.queryExecutionMeter
     val planChangeLogger = new PlanChangeLogger[TreeType]()
     val tracker: Option[QueryPlanningTracker] = QueryPlanningTracker.get
     val beforeMetrics = RuleExecutor.getCurrentMetrics()
-
+    // 获取是否开启计划验证的配置
     val enableValidation = SQLConf.get.getConf(SQLConf.PLAN_CHANGE_VALIDATION)
     // Validate the initial input.
     if (Utils.isTesting || enableValidation) {
-      validatePlanChanges(plan, plan) match { //验证规则执行前后的变化
+      // 验证初始计划是否合法（例如：是否是已解析状态）
+      validatePlanChanges(plan, plan) match {
         case Some(msg) =>
           val ruleExecutorName = this.getClass.getName.stripSuffix("$")
           throw new SparkException(
@@ -231,7 +244,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
         case _ =>
       }
     }
-    //遍历所有定义的规则批次，每个批次包含一组规则和执行策略
+    // 遍历所有定义的规则批次，每个批次包含一组规则和执行策略
     batches.foreach { batch =>
       val batchStartPlan = curPlan  //记录当前批次开始时的查询计划
       var iteration = 1
@@ -243,15 +256,16 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
         curPlan = batch.rules.foldLeft(curPlan) {
           case (plan, rule) =>
             val startTime = System.nanoTime()
-            val result = rule(plan)    //执行规则
+            val result = rule(plan)    // 【核心点】执行规则，返回新计划
             val runTime = System.nanoTime() - startTime
-            val effective = !result.fastEquals(plan)
+            val effective = !result.fastEquals(plan) // 通过地址或快速对比判断计划是否发生了改变
 
-            if (effective) {
-              queryExecutionMetrics.incNumEffectiveExecution(rule.ruleName)
-              queryExecutionMetrics.incTimeEffectiveExecutionBy(rule.ruleName, runTime)
-              planChangeLogger.logRule(rule.ruleName, plan, result)
+            if (effective) { // 如果规则生效（计划改变了）
+              queryExecutionMetrics.incNumEffectiveExecution(rule.ruleName) // 增加有效执行次数
+              queryExecutionMetrics.incTimeEffectiveExecutionBy(rule.ruleName, runTime) // 增加有效执行时间
+              planChangeLogger.logRule(rule.ruleName, plan, result) // 打印规则应用后的计划对比日志
               // Run the plan changes validation after each rule.
+              // 再次验证：确保规则没有把计划改坏（如：把 resolved 变成了 unresolved）
               if (Utils.isTesting || enableValidation) {
                 validatePlanChanges(plan, result) match {
                   case Some(msg) =>
@@ -271,7 +285,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
 
             // Record timing information using QueryPlanningTracker
             tracker.foreach(_.recordRuleInvocation(rule.ruleName, runTime, effective))
-
+            // 返回本次规则处理后的计划，传给 foldLeft 的下一次循环
             result
         }
         iteration += 1
