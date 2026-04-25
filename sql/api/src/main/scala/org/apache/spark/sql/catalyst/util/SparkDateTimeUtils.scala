@@ -301,31 +301,73 @@ trait SparkDateTimeUtils {
    * `[+-]yyyy*-[m]m-[d]d *`
    * `[+-]yyyy*-[m]m-[d]dT*`
    */
+  // 将 UTF8 字符串解析为日期整数（即距离 1970-01-01 的天数）的工具函数。
+  // 它不依赖于重量级的标准库解析器，而是通过直接操作字节数组来实现高性能解析。
+  // 代码开头的注释和解析逻辑明确了它支持以下几种组合：
+  //
+  //全日期格式：yyyy-MM-dd（如 2023-10-27）
+  //
+  //缩减格式：
+  //
+  //yyyy-MM（如 2023-10，此时“日”默认为 1）
+  //
+  //yyyy（如 2023，此时“月”和“日”都默认为 1）
+  //
+  //带时间前缀的格式：
+  //
+  //yyyy-MM-dd HH:mm:ss...（空格分隔，函数会解析日期部分并忽略空格后的时间）
+  //
+  //yyyy-MM-ddTHH:mm:ss...（T 分隔，符合 ISO 标准，同样会忽略 T 之后的时间）
+  // 数值范围要求
+  //年份 (Year)：
+  //
+  //支持正负号（+ 或 -），意味着可以处理公元前（BC）的日期。
+  //
+  //位数限制为 4 到 7 位。这意味着它支持从 0001 年到 9999999 年（约 500 万年以内）。
+  //
+  //月份 (Month)：
+  //
+  //必须是 1 到 2 位 数字（如 1 或 01）。
+  //
+  //必须在 1-12 之间（由底层的 LocalDate.of 校验）。
+  //
+  //日期 (Day)：
+  //
+  //必须是 1 到 2 位 数字。
+  //
+  //必须符合该月的实际天数（如 2023-02-29 会因为是非闰年而在 try-catch 中解析失败）。
   def stringToDate(s: UTF8String): Option[Int] = {
+    // 内部辅助函数：验证当前时间段（年、月、日）的数字位数是否合法
+    // segment == 0 代表“年”，Spark 支持 [+-]500万年，所以位数在 4 到 7 位之间
+    // segment != 0 代表“月”或“日”，必须是 1 到 2 位数字
     def isValidDigits(segment: Int, digits: Int): Boolean = {
       // An integer is able to represent a date within [+-]5 million years.
       val maxDigitsYear = 7
       (segment == 0 && digits >= 4 && digits <= maxDigitsYear) ||
         (segment != 0 && digits > 0 && digits <= 2)
     }
+
+    // 如果输入为空或仅包含空格，返回 None
     if (s == null || s.trimAll().numBytes() == 0) {
       return None
     }
+    // 存储解析出的 [年, 月, 日]，默认月日为 1
     val segments: Array[Int] = Array[Int](1, 1, 1)
-    var sign = 1
-    var i = 0
-    var currentSegmentValue = 0
-    var currentSegmentDigits = 0
-    val bytes = s.trimAll().getBytes
-    var j = 0
+    var sign = 1 // 符号位，正数或负数年份
+    var i = 0   // 当前正在解析哪个段（0:年, 1:月, 2:日）
+    var currentSegmentValue = 0  // 当前段的数值累计
+    var currentSegmentDigits = 0 // 当前段已读取的数字个数
+    val bytes = s.trimAll().getBytes // 获取修剪空格后的字节数组
+    var j = 0 // 字节数组的指针
     if (bytes(j) == '-' || bytes(j) == '+') {
-      sign = if (bytes(j) == '-') -1 else 1
+      sign = if (bytes(j) == '-') -1 else 1  // 处理开头的正负号
       j += 1
     }
+    // 循环条件：未读完、段数少于3、且没遇到空格或 'T'（ISO时间分隔符）
     while (j < bytes.length && (i < 3 && !(bytes(j) == ' ' || bytes(j) == 'T'))) {
       val b = bytes(j)
-      if (i < 2 && b == '-') {
-        if (!isValidDigits(i, currentSegmentDigits)) {
+      if (i < 2 && b == '-') { // 如果遇到连接符 '-' 且还没到“日”段
+        if (!isValidDigits(i, currentSegmentDigits)) { // 位数不合法（如 202-1-1）则解析失败
           return None
         }
         segments(i) = currentSegmentValue
@@ -346,13 +388,17 @@ trait SparkDateTimeUtils {
     if (!isValidDigits(i, currentSegmentDigits)) {
       return None
     }
+    // 边界检查：如果是 yyyy 或 yyyy-mm 格式，后面不应该还有剩余字符（除了空格/T之后的内容）
     if (i < 2 && j < bytes.length) {
       // For the `yyyy` and `yyyy-[m]m` formats, entire input must be consumed.
       return None
     }
     segments(i) = currentSegmentValue
     try {
+      // 使用 Java 8 的 LocalDate 构建日期对象
+      // segments(0) 是年，segments(1) 是月，segments(2) 是日
       val localDate = LocalDate.of(sign * segments(0), segments(1), segments(2))
+      // 调用辅助方法将 LocalDate 转换为从 1970-01-01 开始计算的整数天数
       Some(localDateToDays(localDate))
     } catch {
       case NonFatal(_) => None
@@ -547,6 +593,7 @@ trait SparkDateTimeUtils {
    * value. The return type is [[Option]] in order to distinguish between 0L and null. Please
    * refer to `parseTimestampString` for the allowed formats
    */
+  // 将 UTF8 字符串解析为时间戳（Timestamp） 的核心逻辑
   def stringToTimestamp(s: UTF8String, timeZoneId: ZoneId): Option[Long] = {
     try {
       val (segments, parsedZoneId, justTime) = parseTimestampString(s)

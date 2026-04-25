@@ -40,19 +40,22 @@ case class SimpleCost(value: Long) extends Cost {
  * A skew join aware implementation of [[CostEvaluator]], which counts the number of
  * [[ShuffleExchangeLike]] nodes and skew join nodes in the plan.
  */
-// 主要用于 Spark 自适应查询执行 (AQE) 过程中，对不同的物理执行计划进行启发式的成本比较
-// 目标不是像传统优化器那样对查询的 CPU 或 I/O 做出精确估计，而是通过计数计划中的关键操作符来评估计划的相对“复杂性”或“劣势”：
-// Shuffle 交换次数： Shuffle 往往是 Spark 执行中最昂贵的操作之一。
-// 倾斜 Join 数量： 存在数据倾斜的 Join 会导致任务执行严重不平衡，是性能瓶颈
-// 强制优化倾斜 Join 的标志 是否将倾斜 Join 的数量纳入成本计算
+// 这个类的核心作用是对物理计划（SparkPlan）的执行代价进行量化评分。
+// 在 AQE 运行期间，Spark 可能会尝试多种不同的执行策略（例如不同的 Join 算法）。SimpleCostEvaluator 通过计算计划中包含的 Shuffle 数量 和 数据倾斜 Join 的优化情况，将复杂的物理计划转换成一个可以比较的数字（Cost）。
+// forceOptimizeSkewedJoin 作用：这是一个开关参数，决定评估器是否将“倾斜 Join 的优化”作为最高优先级的考量因素。
+// 如果为 true：评估器会极力推荐那些处理了数据倾斜的计划。
+// 如果为 false：评估器仅关注 Shuffle 的数量。
 case class SimpleCostEvaluator(forceOptimizeSkewedJoin: Boolean) extends CostEvaluator {
   override def evaluateCost(plan: SparkPlan): Cost = {
     // 计算 Shuffle 数量
+    // 逻辑：遍历整个 SparkPlan 树，找出所有属于 ShuffleExchangeLike 类型的算子（如 ShuffleExchangeExec）。
+    // 目的：Shuffle 是 Spark SQL 中最昂贵的操作（涉及磁盘 I/O 和网络传输），因此减少 Shuffle 数量是降低成本的首要目标。
     val numShuffles = plan.collect {
       case s: ShuffleExchangeLike => s
     }.size
 
     if (forceOptimizeSkewedJoin) {
+      // 统计 numSkewJoins：计算计划中已经标记为 isSkewJoin（倾斜 Join）的 ShuffledJoin 算子数量。
       val numSkewJoins = plan.collect {
         case j: ShuffledJoin if j.isSkewJoin => j
       }.size
@@ -62,6 +65,7 @@ case class SimpleCostEvaluator(forceOptimizeSkewedJoin: Boolean) extends CostEva
       // 由于是负数，在数值比较时，numSkewJoins 越大的计划，其成本值（整个 Long 值）越小，从而优先被选择（即解决倾斜的价值最高）
       SimpleCost(-numSkewJoins.toLong << 32 | numShuffles)
     } else {
+      // 逻辑：成本完全等同于 Shuffle 的个数。Shuffle 越少，计划越优。
       SimpleCost(numShuffles)
     }
   }
